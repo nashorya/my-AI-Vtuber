@@ -284,6 +284,46 @@ public class DanmakuSelectorTests
         Assert.NotNull(selected);
         Assert.Equal("这是什么？", selected!.Content);
     }
+
+    [Fact]
+    public async Task TrySelectNextAsync_KeepsLosersInBacklog()
+    {
+        // After picking one, the rest must remain for the next round (not be discarded).
+        var selector = new DanmakuSelector(0);
+        selector.Enqueue(new Danmaku { Uid = "a", Content = "第一条" });
+        selector.Enqueue(new Danmaku { Uid = "b", Content = "第二条" });
+        selector.Enqueue(new Danmaku { Uid = "c", Content = "第三条" });
+
+        await selector.TrySelectNextAsync();
+
+        Assert.Equal(2, selector.QueueCount);
+    }
+
+    [Fact]
+    public async Task TrySelectNextAsync_DropsExpiredMessages()
+    {
+        var selector = new DanmakuSelector(selectionIntervalSec: 0, maxAgeSec: 30);
+        bool fired = false;
+        selector.OnDanmakuSelected += (_, _) => fired = true;
+
+        // A danmaku that arrived 2 minutes ago is past the 30s TTL.
+        selector.Enqueue(new Danmaku { Uid = "1", Content = "旧弹幕", Timestamp = DateTime.UtcNow.AddSeconds(-120) });
+        await selector.TrySelectNextAsync();
+
+        Assert.False(fired);
+        Assert.Equal(0, selector.QueueCount);
+    }
+
+    [Fact]
+    public void Enqueue_CapsBacklogDroppingOldest()
+    {
+        var selector = new DanmakuSelector(selectionIntervalSec: 0, maxQueueSize: 2);
+        selector.Enqueue(new Danmaku { Uid = "1", Content = "最旧" });
+        selector.Enqueue(new Danmaku { Uid = "2", Content = "中间" });
+        selector.Enqueue(new Danmaku { Uid = "3", Content = "最新" });
+
+        Assert.Equal(2, selector.QueueCount);
+    }
 }
 
 public class ObsConfigTests
