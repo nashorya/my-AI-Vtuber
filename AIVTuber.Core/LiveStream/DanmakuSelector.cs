@@ -66,10 +66,8 @@ public sealed class DanmakuSelector
 
             _lastSelectionTime = DateTime.UtcNow;
             OnDanmakuSelected?.Invoke(this, selected);
-
-            // Optionally update viewer stats
-            if (_viewerRepo is not null)
-                _ = _viewerRepo.RecordInteractionAsync(selected.Uid, selected.Platform, selected.Username);
+            // Note: interaction recording is handled by the OnDanmakuSelected subscriber
+            // (Program.cs) to avoid double-counting.
         }
     }
 

@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AIVTuber.Core.Audio;
 
 namespace AIVTuber.Core.Pipeline;
 
@@ -59,6 +60,10 @@ public sealed class TtsClient : ITtsClient, IDisposable
             text,
             reference_id = voiceId,
             format = "pcm",
+            // Explicitly pin the PCM sample rate so it matches AudioPlayer's decoder
+            // (AudioPlayer.DefaultSampleRate). Without this the API default could
+            // differ from the player's assumed rate, causing pitch/speed distortion.
+            sample_rate = AudioPlayer.DefaultSampleRate,
             bitrate = 128000,
             @params = new
             {
@@ -102,7 +107,8 @@ public sealed class TtsClient : ITtsClient, IDisposable
         {
             text,
             voice_id = voiceId,
-            format = "pcm"
+            format = "pcm",
+            sample_rate = AudioPlayer.DefaultSampleRate
         };
 
         var json = JsonSerializer.Serialize(requestBody, JsonOptions);

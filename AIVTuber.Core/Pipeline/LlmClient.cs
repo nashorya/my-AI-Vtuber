@@ -146,6 +146,14 @@ public sealed class LlmClient : ILlmClient, IDisposable
         return messages;
     }
 
+    /// <summary>
+    /// Removes any complete [emotion:xxx] tags from the text. Partial/incomplete tags
+    /// (still being streamed) are left untouched so they can be stripped once complete.
+    /// Used by the TTS pipeline so emotion tags are never spoken aloud.
+    /// </summary>
+    internal static string StripEmotionTags(string text)
+        => EmotionTagRegex.Replace(text, string.Empty);
+
     internal static bool ContainsSentenceBoundary(string text, out string sentence, out string remainder)
     {
         var match = SentenceBoundaryRegex.Match(text);

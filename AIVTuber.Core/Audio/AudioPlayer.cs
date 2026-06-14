@@ -8,9 +8,21 @@ namespace AIVTuber.Core.Audio;
 /// </summary>
 public sealed class AudioPlayer : IDisposable
 {
+    /// <summary>
+    /// Sample rate (Hz) the player assumes for incoming raw PCM. TTS clients must
+    /// produce PCM at this rate (see TtsClient) or playback will be pitch/speed shifted.
+    /// </summary>
+    public const int DefaultSampleRate = 44100;
+
     private WaveOutEvent? _waveOut;
     private bool _disposed;
     private CancellationTokenSource? _playCts;
+    private readonly int _sampleRate;
+
+    public AudioPlayer(int sampleRate = DefaultSampleRate)
+    {
+        _sampleRate = sampleRate;
+    }
 
     /// <summary>
     /// Fired every ~30ms during playback with the RMS value (0.0 - 1.0 range typically).
@@ -50,7 +62,7 @@ public sealed class AudioPlayer : IDisposable
 
         try
         {
-            using var reader = new StreamAudioReader(audioStream);
+            using var reader = new StreamAudioReader(audioStream, _sampleRate);
             _waveOut = new WaveOutEvent();
             _waveOut.Init(reader);
 
@@ -99,7 +111,7 @@ public sealed class AudioPlayer : IDisposable
         Stop();
 
         var stream = new StreamingAudioStream();
-        var reader = new StreamAudioReader(stream);
+        var reader = new StreamAudioReader(stream, _sampleRate);
 
         _waveOut = new WaveOutEvent();
         _waveOut.Init(reader);
@@ -234,29 +246,16 @@ public sealed class AudioPlayer : IDisposable
     private sealed class StreamAudioReader : WaveStream
     {
         private readonly Stream _sourceStream;
-        private WaveFormat? _waveFormat;
-        private bool _formatRead;
+        private readonly WaveFormat _waveFormat;
 
-        public StreamAudioReader(Stream sourceStream)
+        public StreamAudioReader(Stream sourceStream, int sampleRate)
         {
             _sourceStream = sourceStream;
-            _formatRead = false;
+            // Raw 16-bit mono PCM at the configured sample rate (must match TTS output).
+            _waveFormat = new WaveFormat(sampleRate, 16, 1);
         }
 
-        public override WaveFormat WaveFormat
-        {
-            get
-            {
-                if (!_formatRead)
-                {
-                    // Try to determine format from the stream
-                    // Default to 16kHz 16-bit mono (our standard format)
-                    _waveFormat = new WaveFormat(16000, 16, 1);
-                    _formatRead = true;
-                }
-                return _waveFormat!;
-            }
-        }
+        public override WaveFormat WaveFormat => _waveFormat;
 
         public override long Length => _sourceStream.CanSeek ? _sourceStream.Length : 0;
 

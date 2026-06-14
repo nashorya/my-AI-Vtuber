@@ -143,6 +143,15 @@ public sealed class BotOrchestrator : IDisposable
                 await foreach (var token in _llm.StreamAsync(history, userInput, ct))
                 {
                     buffer.Append(token);
+                    // Strip [emotion:xxx] tags before sentence splitting so they are
+                    // never spoken by TTS. LlmClient fires OnEmotionDetected on the same
+                    // stream to drive VTS expressions, so we only need to remove them here.
+                    var cleaned = LlmClient.StripEmotionTags(buffer.ToString());
+                    if (cleaned.Length != buffer.Length)
+                    {
+                        buffer.Clear();
+                        buffer.Append(cleaned);
+                    }
                     if (LlmClient.ContainsSentenceBoundary(buffer.ToString(), out var sentence, out var remainder))
                     {
                         var trimmed = sentence.Trim();
@@ -184,11 +193,10 @@ public sealed class BotOrchestrator : IDisposable
     {
         var chunks = new List<byte[]>();
         await foreach (var chunk in _tts.StreamAsync(sentence, _ttsConfig.VoiceId, ct))
-        {
             chunks.Add(chunk);
-            OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
-        }
         if (chunks.Count == 0) return;
+        // Fire once per sentence, right before playback actually starts.
+        OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
         var audioData = chunks.SelectMany(c => c).ToArray();
         await _player.PlayAsync(audioData, ct);
     }

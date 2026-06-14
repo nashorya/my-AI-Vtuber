@@ -45,6 +45,27 @@ public class LlmClientTests
     }
 
     [Fact]
+    public void StripEmotionTags_RemovesCompleteTag()
+    {
+        // Emotion tags must never reach TTS.
+        Assert.Equal("你好世界", LlmClient.StripEmotionTags("[emotion:happy]你好世界"));
+        Assert.Equal("你好世界", LlmClient.StripEmotionTags("你好[emotion:sad]世界"));
+    }
+
+    [Fact]
+    public void StripEmotionTags_LeavesPartialTagUntouched()
+    {
+        // Incomplete tags (still streaming) are kept so they can be stripped once complete.
+        Assert.Equal("你好[emotion:ha", LlmClient.StripEmotionTags("你好[emotion:ha"));
+    }
+
+    [Fact]
+    public void StripEmotionTags_NoTag_ReturnsUnchanged()
+    {
+        Assert.Equal("你好世界", LlmClient.StripEmotionTags("你好世界"));
+    }
+
+    [Fact]
     public void Constructor_SetsProperties()
     {
         using var client = new LlmClient("https://api.test.com", "test-key", "test-model", "You are a bot");
