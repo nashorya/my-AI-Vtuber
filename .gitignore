@@ -16,7 +16,7 @@ publish/
 Thumbs.db
 
 # Runtime data
-memory/
+/memory/
 *.db
 *.db-shm
 *.db-wal
