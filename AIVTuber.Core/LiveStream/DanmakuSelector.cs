@@ -39,50 +39,67 @@ public sealed class DanmakuSelector
     }
 
     /// <summary>
-    /// Attempts to select the next danmaku for response.
-    /// Respects the minimum interval and speaking state.
+    /// Attempts to select the next danmaku for response. Respects the minimum
+    /// interval and speaking state. Fire-and-forget wrapper around
+    /// <see cref="TrySelectNextAsync"/> for event-handler call sites.
     /// </summary>
-    public void TrySelectNext()
+    public void TrySelectNext() => _ = TrySelectNextAsync();
+
+    /// <summary>
+    /// Attempts to select the next danmaku for response. The queue is drained and
+    /// the selection slot claimed under the lock, but priority scoring (which may
+    /// hit the DB) runs outside the lock and without blocking, so danmaku ingestion
+    /// is never stalled and the thread pool is never starved by sync-over-async.
+    /// </summary>
+    public async Task TrySelectNextAsync()
     {
+        List<Danmaku> candidates;
         lock (_lock)
         {
             if (_isSpeaking) return;
             if ((DateTime.UtcNow - _lastSelectionTime).TotalSeconds < _intervalSec) return;
             if (_queue.Count == 0) return;
 
-            var candidates = new List<(Danmaku danmaku, int priority)>();
-            while (_queue.Count > 0)
+            // Claim the slot now (so concurrent callers bail on the interval check),
+            // then snapshot the queue. No DB/IO is performed while holding the lock.
+            _lastSelectionTime = DateTime.UtcNow;
+            candidates = new List<Danmaku>(_queue.Count);
+            while (_queue.Count > 0) candidates.Add(_queue.Dequeue());
+        }
+
+        try
+        {
+            Danmaku? selected = null;
+            int bestPriority = int.MinValue;
+            foreach (var d in candidates)
             {
-                var d = _queue.Dequeue();
-                int priority = GetPriority(d);
-                candidates.Add((d, priority));
+                int priority = await GetPriorityAsync(d).ConfigureAwait(false);
+                if (priority > bestPriority) { bestPriority = priority; selected = d; }
             }
 
-            if (candidates.Count == 0) return;
-
-            // Sort by priority descending, pick highest
-            candidates.Sort((a, b) => b.priority.CompareTo(a.priority));
-            var selected = candidates[0].danmaku;
-
-            _lastSelectionTime = DateTime.UtcNow;
-            OnDanmakuSelected?.Invoke(this, selected);
+            if (selected is not null)
+                OnDanmakuSelected?.Invoke(this, selected);
             // Note: interaction recording is handled by the OnDanmakuSelected subscriber
             // (Program.cs) to avoid double-counting.
         }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[弹幕] 选择失败: {ex.Message}");
+        }
     }
 
-    /// <summary>Calculate priority score for a danmaku message.</summary>
-    private int GetPriority(Danmaku danmaku)
+    /// <summary>Calculate priority score for a danmaku message (async, off the lock).</summary>
+    private async Task<int> GetPriorityAsync(Danmaku danmaku)
     {
         int priority = 0;
 
-        // Regular viewer (async check, approximate with sync result for quick scoring)
+        // Regular viewer bonus.
         if (_viewerRepo is not null)
         {
             try
             {
-                var isRegular = _viewerRepo.IsRegularAsync(danmaku.Uid, danmaku.Platform).GetAwaiter().GetResult();
-                if (isRegular) priority += 10;
+                if (await _viewerRepo.IsRegularAsync(danmaku.Uid, danmaku.Platform).ConfigureAwait(false))
+                    priority += 10;
             }
             catch { /* ignore DB errors in priority scoring */ }
         }

@@ -227,6 +227,63 @@ public class DanmakuSelectorTests
         // Should not select when speaking
         // (interval check may prevent selection anyway)
     }
+
+    [Fact]
+    public async Task TrySelectNextAsync_SelectsQueuedDanmaku()
+    {
+        var selector = new DanmakuSelector(0);
+        Danmaku? selected = null;
+        selector.OnDanmakuSelected += (_, d) => selected = d;
+
+        selector.Enqueue(new Danmaku { Uid = "1", Content = "你好" });
+        await selector.TrySelectNextAsync();
+
+        Assert.NotNull(selected);
+        Assert.Equal("你好", selected!.Content);
+        Assert.Equal(0, selector.QueueCount);
+    }
+
+    [Fact]
+    public async Task TrySelectNextAsync_WhileSpeaking_DoesNotSelect()
+    {
+        var selector = new DanmakuSelector(0);
+        bool fired = false;
+        selector.OnDanmakuSelected += (_, _) => fired = true;
+
+        selector.SetSpeaking(true);
+        selector.Enqueue(new Danmaku { Uid = "1", Content = "你好" });
+        await selector.TrySelectNextAsync();
+
+        Assert.False(fired);
+    }
+
+    [Fact]
+    public async Task TrySelectNextAsync_EmptyQueue_DoesNotSelect()
+    {
+        var selector = new DanmakuSelector(0);
+        bool fired = false;
+        selector.OnDanmakuSelected += (_, _) => fired = true;
+
+        await selector.TrySelectNextAsync();
+
+        Assert.False(fired);
+    }
+
+    [Fact]
+    public async Task TrySelectNextAsync_PrefersQuestion()
+    {
+        // No ViewerRepo: question (+5) always outscores plain (0), even with the +0..2 random bonus.
+        var selector = new DanmakuSelector(0);
+        Danmaku? selected = null;
+        selector.OnDanmakuSelected += (_, d) => selected = d;
+
+        selector.Enqueue(new Danmaku { Uid = "a", Content = "随便说说" });
+        selector.Enqueue(new Danmaku { Uid = "b", Content = "这是什么？" });
+        await selector.TrySelectNextAsync();
+
+        Assert.NotNull(selected);
+        Assert.Equal("这是什么？", selected!.Content);
+    }
 }
 
 public class ObsConfigTests
