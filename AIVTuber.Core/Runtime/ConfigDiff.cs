@@ -87,8 +87,9 @@ public static class ConfigDiff
         return c;
     }
 
-    private static bool DictEqual(Dictionary<string, string> x, Dictionary<string, string> y)
+    private static bool DictEqual(Dictionary<string, string>? x, Dictionary<string, string>? y)
     {
+        x ??= []; y ??= [];
         if (x.Count != y.Count) return false;
         foreach (var kv in x)
             if (!y.TryGetValue(kv.Key, out var v) || v != kv.Value) return false;

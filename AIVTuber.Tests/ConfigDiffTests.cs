@@ -34,7 +34,15 @@ public class ConfigDiffTests
     }
 
     [Fact]
-    public void VtsHostChange_IsHeavyReconnect()
+    public void IdenticalNonEmptyEmotionMap_ReturnsNone()
+    {
+        var a = new AppConfig(); a.Vts.EmotionMap["happy"] = "1";
+        var b = new AppConfig(); b.Vts.EmotionMap["happy"] = "1";
+        Assert.Equal(RuntimeChange.None, ConfigDiff.Compute(a, b));
+    }
+
+    [Fact]
+    public void VtsConnectionChange_IsHeavyReconnect()
     {
         var b = Base();
         b.Vts.Port = 9000;
