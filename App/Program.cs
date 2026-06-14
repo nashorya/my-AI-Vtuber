@@ -77,12 +77,14 @@ public static class Program
         try
         {
             var modelDir = Path.Combine(AppContext.BaseDirectory, _config.Memory.EmbeddingModelPath);
-            if (Directory.Exists(modelDir) && File.Exists(Path.Combine(modelDir, "model.onnx")))
+            var hasModel = File.Exists(Path.Combine(modelDir, "model.onnx"));
+            var hasVocab = File.Exists(Path.Combine(modelDir, "vocab.txt"));
+            if (Directory.Exists(modelDir) && hasModel && hasVocab)
             {
                 embedding = new EmbeddingEngine(modelDir);
                 Console.WriteLine($"[记忆] 向量引擎已加载: {modelDir}");
             }
-            else Console.WriteLine("[记忆] 向量模型未找到，使用字符串相似度兜底");
+            else Console.WriteLine("[记忆] 向量模型或词表(vocab.txt)未找到，使用字符串相似度兜底");
         }
         catch (Exception ex) { Console.WriteLine($"[记忆] 向量引擎加载失败: {ex.Message}"); }
         _viewerRepo = new ViewerRepository(_memoryDb);

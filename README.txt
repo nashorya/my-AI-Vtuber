@@ -42,10 +42,11 @@ B站弹幕设置
 
 向量记忆（可选）
 --------------
-如需向量语义检索功能，下载 bge-small-zh-v1.5 ONNX 模型到 models/bge-small-zh/ 目录:
+如需向量语义检索功能，下载 bge-small-zh-v1.5 到 models/bge-small-zh/ 目录:
 - 下载地址: https://huggingface.co/BAAI/bge-small-zh-v1.5
-- 需要文件: model.onnx
-- 不配置时使用字符串相似度兜底
+- 需要文件: model.onnx 和 vocab.txt（两个都必需）
+- vocab.txt 用于 WordPiece 分词，缺失则无法加载向量引擎
+- 不配置(或缺文件)时使用字符串相似度兜底
 
 依赖
 ----

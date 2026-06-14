@@ -4,54 +4,63 @@ using Microsoft.ML.OnnxRuntime.Tensors;
 namespace AIVTuber.Core.Memory;
 
 /// <summary>
-/// Embedding engine using bge-small-zh ONNX model.
-/// Encodes text to float vectors and computes cosine similarity.
+/// Embedding engine using the bge-small-zh ONNX model. Encodes text to float vectors
+/// (real WordPiece tokenization via <see cref="WordPieceTokenizer"/>, [CLS]-token
+/// pooling, L2 normalization) and computes cosine similarity.
 /// </summary>
 public sealed class EmbeddingEngine : IDisposable
 {
     private readonly InferenceSession _session;
-    private readonly string _modelDir;
+    private readonly WordPieceTokenizer _tokenizer;
+    private readonly bool _needsTokenTypeIds;
     private bool _disposed;
 
+    /// <summary>
+    /// Loads model.onnx and vocab.txt from <paramref name="modelDir"/>. Both are required;
+    /// missing files throw so the caller can fall back to string similarity.
+    /// </summary>
     public EmbeddingEngine(string modelDir)
     {
-        _modelDir = modelDir;
         var modelPath = Path.Combine(modelDir, "model.onnx");
+        var vocabPath = Path.Combine(modelDir, "vocab.txt");
+        if (!File.Exists(modelPath)) throw new FileNotFoundException("ONNX model not found", modelPath);
+        if (!File.Exists(vocabPath)) throw new FileNotFoundException("vocab.txt not found", vocabPath);
+
+        _tokenizer = WordPieceTokenizer.FromFile(vocabPath);
         _session = new InferenceSession(modelPath);
+        _needsTokenTypeIds = _session.InputMetadata.ContainsKey("token_type_ids");
     }
 
     /// <summary>
-    /// Encodes text to a float embedding vector using bge-small-zh.
-    /// Applies mean pooling over token embeddings and L2 normalization.
+    /// Encodes text to a normalized embedding vector. Uses [CLS]-token pooling, which is
+    /// what bge models are trained to use for sentence representations.
     /// </summary>
     public float[] Encode(string text)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        // Simple tokenization: split on whitespace and CJK characters
-        var tokens = Tokenize(text);
-        if (tokens.Count == 0) tokens = ["[PAD]"];
-
-        // Build input tensors
-        var inputIds = tokens.Select(t => GetTokenId(t)).ToArray();
-        var attentionMask = Enumerable.Repeat(1L, tokens.Count).ToArray();
-
-        var dimensions = new[] { 1, tokens.Count };
-        var inputTensor = new DenseTensor<long>(inputIds.Select(l => (long)l).ToArray(), dimensions);
-        var maskTensor = new DenseTensor<long>(attentionMask, dimensions);
+        var ids = _tokenizer.Encode(text);
+        int seqLen = ids.Length;
+        var dims = new[] { 1, seqLen };
 
         var inputs = new List<NamedOnnxValue>
         {
-            NamedOnnxValue.CreateFromTensor("input_ids", inputTensor),
-            NamedOnnxValue.CreateFromTensor("attention_mask", maskTensor)
+            NamedOnnxValue.CreateFromTensor("input_ids", new DenseTensor<long>(ids, dims)),
+            NamedOnnxValue.CreateFromTensor("attention_mask",
+                new DenseTensor<long>(Enumerable.Repeat(1L, seqLen).ToArray(), dims)),
         };
+        if (_needsTokenTypeIds)
+            inputs.Add(NamedOnnxValue.CreateFromTensor("token_type_ids",
+                new DenseTensor<long>(new long[seqLen], dims)));
 
         using var results = _session.Run(inputs);
+        // First output is last_hidden_state with shape [1, seq_len, hidden_size].
         var output = results.First().AsEnumerable<float>().ToArray();
 
-        // output shape: [1, seq_len, hidden_size]
-        // Mean pooling + L2 normalize
-        return L2Normalize(MeanPool(output, tokens.Count));
+        int hiddenSize = output.Length / seqLen;
+        var cls = new float[hiddenSize];
+        Array.Copy(output, 0, cls, 0, hiddenSize); // [CLS] is the first token.
+        return L2Normalize(cls);
     }
 
     /// <summary>Computes cosine similarity between two embedding vectors.</summary>
@@ -87,60 +96,11 @@ public sealed class EmbeddingEngine : IDisposable
         return floats;
     }
 
-    private static float[] MeanPool(float[] output, int seqLen)
-    {
-        // Output is [1, seq_len, hidden_size], we assume hidden_size = output.Length / seqLen
-        int hiddenSize = output.Length / seqLen;
-        var result = new float[hiddenSize];
-
-        for (int h = 0; h < hiddenSize; h++)
-        {
-            float sum = 0;
-            for (int s = 0; s < seqLen; s++) sum += output[s * hiddenSize + h];
-            result[h] = sum / seqLen;
-        }
-
-        return result;
-    }
-
     private static float[] L2Normalize(float[] vector)
     {
         float norm = MathF.Sqrt(vector.Sum(v => v * v));
         if (norm < 1e-10f) return vector;
         return vector.Select(v => v / norm).ToArray();
-    }
-
-    /// <summary>Simple tokenizer for Chinese + English text.</summary>
-    private List<string> Tokenize(string text)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return ["[PAD]"];
-
-        var tokens = new List<string> { "[CLS]" };
-        var current = new System.Text.StringBuilder();
-
-        foreach (char c in text)
-        {
-            if (c > 0x4E00 || char.IsPunctuation(c) || char.IsWhiteSpace(c))
-            {
-                if (current.Length > 0) { tokens.Add(current.ToString()); current.Clear(); }
-                if (!char.IsWhiteSpace(c)) tokens.Add(c.ToString());
-            }
-            else
-            {
-                current.Append(c);
-            }
-        }
-        if (current.Length > 0) tokens.Add(current.ToString());
-        tokens.Add("[SEP]");
-
-        return tokens;
-    }
-
-    /// <summary>Maps a token string to an integer ID. Uses a simple hash-based approach for demo.</summary>
-    private int GetTokenId(string token)
-    {
-        // In production, load the model's vocab.txt for proper mapping
-        return Math.Abs(token.GetHashCode()) % 50000 + 1;
     }
 
     public void Dispose()
