@@ -1,0 +1,35 @@
+# Build outputs
+bin/
+obj/
+publish/
+
+# IDE
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime data
+memory/
+*.db
+*.db-shm
+*.db-wal
+
+# Config with real secrets (template is tracked)
+config.json
+
+# External sub-repos (no commits, causes submodule error)
+ZerolanLiveRobot/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# ONNX model files (large, download separately)
+models/

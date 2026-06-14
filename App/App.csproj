@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>AIVTuber</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>AIVTuber</RootNamespace>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AIVTuber.Core\AIVTuber.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\config.json.template" Link="config.json.template" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\danmaku_bridge.py" Link="danmaku_bridge.py" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\README.txt" Link="README.txt" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,62 @@
+{
+  "audio": {
+    "input_device_index": 0,
+    "use_loopback": false,
+    "loopback_device_name": "",
+    "vad_aggressiveness": 2,
+    "pre_speech_padding_ms": 200,
+    "post_speech_silence_ms": 500
+  },
+  "asr": {
+    "provider": "aliyun",
+    "api_key": "<your-asr-api-key>",
+    "app_id": "<your-asr-app-id>"
+  },
+  "llm": {
+    "base_url": "https://api.deepseek.com",
+    "api_key": "<your-llm-api-key>",
+    "model": "deepseek-chat",
+    "system_prompt": "你是一个VTuber...",
+    "max_history_tokens": 4096
+  },
+  "tts": {
+    "provider": "fish-audio",
+    "api_key": "<your-tts-api-key>",
+    "voice_id": "<your-voice-id>"
+  },
+  "vts": {
+    "host": "localhost",
+    "port": 8001,
+    "mouth_scale": 1.5,
+    "emotion_map": {
+      "happy": "<hotkey_id>",
+      "sad": "<hotkey_id>",
+      "angry": "<hotkey_id>",
+      "surprised": "<hotkey_id>"
+    }
+  },
+  "obs": {
+    "enable": false,
+    "host": "localhost",
+    "port": 4455,
+    "password": "",
+    "assistant_text_component": "AssistantText",
+    "user_text_component": "UserText",
+    "typewriter_interval_ms": 50
+  },
+  "memory": {
+    "database_path": "memory.db",
+    "extract_every_n_turns": 5,
+    "embedding_model_path": "models/bge-small-zh"
+  },
+  "bilibili": {
+    "enable": false,
+    "room_id": 0,
+    "sessdata": "<your-sessdata>",
+    "bili_jct": "<your-bili-jct>",
+    "buvid3": "<your-buvid3>",
+    "push_port": 19876,
+    "selection_interval_sec": 8,
+    "python_path": "python"
+  }
+}

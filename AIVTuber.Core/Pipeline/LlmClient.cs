@@ -1,0 +1,196 @@
+using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace AIVTuber.Core.Pipeline;
+
+/// <summary>
+/// LLM client compatible with OpenAI Chat Completions API format.
+/// Supports streaming output with sentence boundary detection and emotion tag parsing.
+/// </summary>
+public sealed class LlmClient : ILlmClient, IDisposable
+{
+    private readonly HttpClient _httpClient;
+    private readonly string _baseUrl;
+    private readonly string _apiKey;
+    private readonly string _model;
+    private readonly string _systemPrompt;
+
+    private static readonly Regex SentenceBoundaryRegex = new(@"[。！？；.!?\n]", RegexOptions.Compiled);
+    private static readonly Regex EmotionTagRegex = new(@"\[emotion:(\w+)\]", RegexOptions.Compiled);
+
+    public event EventHandler<string>? OnSentenceReady;
+    public event EventHandler<string>? OnEmotionDetected;
+
+    public LlmClient(string baseUrl, string apiKey, string model, string systemPrompt)
+    {
+        _baseUrl = baseUrl.TrimEnd('/');
+        _apiKey = apiKey;
+        _model = model;
+        _systemPrompt = systemPrompt;
+        _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+    }
+
+    public async IAsyncEnumerable<string> StreamAsync(
+        List<Message> history,
+        string userInput,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var messages = BuildMessages(history, userInput);
+
+        var requestBody = new
+        {
+            model = _model,
+            messages = messages,
+            stream = true
+        };
+
+        var json = JsonSerializer.Serialize(requestBody, JsonOptions);
+        var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/v1/chat/completions")
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+
+        using var response = await _httpClient.SendAsync(
+            request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new StreamReader(stream);
+
+        var buffer = new StringBuilder();
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var line = await reader.ReadLineAsync(cancellationToken);
+            if (string.IsNullOrEmpty(line)) continue;
+            if (!line.StartsWith("data: ")) continue;
+
+            var data = line[6..];
+            if (data == "[DONE]") break;
+
+            SseChunk? chunk;
+            try
+            {
+                chunk = JsonSerializer.Deserialize<SseChunk>(data, JsonOptions);
+            }
+            catch (JsonException)
+            {
+                continue;
+            }
+
+            if (chunk?.Choices is null || chunk.Choices.Count == 0) continue;
+
+            var delta = chunk.Choices[0].Delta;
+            if (delta?.Content is null) continue;
+
+            var token = delta.Content;
+            buffer.Append(token);
+            yield return token;
+
+            // Check for sentence boundaries and emit complete sentences
+            var currentText = buffer.ToString();
+            var emotionMatch = EmotionTagRegex.Match(currentText);
+            while (emotionMatch.Success)
+            {
+                OnEmotionDetected?.Invoke(this, emotionMatch.Groups[1].Value);
+                currentText = currentText.Remove(emotionMatch.Index, emotionMatch.Length);
+                buffer.Clear();
+                buffer.Append(currentText);
+                emotionMatch = EmotionTagRegex.Match(currentText);
+            }
+
+            if (ContainsSentenceBoundary(currentText, out var sentence, out var remainder))
+            {
+                var trimmed = sentence.Trim();
+                if (!string.IsNullOrWhiteSpace(trimmed))
+                {
+                    OnSentenceReady?.Invoke(this, trimmed);
+                }
+                buffer.Clear();
+                buffer.Append(remainder);
+            }
+        }
+
+        // Emit any remaining text as a sentence
+        var remaining = buffer.ToString().Trim();
+        if (!string.IsNullOrWhiteSpace(remaining))
+        {
+            OnSentenceReady?.Invoke(this, remaining);
+        }
+    }
+
+    private List<object> BuildMessages(List<Message> history, string userInput)
+    {
+        var messages = new List<object>();
+
+        // System prompt
+        if (!string.IsNullOrWhiteSpace(_systemPrompt))
+        {
+            messages.Add(new { role = "system", content = _systemPrompt });
+        }
+
+        // History
+        foreach (var msg in history)
+        {
+            messages.Add(new { role = msg.Role.ToString().ToLowerInvariant(), content = msg.Content });
+        }
+
+        // Current user input
+        messages.Add(new { role = "user", content = userInput });
+
+        return messages;
+    }
+
+    internal static bool ContainsSentenceBoundary(string text, out string sentence, out string remainder)
+    {
+        var match = SentenceBoundaryRegex.Match(text);
+        if (match.Success)
+        {
+            var splitIndex = match.Index + match.Length;
+            sentence = text[..splitIndex];
+            remainder = text[splitIndex..];
+            return true;
+        }
+
+        sentence = remainder = string.Empty;
+        return false;
+    }
+
+    public void Dispose()
+    {
+        _httpClient.Dispose();
+    }
+
+    // SSE response models
+    private sealed class SseChunk
+    {
+        [JsonPropertyName("choices")]
+        public List<SseChoice>? Choices { get; set; }
+    }
+
+    private sealed class SseChoice
+    {
+        [JsonPropertyName("delta")]
+        public SseDelta? Delta { get; set; }
+
+        [JsonPropertyName("finish_reason")]
+        public string? FinishReason { get; set; }
+    }
+
+    private sealed class SseDelta
+    {
+        [JsonPropertyName("content")]
+        public string? Content { get; set; }
+    }
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+}
