@@ -3,20 +3,17 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
     <UserControl.Resources>
-        <!-- Section header style -->
         <Style x:Key="SectionHeader" TargetType="TextBlock">
             <Setter Property="FontSize" Value="14" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
-        <!-- Field label style -->
         <Style x:Key="FieldLabel" TargetType="TextBlock">
             <Setter Property="FontSize" Value="12" />
             <Setter Property="Margin" Value="0,0,0,4" />
             <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
         </Style>
-        <!-- "秒生效" badge -->
         <Style x:Key="BadgeInstant" TargetType="Border">
             <Setter Property="CornerRadius" Value="5" />
             <Setter Property="Padding" Value="7,2" />
@@ -24,7 +21,6 @@
             <Setter Property="Background" Value="#1A4CAF50" />
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
-        <!-- "重连" badge -->
         <Style x:Key="BadgeReconnect" TargetType="Border">
             <Setter Property="CornerRadius" Value="5" />
             <Setter Property="Padding" Value="7,2" />
@@ -83,7 +79,23 @@
             <TextBlock Text="输入设备" Style="{StaticResource FieldLabel}" />
             <ComboBox ItemsSource="{Binding InputDevices}"
                       SelectedIndex="{Binding Working.Audio.InputDeviceIndex}"
-                      Margin="0,0,0,24" />
+                      Margin="0,0,0,6" />
+            <TextBlock Margin="0,0,0,4" FontSize="11"
+                       Foreground="{DynamicResource TextFillColorTertiaryBrush}">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Text" Value="" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding InputDevices.Count}" Value="0">
+                                <Setter Property="Text" Value="⚠ 未检测到录音设备 — 请检查 Windows 设置 › 隐私 › 麦克风权限，或手动填写索引↓" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+            <TextBlock Text="设备索引（手动填写，0=第一个设备）" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Audio.InputDeviceIndex, UpdateSourceTrigger=PropertyChanged}"
+                        Margin="0,0,0,24" />
 
             <!-- ── TTS ── -->
             <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
@@ -93,7 +105,7 @@
                 </Border>
             </StackPanel>
 
-            <TextBlock Text="Provider" Style="{StaticResource FieldLabel}" />
+            <TextBlock Text="Provider（fish-audio / minimax / aliyun）" Style="{StaticResource FieldLabel}" />
             <ui:TextBox Text="{Binding Working.Tts.Provider, UpdateSourceTrigger=PropertyChanged}"
                         PlaceholderText="fish-audio"
                         Margin="0,0,0,10" />
@@ -101,8 +113,20 @@
             <TextBlock Text="API Key（留空=不修改）" Style="{StaticResource FieldLabel}" />
             <ui:PasswordBox x:Name="TtsKey" PlaceholderText="…" Margin="0,0,0,10" />
 
-            <TextBlock Text="Voice ID" Style="{StaticResource FieldLabel}" />
+            <TextBlock Text="Voice ID（fish: reference_id；aliyun: 音色名如 longanyang）" Style="{StaticResource FieldLabel}" />
             <ui:TextBox Text="{Binding Working.Tts.VoiceId, UpdateSourceTrigger=PropertyChanged}"
+                        Margin="0,0,0,10" />
+
+            <TextBlock Text="Model（留空=默认：fish s1 / minimax speech-02-hd / aliyun cosyvoice-v3-flash）" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Tts.Model, UpdateSourceTrigger=PropertyChanged}"
+                        Margin="0,0,0,10" />
+
+            <TextBlock Text="GroupId（仅 MiniMax 必填）" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Tts.GroupId, UpdateSourceTrigger=PropertyChanged}"
+                        Margin="0,0,0,10" />
+
+            <TextBlock Text="语速 Speed（0.5–2.0）" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Tts.Speed, UpdateSourceTrigger=PropertyChanged}"
                         Margin="0,0,0,24" />
 
             <!-- ── ASR ── -->
@@ -113,12 +137,16 @@
                 </Border>
             </StackPanel>
 
-            <TextBlock Text="Provider" Style="{StaticResource FieldLabel}" />
+            <TextBlock Text="Provider（aliyun = DashScope 实时识别）" Style="{StaticResource FieldLabel}" />
             <ui:TextBox Text="{Binding Working.Asr.Provider, UpdateSourceTrigger=PropertyChanged}"
                         Margin="0,0,0,10" />
 
             <TextBlock Text="API Key（留空=不修改）" Style="{StaticResource FieldLabel}" />
-            <ui:PasswordBox x:Name="AsrKey" PlaceholderText="…" Margin="0,0,0,24" />
+            <ui:PasswordBox x:Name="AsrKey" PlaceholderText="…" Margin="0,0,0,10" />
+
+            <TextBlock Text="Model（留空=默认：aliyun paraformer-realtime-v2）" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Asr.Model, UpdateSourceTrigger=PropertyChanged}"
+                        Margin="0,0,0,24" />
 
             <!-- ── VTS ── -->
             <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
@@ -159,7 +187,7 @@
             </StackPanel>
             <ui:ToggleSwitch Content="启用联网搜索" IsEnabled="False" Margin="0,0,0,28" Opacity="0.45" />
 
-            <!-- ── Save button + status ── -->
+            <!-- ── Save ── -->
             <ui:Card Padding="16,12">
                 <DockPanel>
                     <ui:Button x:Name="SaveButton"
