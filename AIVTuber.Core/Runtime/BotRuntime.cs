@@ -39,6 +39,16 @@ public sealed class BotRuntime : IAsyncDisposable
     private BilibiliDanmakuClient? _danmaku;
     private DanmakuSelector? _selector;
 
+    private readonly PipelineStateTracker _stateTracker = new();
+
+    public PipelineStateTracker StateTracker => _stateTracker;
+    public event EventHandler? AiStartSpeaking;
+    public event EventHandler? AiStopSpeaking;
+
+    public bool VtsConnected => _vts is not null;
+    public bool ObsConnected => _obs is not null;
+    public bool DanmakuActive => _danmaku is not null;
+
     /// <summary>Fired with the user's recognized speech / danmaku text.</summary>
     public event EventHandler<string>? UserTranscript;
     /// <summary>Fired with each completed AI sentence.</summary>
@@ -66,6 +76,7 @@ public sealed class BotRuntime : IAsyncDisposable
         InitPipeline();
         await InitDanmakuAsync();
         StartAudio();
+        _stateTracker.Started();
     }
 
     private async Task InitMemoryAsync()
@@ -141,6 +152,7 @@ public sealed class BotRuntime : IAsyncDisposable
 
         _orchestrator.OnUserTranscript += async (_, text) =>
         {
+            _stateTracker.TranscriptReady(Environment.TickCount64);
             _conversation.AddUserMessage(text);
             UserTranscript?.Invoke(this, text);
             await _memoryExtractor.OnTurnAsync();
@@ -163,8 +175,19 @@ public sealed class BotRuntime : IAsyncDisposable
         // Stable speaking->selector bridge, added once per orchestrator. Null-safe so it works
         // whether or not danmaku is active, and reads the current _selector field after rebuilds —
         // so it never needs re-adding (which would accumulate handlers).
-        _orchestrator.OnAiStartSpeaking += (_, _) => _selector?.SetSpeaking(true);
-        _orchestrator.OnAiStopSpeaking += (_, _) => { _selector?.SetSpeaking(false); _selector?.TrySelectNext(); };
+        _orchestrator.OnAiStartSpeaking += (_, _) =>
+        {
+            _selector?.SetSpeaking(true);
+            _stateTracker.SpeakingStarted(Environment.TickCount64);
+            AiStartSpeaking?.Invoke(this, EventArgs.Empty);
+        };
+        _orchestrator.OnAiStopSpeaking += (_, _) =>
+        {
+            _selector?.SetSpeaking(false);
+            _selector?.TrySelectNext();
+            _stateTracker.SpeakingStopped();
+            AiStopSpeaking?.Invoke(this, EventArgs.Empty);
+        };
     }
 
     private void StartAudio()
@@ -174,6 +197,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _mic.AudioFrameAvailable += (_, buf) => _vad.Feed(buf);
         _vad.SpeechDetected += async (_, seg) =>
         {
+            _stateTracker.InputStarted(Environment.TickCount64);
             var history = _conversation.BuildMessages();
             await _orchestrator.ProcessSpeechAsync(seg, history);
         };
@@ -198,6 +222,7 @@ public sealed class BotRuntime : IAsyncDisposable
         var selector = new DanmakuSelector(_config.Bilibili.SelectionIntervalSec, _viewerRepo);
         selector.OnDanmakuSelected += async (_, d) =>
         {
+            _stateTracker.TextInputStarted(Environment.TickCount64);
             await _viewerRepo.RecordInteractionAsync(d.Uid, d.Platform, d.Username);
             var history = _conversation.BuildMessages(d.Uid);
             await _orchestrator.ProcessTextAsync(d.Content, history);

@@ -149,6 +149,12 @@ public sealed class DanmakuSelector
         get { lock (_lock) { return _items.Count; } }
     }
 
+    /// <summary>Snapshot of the current backlog (oldest first), for display.</summary>
+    public IReadOnlyList<Danmaku> Snapshot()
+    {
+        lock (_lock) { return _items.ToArray(); }
+    }
+
     /// <summary>Clear all queued danmaku.</summary>
     public void Clear()
     {
