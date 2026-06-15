@@ -26,6 +26,7 @@ public sealed class BotRuntime : IAsyncDisposable
     private FactRepository _factRepo = null!;
     private ConversationManager _conversation = null!;
     private MemoryExtractor _memoryExtractor = null!;
+    private LlmClient _memoryLlm = null!; // owned by BotRuntime so it can be disposed (MemoryExtractor is not IDisposable)
     private VtsClient? _vts;
     private ObsClient? _obs;
     private AsrClient _asr = null!;
@@ -90,9 +91,15 @@ public sealed class BotRuntime : IAsyncDisposable
         _factRepo = new FactRepository(_memoryDb, _embedding);
         _conversation = new ConversationManager(_config.Llm);
         _conversation.SetMemory(_viewerRepo, _factRepo);
-        _memoryExtractor = new MemoryExtractor(
-            new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Llm.SystemPrompt),
-            _factRepo, _config.Memory, _conversation);
+        BuildMemoryExtractor();
+    }
+
+    /// <summary>(Re)creates the memory extractor and its owned LlmClient, disposing the previous one.</summary>
+    private void BuildMemoryExtractor()
+    {
+        _memoryLlm?.Dispose();
+        _memoryLlm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Llm.SystemPrompt);
+        _memoryExtractor = new MemoryExtractor(_memoryLlm, _factRepo, _config.Memory, _conversation);
     }
 
     private async Task InitVtsAsync()
@@ -152,6 +159,12 @@ public sealed class BotRuntime : IAsyncDisposable
             _orchestrator.OnUserTranscript += async (_, t)
                 => await _obs.SetSubtitleAsync($"[用户] {t}", _config.Obs.UserTextComponent, _cts.Token);
         }
+
+        // Stable speaking->selector bridge, added once per orchestrator. Null-safe so it works
+        // whether or not danmaku is active, and reads the current _selector field after rebuilds —
+        // so it never needs re-adding (which would accumulate handlers).
+        _orchestrator.OnAiStartSpeaking += (_, _) => _selector?.SetSpeaking(true);
+        _orchestrator.OnAiStopSpeaking += (_, _) => { _selector?.SetSpeaking(false); _selector?.TrySelectNext(); };
     }
 
     private void StartAudio()
@@ -170,19 +183,26 @@ public sealed class BotRuntime : IAsyncDisposable
     private async Task InitDanmakuAsync()
     {
         if (!_config.Bilibili.Enable) { _selector = null; _danmaku = null; return; }
-        _selector = new DanmakuSelector(_config.Bilibili.SelectionIntervalSec, _viewerRepo);
+        _selector = CreateSelector();
         _danmaku = new BilibiliDanmakuClient(_config.Bilibili);
-        _danmaku.OnDanmaku += (_, d) => { _selector.Enqueue(d); _selector.TrySelectNext(); };
-        _selector.OnDanmakuSelected += async (_, d) =>
+        _danmaku.OnDanmaku += (_, d) => { _selector?.Enqueue(d); _selector?.TrySelectNext(); };
+        try { await _danmaku.StartAsync(_cts.Token); }
+        catch (Exception ex) { Console.WriteLine($"[弹幕] 启动失败: {ex.Message}"); }
+    }
+
+    /// <summary>Creates a DanmakuSelector with its selection handler wired. Speaking state is
+    /// bridged from the orchestrator (see InitPipeline), and OnDanmaku reads the _selector field,
+    /// so a rebuilt selector is picked up without re-wiring the danmaku client.</summary>
+    private DanmakuSelector CreateSelector()
+    {
+        var selector = new DanmakuSelector(_config.Bilibili.SelectionIntervalSec, _viewerRepo);
+        selector.OnDanmakuSelected += async (_, d) =>
         {
             await _viewerRepo.RecordInteractionAsync(d.Uid, d.Platform, d.Username);
             var history = _conversation.BuildMessages(d.Uid);
             await _orchestrator.ProcessTextAsync(d.Content, history);
         };
-        _orchestrator.OnAiStartSpeaking += (_, _) => _selector.SetSpeaking(true);
-        _orchestrator.OnAiStopSpeaking += (_, _) => { _selector.SetSpeaking(false); _selector.TrySelectNext(); };
-        try { await _danmaku.StartAsync(_cts.Token); }
-        catch (Exception ex) { Console.WriteLine($"[弹幕] 启动失败: {ex.Message}"); }
+        return selector;
     }
 
     /// <summary>
@@ -201,14 +221,11 @@ public sealed class BotRuntime : IAsyncDisposable
         if (change.HasFlag(RuntimeChange.RestartAudio)) RestartAudio();
         if (change.HasFlag(RuntimeChange.ReconnectVts)) await ReconnectVtsAsync();
         if (change.HasFlag(RuntimeChange.ReconnectObs)) await ReconnectObsAsync();
-        if (change.HasFlag(RuntimeChange.RestartDanmaku) || change.HasFlag(RuntimeChange.RebuildDanmakuSelector))
-            await RestartDanmakuAsync();
+        if (change.HasFlag(RuntimeChange.RestartDanmaku)) await RestartDanmakuAsync();
+        else if (change.HasFlag(RuntimeChange.RebuildDanmakuSelector)) RebuildSelector(); // light: in-memory only
 
         // Light: memory extraction cadence updated in place.
-        if (change.HasFlag(RuntimeChange.UpdateMemoryParams))
-            _memoryExtractor = new MemoryExtractor(
-                new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Llm.SystemPrompt),
-                _factRepo, _config.Memory, _conversation);
+        if (change.HasFlag(RuntimeChange.UpdateMemoryParams)) BuildMemoryExtractor();
 
         // Recreating any pipeline client, or changing the VTS/OBS params the orchestrator
         // and subtitle handlers capture, requires rebuilding + re-wiring the orchestrator.
@@ -236,14 +253,14 @@ public sealed class BotRuntime : IAsyncDisposable
 
     private async Task ReconnectVtsAsync()
     {
-        if (_vts is not null) await _vts.DisconnectAsync();
+        if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); }
         await InitVtsAsync();
         RewirePipeline();
     }
 
     private async Task ReconnectObsAsync()
     {
-        if (_obs is not null) await _obs.DisconnectAsync();
+        if (_obs is not null) { await _obs.DisconnectAsync(); _obs.Dispose(); }
         InitObs();
         RewirePipeline();
     }
@@ -256,19 +273,18 @@ public sealed class BotRuntime : IAsyncDisposable
         await InitDanmakuAsync();
     }
 
-    /// <summary>
-    /// Rebuilds the orchestrator + pipeline clients (InitPipeline disposes the old ones and
-    /// reuses the AudioPlayer) and re-attaches the danmaku speaking handlers if danmaku is active.
-    /// </summary>
-    private void RewirePipeline()
+    /// <summary>Light path: rebuild only the in-memory selector (e.g. selection interval changed),
+    /// leaving the danmaku client/connection alone. The danmaku client's OnDanmaku and the
+    /// orchestrator's speaking bridge both read the _selector field, so no re-wiring is needed.</summary>
+    private void RebuildSelector()
     {
-        InitPipeline();
-        if (_selector is not null)
-        {
-            _orchestrator.OnAiStartSpeaking += (_, _) => _selector.SetSpeaking(true);
-            _orchestrator.OnAiStopSpeaking += (_, _) => { _selector.SetSpeaking(false); _selector.TrySelectNext(); };
-        }
+        if (_selector is null) return; // danmaku not active
+        _selector = CreateSelector();
     }
+
+    /// <summary>Rebuilds the orchestrator + pipeline clients. InitPipeline disposes the old ones,
+    /// reuses the AudioPlayer, and re-adds the stable speaking bridge — so nothing else is needed here.</summary>
+    private void RewirePipeline() => InitPipeline();
 
     public async ValueTask DisposeAsync()
     {
@@ -276,13 +292,14 @@ public sealed class BotRuntime : IAsyncDisposable
         _mic?.Stop(); _mic?.Dispose();
         _vad?.Dispose();
         if (_danmaku is not null) { await _danmaku.StopAsync(); _danmaku.Dispose(); }
-        if (_vts is not null) await _vts.DisconnectAsync();
-        if (_obs is not null) await _obs.DisconnectAsync();
+        if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); }
+        if (_obs is not null) { await _obs.DisconnectAsync(); _obs.Dispose(); }
         _orchestrator?.Dispose();
         _tts?.Dispose();
         _llm?.Dispose();
         _asr?.Dispose();
         _player?.Dispose();
+        _memoryLlm?.Dispose();
         _embedding?.Dispose();
         _memoryDb?.Dispose();
         _cts.Dispose();
