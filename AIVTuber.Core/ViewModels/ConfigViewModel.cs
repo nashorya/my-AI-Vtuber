@@ -31,17 +31,32 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
     private string _status = "";
     public string Status { get => _status; private set => SetField(ref _status, value); }
 
+    private bool _isSaving;
+    /// <summary>True while a save+apply is in flight. Bind the button's IsEnabled to its inverse.</summary>
+    public bool IsSaving { get => _isSaving; private set => SetField(ref _isSaving, value); }
+
+    /// <summary>Persist the working copy, then hot-apply it. Re-entrant calls (e.g. a double-click)
+    /// are dropped while one is in flight, so ApplyConfigAsync never rebuilds modules concurrently.</summary>
     public async Task SaveAsync()
     {
-        _save(Working);
+        if (IsSaving) return;
+        IsSaving = true;
         try
         {
-            await _applyAsync(Working);
-            Status = $"已保存并应用 · {DateTime.Now:HH:mm}";
+            _save(Working);
+            try
+            {
+                await _applyAsync(Working);
+                Status = $"已保存并应用 · {DateTime.Now:HH:mm}";
+            }
+            catch (Exception ex)
+            {
+                Status = $"已保存，但应用失败: {ex.Message}";
+            }
         }
-        catch (Exception ex)
+        finally
         {
-            Status = $"已保存，但应用失败: {ex.Message}";
+            IsSaving = false;
         }
     }
 
@@ -49,7 +64,8 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
     internal static AppConfig Clone(AppConfig c)
     {
         var json = JsonSerializer.Serialize(c, ConfigManager.JsonOptions);
-        return JsonSerializer.Deserialize<AppConfig>(json, ConfigManager.JsonOptions)!;
+        return JsonSerializer.Deserialize<AppConfig>(json, ConfigManager.JsonOptions)
+               ?? throw new InvalidOperationException("Failed to clone AppConfig via JSON round-trip.");
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

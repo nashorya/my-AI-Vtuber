@@ -58,4 +58,42 @@ public class ConfigViewModelTests
         Assert.NotNull(saved);
         Assert.Contains("应用失败", vm.Status);
     }
+
+    [Fact]
+    public async Task SaveAsync_DropsReentrantCallWhileInFlight()
+    {
+        var gate = new TaskCompletionSource();
+        var applyCount = 0;
+        var vm = Make(apply: async _ => { applyCount++; await gate.Task; });
+
+        var first = vm.SaveAsync();   // enters, awaits the gate
+        Assert.True(vm.IsSaving);
+        await vm.SaveAsync();         // re-entrant -> dropped immediately
+        gate.SetResult();
+        await first;
+
+        Assert.Equal(1, applyCount);
+        Assert.False(vm.IsSaving);
+    }
+
+    [Fact]
+    public void Working_DeepCopies_EmotionMapDictionary()
+    {
+        var current = new AppConfig();
+        current.Vts.EmotionMap["happy"] = "1";
+        var vm = Make(current);
+        vm.Working.Vts.EmotionMap["happy"] = "999";
+        Assert.Equal("1", current.Vts.EmotionMap["happy"]); // original dictionary untouched
+        Assert.NotSame(current.Vts.EmotionMap, vm.Working.Vts.EmotionMap);
+    }
+
+    [Fact]
+    public async Task SaveAsync_RaisesPropertyChangedForStatus()
+    {
+        var vm = Make();
+        var statusNotified = false;
+        vm.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(ConfigViewModel.Status)) statusNotified = true; };
+        await vm.SaveAsync();
+        Assert.True(statusNotified);
+    }
 }
