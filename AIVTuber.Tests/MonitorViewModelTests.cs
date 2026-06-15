@@ -50,4 +50,17 @@ public class MonitorViewModelTests
         Assert.False(vm.ObsConnected);
         Assert.False(vm.DanmakuActive);
     }
+
+    [Fact]
+    public void SetField_SuppressesNotificationWhenValueUnchanged()
+    {
+        var (rt, vm) = Make();
+        rt.StateTracker.InputStarted(1000); // -> Thinking (first State change)
+        var stateNotifications = 0;
+        vm.PropertyChanged += (_, e) => { if (e.PropertyName == nameof(MonitorViewModel.State)) stateNotifications++; };
+
+        rt.StateTracker.TranscriptReady(1100); // stays Thinking -> State must NOT notify again
+
+        Assert.Equal(0, stateNotifications);
+    }
 }

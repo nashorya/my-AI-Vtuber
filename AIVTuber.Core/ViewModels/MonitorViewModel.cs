@@ -21,6 +21,9 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
         _runtime = runtime;
         _dispatch = dispatch;
 
+        // No unsubscription: the runtime and this VM are both app-lifetime singletons
+        // (one window). If the VM ever becomes shorter-lived than the runtime, make this
+        // IDisposable and detach these handlers.
         _runtime.StateTracker.Changed += (_, _) => _dispatch(OnStateChanged);
         _runtime.UserTranscript += (_, t) => _dispatch(() => UserText = t);
         _runtime.SentenceReady += (_, s) => _dispatch(() => AssistantText = s);
@@ -64,11 +67,11 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
     private string _emotion = "";
     public string Emotion { get => _emotion; private set => SetField(ref _emotion, value); }
 
-    private bool _vts;
-    public bool VtsConnected { get => _vts; private set => SetField(ref _vts, value); }
+    private bool _vtsConnected;
+    public bool VtsConnected { get => _vtsConnected; private set => SetField(ref _vtsConnected, value); }
 
-    private bool _obs;
-    public bool ObsConnected { get => _obs; private set => SetField(ref _obs, value); }
+    private bool _obsConnected;
+    public bool ObsConnected { get => _obsConnected; private set => SetField(ref _obsConnected, value); }
 
     private bool _danmakuActive;
     public bool DanmakuActive { get => _danmakuActive; private set => SetField(ref _danmakuActive, value); }
