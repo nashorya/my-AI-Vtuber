@@ -6,53 +6,66 @@ public enum PipelineState { Idle, Listening, Thinking, Speaking }
 /// <summary>
 /// Tracks the pipeline's high-level state and computes ASR / first-sentence latency.
 /// Pure logic: callers pass monotonic millisecond timestamps (e.g. Environment.TickCount64),
-/// so it is fully unit-testable.
+/// so it is fully unit-testable. Thread-safe: the voice (audio thread) and danmaku
+/// (thread-pool) flows can call concurrently, and the monitor reads State/latency from the
+/// UI thread, so all access is guarded by a lock. The Changed event is raised outside the
+/// lock to avoid holding it during subscriber callbacks.
 /// </summary>
 public sealed class PipelineStateTracker
 {
-    private long _inputStartMs;
-    private long _transcriptMs;
+    private readonly object _lock = new();
+    private long? _inputStartMs;
+    private long? _transcriptMs;
+    private PipelineState _state = PipelineState.Idle;
+    private long? _lastAsr;
+    private long? _lastFirst;
 
-    public PipelineState State { get; private set; } = PipelineState.Idle;
-    public long? LastAsrLatencyMs { get; private set; }
-    public long? LastFirstSentenceMs { get; private set; }
+    public PipelineState State { get { lock (_lock) { return _state; } } }
+    public long? LastAsrLatencyMs { get { lock (_lock) { return _lastAsr; } } }
+    public long? LastFirstSentenceMs { get { lock (_lock) { return _lastFirst; } } }
 
     public event EventHandler? Changed;
 
-    public void Started() => Set(PipelineState.Listening);
+    public void Started() => Transition(() => _state = PipelineState.Listening);
 
-    public void InputStarted(long nowMs)
+    /// <summary>Voice input detected by VAD; start the ASR timer.</summary>
+    public void InputStarted(long nowMs) => Transition(() =>
     {
         _inputStartMs = nowMs;
-        Set(PipelineState.Thinking);
-    }
+        _state = PipelineState.Thinking;
+    });
 
-    public void TranscriptReady(long nowMs)
+    /// <summary>ASR transcript ready; record ASR latency, start the first-sentence timer.</summary>
+    public void TranscriptReady(long nowMs) => Transition(() =>
     {
-        if (_inputStartMs != 0) LastAsrLatencyMs = nowMs - _inputStartMs;
+        if (_inputStartMs is { } start) _lastAsr = nowMs - start;
         _transcriptMs = nowMs;
-        Set(PipelineState.Thinking);
-    }
+        _state = PipelineState.Thinking;
+    });
 
-    public void TextInputStarted(long nowMs)
+    /// <summary>Text (danmaku) input; no ASR step, start the first-sentence timer.</summary>
+    public void TextInputStarted(long nowMs) => Transition(() =>
     {
-        _inputStartMs = 0;
-        LastAsrLatencyMs = null;
+        _inputStartMs = null;
+        _lastAsr = null;
         _transcriptMs = nowMs;
-        Set(PipelineState.Thinking);
-    }
+        _state = PipelineState.Thinking;
+    });
 
-    public void SpeakingStarted(long nowMs)
+    /// <summary>AI audio playback started; record first-sentence latency (null if the turn had no
+    /// tracked input start, e.g. after an interruption, so the monitor never shows a stale value).</summary>
+    public void SpeakingStarted(long nowMs) => Transition(() =>
     {
-        if (_transcriptMs != 0) { LastFirstSentenceMs = nowMs - _transcriptMs; _transcriptMs = 0; }
-        Set(PipelineState.Speaking);
-    }
+        _lastFirst = _transcriptMs is { } t ? nowMs - t : null;
+        _transcriptMs = null;
+        _state = PipelineState.Speaking;
+    });
 
-    public void SpeakingStopped() => Set(PipelineState.Listening);
+    public void SpeakingStopped() => Transition(() => _state = PipelineState.Listening);
 
-    private void Set(PipelineState s)
+    private void Transition(Action mutate)
     {
-        State = s;
+        lock (_lock) { mutate(); }
         Changed?.Invoke(this, EventArgs.Empty);
     }
 }
