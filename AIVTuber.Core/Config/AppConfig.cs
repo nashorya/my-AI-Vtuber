@@ -32,6 +32,9 @@ public sealed class AsrConfig
     public string Provider { get; set; } = "aliyun";
     public string ApiKey { get; set; } = string.Empty;
     public string AppId { get; set; } = string.Empty;
+    /// <summary>Model name. Provider-specific; empty = the provider's default
+    /// (e.g. aliyun/dashscope → paraformer-realtime-v2).</summary>
+    public string Model { get; set; } = string.Empty;
 }
 
 public sealed class LlmConfig
@@ -48,6 +51,13 @@ public sealed class TtsConfig
     public string Provider { get; set; } = "fish-audio";
     public string ApiKey { get; set; } = string.Empty;
     public string VoiceId { get; set; } = string.Empty;
+    /// <summary>Model name. Provider-specific; empty = the provider's default
+    /// (fish → s1, minimax → speech-02-hd, aliyun → cosyvoice-v3-flash).</summary>
+    public string Model { get; set; } = string.Empty;
+    /// <summary>MiniMax only: the GroupId issued with the API key (required by t2a_v2).</summary>
+    public string GroupId { get; set; } = string.Empty;
+    /// <summary>Synthesis speed multiplier (0.5–2.0).</summary>
+    public double Speed { get; set; } = 1.0;
 }
 
 public sealed class VtsConfig

@@ -272,16 +272,63 @@ public class TtsClientTests
     [Fact]
     public void Constructor_SetsProvider()
     {
-        using var client = new TtsClient("fish-audio", "test-key");
+        using var client = new TtsClient(new TtsConfig { Provider = "fish-audio", ApiKey = "test-key" });
         Assert.NotNull(client);
     }
 
     [Fact]
     public void Dispose_DoesNotThrow()
     {
-        var client = new TtsClient("fish-audio", "test-key");
+        var client = new TtsClient(new TtsConfig { Provider = "fish-audio", ApiKey = "test-key" });
         client.Dispose();
         client.Dispose();
+    }
+
+    [Fact]
+    public void BuildFishRequestJson_PutsSpeedUnderProsody_NotParams_NoBitrate()
+    {
+        var json = TtsClient.BuildFishRequestJson("你好", "voice-1", speed: 1.2, sampleRate: 44100);
+        Assert.Contains("\"prosody\"", json);
+        Assert.Contains("\"speed\":1.2", json);
+        Assert.Contains("\"reference_id\":\"voice-1\"", json);
+        Assert.Contains("\"sample_rate\":44100", json);
+        Assert.Contains("\"format\":\"pcm\"", json);
+        Assert.DoesNotContain("bitrate", json);   // old bogus field gone
+        Assert.DoesNotContain("params", json);     // speed must NOT be under `params`
+    }
+
+    [Fact]
+    public void BuildMiniMaxRequestJson_HasVoiceAndAudioSettings()
+    {
+        var json = TtsClient.BuildMiniMaxRequestJson("你好", "male-qn", "speech-02-hd", speed: 1.0, sampleRate: 44100);
+        Assert.Contains("\"model\":\"speech-02-hd\"", json);
+        Assert.Contains("\"voice_setting\"", json);
+        Assert.Contains("\"voice_id\":\"male-qn\"", json);
+        Assert.Contains("\"audio_setting\"", json);
+        Assert.Contains("\"sample_rate\":44100", json);
+        Assert.Contains("\"format\":\"pcm\"", json);
+    }
+
+    [Fact]
+    public void ParseMiniMaxAudio_HexDecodesData()
+    {
+        var json = """{"data":{"audio":"0a0b0c","status":2},"base_resp":{"status_code":0,"status_msg":"success"}}""";
+        Assert.Equal(new byte[] { 0x0a, 0x0b, 0x0c }, TtsClient.ParseMiniMaxAudio(json));
+    }
+
+    [Fact]
+    public void ParseMiniMaxAudio_ThrowsOnNonZeroStatus()
+    {
+        var json = """{"base_resp":{"status_code":1004,"status_msg":"insufficient balance"}}""";
+        var ex = Assert.Throws<InvalidOperationException>(() => TtsClient.ParseMiniMaxAudio(json));
+        Assert.Contains("insufficient balance", ex.Message);
+    }
+
+    [Fact]
+    public void ParseMiniMaxAudio_ReturnsEmptyWhenNoAudio()
+    {
+        var json = """{"data":{"status":2},"base_resp":{"status_code":0}}""";
+        Assert.Empty(TtsClient.ParseMiniMaxAudio(json));
     }
 }
 

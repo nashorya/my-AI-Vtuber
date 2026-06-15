@@ -146,7 +146,7 @@ public sealed class BotRuntime : IAsyncDisposable
             _config.Asr.Provider.Contains("deepseek") ? $"https://{_config.Asr.Provider}" : $"https://api.{_config.Asr.Provider}.com",
             _config.Asr.ApiKey);
         _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Llm.SystemPrompt);
-        _tts = new TtsClient(_config.Tts.Provider, _config.Tts.ApiKey);
+        _tts = new TtsClient(_config.Tts);
         _player ??= new AudioPlayer();
         _orchestrator = new BotOrchestrator(_asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts);
 
