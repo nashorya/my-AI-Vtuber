@@ -44,24 +44,24 @@ public sealed class ObsClient : IDisposable
                 throw new InvalidOperationException("Expected Hello message from OBS");
 
             var helloData = hello.Value.GetProperty("d");
-            var challenge = helloData.GetProperty("challenge").GetString()!;
-            var salt = helloData.GetProperty("salt").GetString()!;
 
-            // Step 2: Compute auth = Base64(SHA256(Base64(SHA256(password + salt)) + challenge))
-            var auth = ComputeAuth(_config.Password, salt, challenge);
-
-            // Step 3: Send Identify (op=1) with auth
-            var identify = new Dictionary<string, object>
+            // Step 2: auth is only required when Hello.d contains an `authentication` object
+            // (with challenge+salt). If absent, the server has authentication disabled.
+            var identifyData = new Dictionary<string, object>
             {
-                ["op"] = 1,
-                ["d"] = new Dictionary<string, object>
-                {
-                    ["rpcVersion"] = 1,
-                    ["authentication"] = auth,
-                    ["eventSubscriptions"] = 0
-                }
+                ["rpcVersion"] = 1,
+                ["eventSubscriptions"] = 0,
             };
-            await SendAsync(identify, ct).ConfigureAwait(false);
+            if (helloData.TryGetProperty("authentication", out var authObj))
+            {
+                var challenge = authObj.GetProperty("challenge").GetString()!;
+                var salt = authObj.GetProperty("salt").GetString()!;
+                // auth = Base64(SHA256(Base64(SHA256(password + salt)) + challenge))
+                identifyData["authentication"] = ComputeAuth(_config.Password, salt, challenge);
+            }
+
+            // Step 3: Send Identify (op=1)
+            await SendAsync(new Dictionary<string, object> { ["op"] = 1, ["d"] = identifyData }, ct).ConfigureAwait(false);
 
             // Step 4: Receive Identified (op=2)
             var identified = await ReceiveMessageAsync(ct).ConfigureAwait(false);

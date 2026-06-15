@@ -47,6 +47,6 @@ public sealed class VtsHotkeyInfo
 /// </summary>
 public sealed class VtsHotkeyListResponse
 {
-    [JsonPropertyName("hotkeys")]
+    [JsonPropertyName("availableHotkeys")]
     public List<VtsHotkeyInfo>? Hotkeys { get; set; }
 }

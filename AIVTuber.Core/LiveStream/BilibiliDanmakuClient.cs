@@ -109,7 +109,9 @@ public sealed class BilibiliDanmakuClient : IDisposable
         si.Environment["SESSDATA"] = _config.Sessdata;
         si.Environment["BILI_JCT"] = _config.BiliJct;
         si.Environment["BUVID3"] = _config.Buvid3;
-        si.Environment["PUSH_URL"] = $"http://localhost:{_config.PushPort}/danmaku";
+        // Trailing slash so it matches the HttpListener prefix "/danmaku/" (a POST to "/danmaku"
+        // without the slash would not match the prefix).
+        si.Environment["PUSH_URL"] = $"http://localhost:{_config.PushPort}/danmaku/";
 
         _pythonProcess = new Process { StartInfo = si, EnableRaisingEvents = true };
         _pythonProcess.Exited += OnPythonProcessExited;
@@ -127,6 +129,9 @@ public sealed class BilibiliDanmakuClient : IDisposable
 
     private void KillOrphanedProcess()
     {
+        // `lsof` is Unix-only; on Windows this best-effort cleanup is skipped (HttpListener will
+        // surface a clear error if the push port is genuinely in use).
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
         try
         {
             using var proc = Process.Start(new ProcessStartInfo
