@@ -19,6 +19,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="WPF-UI" Version="3.*" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Include="..\config.json.template" Link="config.json.template" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\danmaku_bridge.py" Link="danmaku_bridge.py" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\README.txt" Link="README.txt" CopyToPublishDirectory="PreserveNewest" />

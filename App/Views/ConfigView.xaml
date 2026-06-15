@@ -1,56 +1,178 @@
 <UserControl x:Class="AIVTuber.App.Views.ConfigView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+    <UserControl.Resources>
+        <!-- Section header style -->
+        <Style x:Key="SectionHeader" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <!-- Field label style -->
+        <Style x:Key="FieldLabel" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Margin" Value="0,0,0,4" />
+            <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+        </Style>
+        <!-- "秒生效" badge -->
+        <Style x:Key="BadgeInstant" TargetType="Border">
+            <Setter Property="CornerRadius" Value="5" />
+            <Setter Property="Padding" Value="7,2" />
+            <Setter Property="Margin" Value="10,0,0,0" />
+            <Setter Property="Background" Value="#1A4CAF50" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <!-- "重连" badge -->
+        <Style x:Key="BadgeReconnect" TargetType="Border">
+            <Setter Property="CornerRadius" Value="5" />
+            <Setter Property="Padding" Value="7,2" />
+            <Setter Property="Margin" Value="10,0,0,0" />
+            <Setter Property="Background" Value="#1AE8A000" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style x:Key="BadgeInstantText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="Foreground" Value="#4CAF50" />
+        </Style>
+        <Style x:Key="BadgeReconnectText" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="Foreground" Value="#E8A000" />
+        </Style>
+    </UserControl.Resources>
+
     <ScrollViewer VerticalScrollBarVisibility="Auto">
-        <StackPanel Margin="16" MaxWidth="640" HorizontalAlignment="Left">
+        <StackPanel Margin="20" MaxWidth="640" HorizontalAlignment="Left">
 
-            <TextBlock Text="LLM 大模型 · 秒生效" FontWeight="Bold" Margin="0,0,0,6" />
-            <TextBlock Text="Base URL" Foreground="Gray" />
-            <TextBox Text="{Binding Working.Llm.BaseUrl}" Margin="0,2,0,6" />
-            <TextBlock Text="Model" Foreground="Gray" />
-            <TextBox Text="{Binding Working.Llm.Model}" Margin="0,2,0,6" />
-            <TextBlock Text="API Key（留空=不修改）" Foreground="Gray" />
-            <PasswordBox x:Name="LlmKey" Margin="0,2,0,6" />
-            <TextBlock Text="人设 system_prompt" Foreground="Gray" />
-            <TextBox Text="{Binding Working.Llm.SystemPrompt}" AcceptsReturn="True" MinHeight="60"
-                     TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Margin="0,2,0,6" />
-
-            <TextBlock Text="音频 · 保存后重连" FontWeight="Bold" Margin="0,12,0,6" />
-            <TextBlock Text="输入设备" Foreground="Gray" />
-            <ComboBox ItemsSource="{Binding InputDevices}"
-                      SelectedIndex="{Binding Working.Audio.InputDeviceIndex}" Margin="0,2,0,6" />
-
-            <TextBlock Text="TTS 语音合成 · 秒生效" FontWeight="Bold" Margin="0,12,0,6" />
-            <TextBlock Text="Provider（如 fish-audio）" Foreground="Gray" />
-            <TextBox Text="{Binding Working.Tts.Provider}" Margin="0,2,0,6" />
-            <TextBlock Text="API Key（留空=不修改）" Foreground="Gray" />
-            <PasswordBox x:Name="TtsKey" Margin="0,2,0,6" />
-            <TextBlock Text="Voice ID" Foreground="Gray" />
-            <TextBox Text="{Binding Working.Tts.VoiceId}" Margin="0,2,0,6" />
-
-            <TextBlock Text="ASR 语音识别 · 秒生效" FontWeight="Bold" Margin="0,12,0,6" />
-            <TextBlock Text="Provider" Foreground="Gray" />
-            <TextBox Text="{Binding Working.Asr.Provider}" Margin="0,2,0,6" />
-            <TextBlock Text="API Key（留空=不修改）" Foreground="Gray" />
-            <PasswordBox x:Name="AsrKey" Margin="0,2,0,6" />
-
-            <TextBlock Text="VTS · 连接改动需重连" FontWeight="Bold" Margin="0,12,0,6" />
-            <TextBlock Text="Host" Foreground="Gray" />
-            <TextBox Text="{Binding Working.Vts.Host}" Margin="0,2,0,6" />
-            <TextBlock Text="Port" Foreground="Gray" />
-            <TextBox Text="{Binding Working.Vts.Port}" Margin="0,2,0,6" />
-
-            <TextBlock Text="OBS / B站 · 开关与连接需重连" FontWeight="Bold" Margin="0,12,0,6" />
-            <CheckBox Content="启用 OBS 字幕" IsChecked="{Binding Working.Obs.Enable}" Margin="0,2" />
-            <CheckBox Content="启用 B站弹幕" IsChecked="{Binding Working.Bilibili.Enable}" Margin="0,2" />
-
-            <TextBlock Text="工具 / 联网搜索（即将支持）" FontWeight="Bold" Foreground="Gray" Margin="0,12,0,6" />
-            <CheckBox Content="启用联网搜索" IsEnabled="False" Margin="0,2" />
-
-            <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                <Button x:Name="SaveButton" Content="保存并应用" Click="OnSave" Padding="12,4" />
-                <TextBlock Text="{Binding Status}" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="Gray" />
+            <!-- ── LLM ── -->
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                <TextBlock Text="LLM 大模型" Style="{StaticResource SectionHeader}" />
+                <Border Style="{StaticResource BadgeInstant}">
+                    <TextBlock Text="秒生效" Style="{StaticResource BadgeInstantText}" />
+                </Border>
             </StackPanel>
+
+            <TextBlock Text="Base URL" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Llm.BaseUrl, UpdateSourceTrigger=PropertyChanged}"
+                        PlaceholderText="https://api.openai.com/v1"
+                        Margin="0,0,0,10" />
+
+            <TextBlock Text="Model" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Llm.Model, UpdateSourceTrigger=PropertyChanged}"
+                        PlaceholderText="gpt-4o"
+                        Margin="0,0,0,10" />
+
+            <TextBlock Text="API Key（留空=不修改）" Style="{StaticResource FieldLabel}" />
+            <ui:PasswordBox x:Name="LlmKey" PlaceholderText="sk-…" Margin="0,0,0,10" />
+
+            <TextBlock Text="人设 system_prompt" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Llm.SystemPrompt, UpdateSourceTrigger=PropertyChanged}"
+                        AcceptsReturn="True" MinHeight="72"
+                        TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                        Margin="0,0,0,24" />
+
+            <!-- ── Audio ── -->
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                <TextBlock Text="音频" Style="{StaticResource SectionHeader}" />
+                <Border Style="{StaticResource BadgeReconnect}">
+                    <TextBlock Text="保存后重连" Style="{StaticResource BadgeReconnectText}" />
+                </Border>
+            </StackPanel>
+
+            <TextBlock Text="输入设备" Style="{StaticResource FieldLabel}" />
+            <ComboBox ItemsSource="{Binding InputDevices}"
+                      SelectedIndex="{Binding Working.Audio.InputDeviceIndex}"
+                      Margin="0,0,0,24" />
+
+            <!-- ── TTS ── -->
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                <TextBlock Text="TTS 语音合成" Style="{StaticResource SectionHeader}" />
+                <Border Style="{StaticResource BadgeInstant}">
+                    <TextBlock Text="秒生效" Style="{StaticResource BadgeInstantText}" />
+                </Border>
+            </StackPanel>
+
+            <TextBlock Text="Provider" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Tts.Provider, UpdateSourceTrigger=PropertyChanged}"
+                        PlaceholderText="fish-audio"
+                        Margin="0,0,0,10" />
+
+            <TextBlock Text="API Key（留空=不修改）" Style="{StaticResource FieldLabel}" />
+            <ui:PasswordBox x:Name="TtsKey" PlaceholderText="…" Margin="0,0,0,10" />
+
+            <TextBlock Text="Voice ID" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Tts.VoiceId, UpdateSourceTrigger=PropertyChanged}"
+                        Margin="0,0,0,24" />
+
+            <!-- ── ASR ── -->
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                <TextBlock Text="ASR 语音识别" Style="{StaticResource SectionHeader}" />
+                <Border Style="{StaticResource BadgeInstant}">
+                    <TextBlock Text="秒生效" Style="{StaticResource BadgeInstantText}" />
+                </Border>
+            </StackPanel>
+
+            <TextBlock Text="Provider" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Asr.Provider, UpdateSourceTrigger=PropertyChanged}"
+                        Margin="0,0,0,10" />
+
+            <TextBlock Text="API Key（留空=不修改）" Style="{StaticResource FieldLabel}" />
+            <ui:PasswordBox x:Name="AsrKey" PlaceholderText="…" Margin="0,0,0,24" />
+
+            <!-- ── VTS ── -->
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                <TextBlock Text="VTS" Style="{StaticResource SectionHeader}" />
+                <Border Style="{StaticResource BadgeReconnect}">
+                    <TextBlock Text="连接变更需重连" Style="{StaticResource BadgeReconnectText}" />
+                </Border>
+            </StackPanel>
+
+            <TextBlock Text="Host" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Vts.Host, UpdateSourceTrigger=PropertyChanged}"
+                        PlaceholderText="localhost"
+                        Margin="0,0,0,10" />
+
+            <TextBlock Text="Port" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Vts.Port, UpdateSourceTrigger=PropertyChanged}"
+                        PlaceholderText="8001"
+                        Margin="0,0,0,24" />
+
+            <!-- ── OBS / Bilibili ── -->
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                <TextBlock Text="OBS / B站" Style="{StaticResource SectionHeader}" />
+                <Border Style="{StaticResource BadgeReconnect}">
+                    <TextBlock Text="开关与连接需重连" Style="{StaticResource BadgeReconnectText}" />
+                </Border>
+            </StackPanel>
+
+            <ui:ToggleSwitch Content="启用 OBS 字幕" IsChecked="{Binding Working.Obs.Enable}" Margin="0,0,0,8" />
+            <ui:ToggleSwitch Content="启用 B站弹幕" IsChecked="{Binding Working.Bilibili.Enable}" Margin="0,0,0,24" />
+
+            <!-- ── Placeholder: Tools ── -->
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,12" Opacity="0.45">
+                <TextBlock Text="工具 / 联网搜索" Style="{StaticResource SectionHeader}" />
+                <Border CornerRadius="5" Padding="7,2" Margin="10,0,0,0"
+                        Background="#22888888" VerticalAlignment="Center">
+                    <TextBlock Text="即将支持" FontSize="10" Foreground="#888" />
+                </Border>
+            </StackPanel>
+            <ui:ToggleSwitch Content="启用联网搜索" IsEnabled="False" Margin="0,0,0,28" Opacity="0.45" />
+
+            <!-- ── Save button + status ── -->
+            <ui:Card Padding="16,12">
+                <DockPanel>
+                    <ui:Button x:Name="SaveButton"
+                               Content="保存并应用"
+                               Icon="{ui:SymbolIcon Symbol=Save24}"
+                               Appearance="Primary"
+                               Click="OnSave"
+                               DockPanel.Dock="Left" />
+                    <TextBlock Text="{Binding Status}" VerticalAlignment="Center"
+                               Margin="16,0,0,0" FontSize="12"
+                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                </DockPanel>
+            </ui:Card>
 
         </StackPanel>
     </ScrollViewer>

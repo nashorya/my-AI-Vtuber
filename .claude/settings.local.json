@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet restore *)",
+      "Bash(dotnet build *)",
+      "PowerShell(cd C:\\\\Users\\\\nashorya\\\\my-AI-Vtuber; $proc = Start-Process -FilePath \"dotnet\" -ArgumentList \"run\",\"--project\",\"App\\\\App.csproj\",\"--no-build\" -PassThru; Start-Sleep -Seconds 5; if \\($proc.HasExited\\) { Write-Host \"进程已退出，ExitCode=$\\($proc.ExitCode\\)\" } else { Write-Host \"进程正在运行，PID=$\\($proc.Id\\)\" ; $proc.Kill\\(\\) })"
+    ]
+  }
+}

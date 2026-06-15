@@ -1,6 +1,7 @@
 using System.Windows;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Runtime;
+using Wpf.Ui.Appearance;
 
 namespace AIVTuber.App;
 
@@ -12,6 +13,8 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        ApplicationThemeManager.Apply(ApplicationTheme.Dark);
 
         // Global exception handlers so the process never dies silently.
         DispatcherUnhandledException += (_, args) =>
@@ -46,7 +49,7 @@ public partial class App : Application
         // Then init in the background.
         _window = new MainWindow(_runtime, configManager);
         _window.Show();
-        if (firstRun) _window.ShowConfigTab(); // land on the config tab to enter keys in the UI
+        if (firstRun) _window.ShowConfigPage(); // land on the config tab to enter keys in the UI
 
         _ = InitializeAsync(); // fire-and-forget; errors caught by global handlers
     }
