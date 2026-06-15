@@ -1,23 +1,29 @@
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using AIVTuber.Core.Config;
 
 namespace AIVTuber.Core.Vts;
 
 /// <summary>
-/// VTube Studio WebSocket Plugin API client.
-/// Handles authentication, parameter injection (lip-sync), and hotkey triggering (expressions).
+/// VTube Studio Plugin API client (ws://host:port, default 8001). Implements the real protocol:
+/// the "VTubeStudioPublicAPI" envelope with a messageType, the two-step auth flow
+/// (AuthenticationTokenRequest → AuthenticationRequest), parameter injection via parameterValues,
+/// and hotkey triggering. Responses are routed by requestID. High-frequency injects (lip-sync) are
+/// fire-and-forget; all sends are serialized (ClientWebSocket allows only one outstanding send).
 /// </summary>
 public sealed class VtsClient : IDisposable
 {
+    private const string PluginName = "AIVTuber";
+    private const string PluginDeveloper = "AIVTuberDev";
+
     private readonly VtsConfig _config;
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
+    private readonly Dictionary<string, TaskCompletionSource<VtsResponse>> _pending = new();
+    private readonly object _lock = new();
     private ClientWebSocket? _ws;
     private string? _authToken;
     private bool _disposed;
-    private readonly Dictionary<string, TaskCompletionSource<VtsResponse>> _pending = new();
-    private readonly object _lock = new();
 
     public event EventHandler? OnConnected;
     public event EventHandler<string>? OnDisconnected;
@@ -25,7 +31,8 @@ public sealed class VtsClient : IDisposable
 
     public VtsClient(VtsConfig config) => _config = config;
 
-    /// <summary>Connects and authenticates with VTS. User must approve in VTS UI.</summary>
+    /// <summary>Connects and authenticates. The user must approve the plugin in the VTS UI the first
+    /// time (the token request). Each connect fetches a fresh token.</summary>
     public async Task ConnectAsync(CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -33,18 +40,34 @@ public sealed class VtsClient : IDisposable
         await _ws.ConnectAsync(new Uri($"ws://{_config.Host}:{_config.Port}"), ct).ConfigureAwait(false);
         _ = ReceiveLoopAsync(ct);
 
-        var resp = await SendAndWaitAsync("APIUserAuthorizeRequest", new
+        // Step 1: request an auth token (prompts the user to allow the plugin in VTS).
+        var tokenResp = await RequestAsync("AuthenticationTokenRequest", new Dictionary<string, object>
         {
-            pluginName = "AIVTuber", pluginDeveloper = "AIVTuberDev"
+            ["pluginName"] = PluginName,
+            ["pluginDeveloper"] = PluginDeveloper,
         }, ct).ConfigureAwait(false);
 
-        _authToken = resp?.Data?.TryGetProperty("authenticationToken", out var t) == true
+        _authToken = tokenResp?.Data?.TryGetProperty("authenticationToken", out var t) == true
             ? t.GetString()
-            : throw new InvalidOperationException("VTS authentication failed: no token");
+            : throw new InvalidOperationException("VTS did not return an authentication token (was the plugin denied?)");
+
+        // Step 2: authenticate the session with the token.
+        var authResp = await RequestAsync("AuthenticationRequest", new Dictionary<string, object>
+        {
+            ["pluginName"] = PluginName,
+            ["pluginDeveloper"] = PluginDeveloper,
+            ["authenticationToken"] = _authToken!,
+        }, ct).ConfigureAwait(false);
+
+        var authenticated = authResp?.Data?.TryGetProperty("authenticated", out var a) == true && a.GetBoolean();
+        if (!authenticated)
+        {
+            var reason = authResp?.Data?.TryGetProperty("reason", out var r) == true ? r.GetString() : "unknown";
+            throw new InvalidOperationException($"VTS authentication failed: {reason}");
+        }
         OnConnected?.Invoke(this, EventArgs.Empty);
     }
 
-    /// <summary>Disconnects from VTS.</summary>
     public async Task DisconnectAsync()
     {
         if (_ws is not null && _ws.State == WebSocketState.Open)
@@ -55,117 +78,79 @@ public sealed class VtsClient : IDisposable
         OnDisconnected?.Invoke(this, "Disconnected");
     }
 
-    /// <summary>Injects a parameter value into VTS (e.g., ParamMouthOpenY).</summary>
-    public async Task InjectParameterAsync(string paramId, float value, CancellationToken ct = default)
-    {
-        EnsureAuth();
-        await SendAsync("InjectParameterDataRequest", DictWithAuth(new Dictionary<string, object>
-        {
-            ["parameterId"] = paramId, ["parameterValue"] = value,
-            ["injectionMode"] = "set", ["weight"] = 1.0
-        }), ct).ConfigureAwait(false);
-    }
+    /// <summary>Injects a parameter value (e.g. ParamMouthOpenY). Fire-and-forget — we don't await the
+    /// VTS response, so the ~30ms lip-sync loop never blocks on a round-trip.</summary>
+    public Task InjectParameterAsync(string paramId, float value, CancellationToken ct = default)
+        => FireAsync("InjectParameterDataRequest", VtsProtocol.InjectParameterData(paramId, value), ct);
 
-    /// <summary>Triggers a VTS hotkey by ID (expression change).</summary>
-    public async Task TriggerHotkeyAsync(string hotkeyId, CancellationToken ct = default)
-    {
-        EnsureAuth();
-        await SendAsync("HotkeyTriggerRequest", DictWithAuth(new Dictionary<string, object>
-        {
-            ["hotkeyID"] = hotkeyId
-        }), ct).ConfigureAwait(false);
-    }
+    /// <summary>Triggers a VTS hotkey by ID (expression change). Fire-and-forget.</summary>
+    public Task TriggerHotkeyAsync(string hotkeyId, CancellationToken ct = default)
+        => FireAsync("HotkeyTriggerRequest", new Dictionary<string, object> { ["hotkeyID"] = hotkeyId }, ct);
 
-    /// <summary>Gets available hotkeys from the current VTS model.</summary>
+    /// <summary>Lists hotkeys in the current model.</summary>
     public async Task<List<VtsHotkeyInfo>> GetHotkeyListAsync(CancellationToken ct = default)
     {
-        EnsureAuth();
-        var resp = await SendAndWaitAsync("HotkeysInCurrentModelRequest",
-            DictWithAuth(new Dictionary<string, object>()), ct).ConfigureAwait(false);
+        var resp = await RequestAsync("HotkeysInCurrentModelRequest", new Dictionary<string, object>(), ct).ConfigureAwait(false);
         if (resp?.Data is null) return [];
-        return JsonSerializer.Deserialize<VtsHotkeyListResponse>(
-            resp.Data.Value.GetRawText(), JsonOpts)?.Hotkeys ?? [];
+        return JsonSerializer.Deserialize<VtsHotkeyListResponse>(resp.Data.Value.GetRawText())?.Hotkeys ?? [];
     }
 
-    /// <summary>Sets mouth from RMS value, scaled by MouthScale.</summary>
-    public async Task SetMouthAsync(float rms, CancellationToken ct = default)
-        => await InjectParameterAsync("ParamMouthOpenY", Math.Clamp(rms * _config.MouthScale, 0f, 1f), ct).ConfigureAwait(false);
+    public Task SetMouthAsync(float rms, CancellationToken ct = default)
+        => InjectParameterAsync("ParamMouthOpenY", Math.Clamp(rms * _config.MouthScale, 0f, 1f), ct);
 
-    /// <summary>Resets mouth to closed.</summary>
-    public async Task CloseMouthAsync(CancellationToken ct = default)
-        => await InjectParameterAsync("ParamMouthOpenY", 0f, ct).ConfigureAwait(false);
+    public Task CloseMouthAsync(CancellationToken ct = default)
+        => InjectParameterAsync("ParamMouthOpenY", 0f, ct);
 
-    private void EnsureAuth()
+    /// <summary>Send a request and wait for the matching response (by requestID), with a 30s timeout.</summary>
+    private async Task<VtsResponse?> RequestAsync(string messageType, Dictionary<string, object> data, CancellationToken ct)
     {
-        if (string.IsNullOrEmpty(_authToken))
-            throw new InvalidOperationException("Not authenticated. Call ConnectAsync first.");
+        var requestId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<VtsResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_lock) { _pending[requestId] = tcs; }
+
+        await SendRawAsync(VtsProtocol.BuildMessage(messageType, requestId, data), ct).ConfigureAwait(false);
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        await using var reg = timeout.Token.Register(() =>
+        {
+            lock (_lock) { _pending.Remove(requestId); }
+            tcs.TrySetCanceled();
+        });
+        return await tcs.Task.ConfigureAwait(false);
     }
 
-    private Dictionary<string, object> DictWithAuth(Dictionary<string, object> data)
-    {
-        data["authenticationToken"] = _authToken!;
-        return data;
-    }
+    /// <summary>Send a request without awaiting a response (for high-frequency / don't-care messages).</summary>
+    private Task FireAsync(string messageType, Dictionary<string, object> data, CancellationToken ct)
+        => SendRawAsync(VtsProtocol.BuildMessage(messageType, Guid.NewGuid().ToString("N"), data), ct);
 
-    private async Task SendAsync(string apiName, Dictionary<string, object> data, CancellationToken ct)
+    private async Task SendRawAsync(string json, CancellationToken ct)
     {
         if (_ws is null || _ws.State != WebSocketState.Open)
-            throw new InvalidOperationException("WebSocket not connected");
-        var msg = new Dictionary<string, object>
+            throw new InvalidOperationException("VTS WebSocket not connected");
+        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            ["apiName"] = apiName, ["apiVersion"] = "1.0",
-            ["requestID"] = Guid.NewGuid().ToString(), ["data"] = data
-        };
-        var json = JsonSerializer.Serialize(msg, JsonOpts);
-        await _ws.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(json)),
-            WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
-    }
-
-    private async Task<VtsResponse?> SendAndWaitAsync(string apiName, object data, CancellationToken ct)
-    {
-        var tcs = new TaskCompletionSource<VtsResponse>();
-        lock (_lock) { _pending[apiName] = tcs; }
-
-        // Auth request is sent without token
-        if (string.IsNullOrEmpty(_authToken))
-        {
-            await SendAsync(apiName, ToDict(data), ct).ConfigureAwait(false);
+            await _ws.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(json)),
+                WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
         }
-        else
-        {
-            var dict = data as Dictionary<string, object> ?? ToDict(data);
-            dict["authenticationToken"] = _authToken!;
-            await SendAsync(apiName, dict, ct).ConfigureAwait(false);
-        }
-
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        cts.CancelAfter(TimeSpan.FromSeconds(30));
-        try { return await tcs.Task.ConfigureAwait(false); }
-        catch (OperationCanceledException) { lock (_lock) { _pending.Remove(apiName); } throw; }
-    }
-
-    private static Dictionary<string, object> ToDict(object obj)
-    {
-        var dict = new Dictionary<string, object>();
-        foreach (var p in obj.GetType().GetProperties())
-        {
-            var val = p.GetValue(obj);
-            if (val is not null) dict[p.Name] = val;
-        }
-        return dict;
+        finally { _sendLock.Release(); }
     }
 
     private async Task ReceiveLoopAsync(CancellationToken ct)
     {
         var buf = new byte[8192];
+        var sb = new StringBuilder();
         try
         {
             while (!ct.IsCancellationRequested && _ws is not null && _ws.State == WebSocketState.Open)
             {
                 var r = await _ws.ReceiveAsync(new ArraySegment<byte>(buf), ct).ConfigureAwait(false);
                 if (r.MessageType == WebSocketMessageType.Close) { OnDisconnected?.Invoke(this, "Closed"); break; }
-                if (r.MessageType == WebSocketMessageType.Text)
-                    HandleMessage(Encoding.UTF8.GetString(buf, 0, r.Count));
+                sb.Append(Encoding.UTF8.GetString(buf, 0, r.Count));
+                if (!r.EndOfMessage) continue;
+                HandleMessage(sb.ToString());
+                sb.Clear();
             }
         }
         catch (OperationCanceledException) { }
@@ -175,27 +160,27 @@ public sealed class VtsClient : IDisposable
 
     private void HandleMessage(string json)
     {
-        try
+        VtsResponse? resp;
+        try { resp = JsonSerializer.Deserialize<VtsResponse>(json); }
+        catch (JsonException) { return; }
+        if (resp is null) return;
+
+        if (resp.RequestId is not null)
         {
-            var resp = JsonSerializer.Deserialize<VtsResponse>(json, JsonOpts);
-            if (resp is null) return;
-            var reqType = resp.ApiName?.Replace("Response", "Request");
-            lock (_lock)
-            {
-                if (reqType is not null && _pending.Remove(reqType, out var tcs))
-                    tcs.TrySetResult(resp);
-                else if (resp.ApiName is not null && _pending.Remove(resp.ApiName, out tcs))
-                    tcs.TrySetResult(resp);
-            }
-            if (resp.Data?.TryGetProperty("error", out var err) == true)
-                OnError?.Invoke(this, err.GetString() ?? "VTS error");
+            TaskCompletionSource<VtsResponse>? tcs;
+            lock (_lock) { _pending.Remove(resp.RequestId, out tcs); }
+            tcs?.TrySetResult(resp);
         }
-        catch (JsonException) { }
+
+        if (resp.MessageType == "APIError" && resp.Data?.TryGetProperty("message", out var m) == true)
+            OnError?.Invoke(this, m.GetString() ?? "VTS API error");
     }
-    public void Dispose() { if (_disposed) return; _disposed = true; _ws?.Dispose(); }
-    private static readonly JsonSerializerOptions JsonOpts = new()
+
+    public void Dispose()
     {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
+        if (_disposed) return;
+        _disposed = true;
+        _sendLock.Dispose();
+        _ws?.Dispose();
+    }
 }
