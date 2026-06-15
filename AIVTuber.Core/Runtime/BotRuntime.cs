@@ -17,6 +17,7 @@ public sealed class BotRuntime : IAsyncDisposable
 {
     private readonly string _baseDir;
     private readonly CancellationTokenSource _cts = new();
+    // Mutable (not readonly) because ApplyConfigAsync replaces it at runtime; contrast with readonly _baseDir.
     private AppConfig _config;
 
     private MemoryDb _memoryDb = null!;
@@ -118,12 +119,17 @@ public sealed class BotRuntime : IAsyncDisposable
 
     private void InitPipeline()
     {
+        _orchestrator?.Dispose();
+        _asr?.Dispose();
+        _llm?.Dispose();
+        _tts?.Dispose();
+
         _asr = new AsrClient(
             _config.Asr.Provider.Contains("deepseek") ? $"https://{_config.Asr.Provider}" : $"https://api.{_config.Asr.Provider}.com",
             _config.Asr.ApiKey);
         _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Llm.SystemPrompt);
         _tts = new TtsClient(_config.Tts.Provider, _config.Tts.ApiKey);
-        _player = new AudioPlayer();
+        _player ??= new AudioPlayer();
         _orchestrator = new BotOrchestrator(_asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts);
 
         _orchestrator.OnUserTranscript += async (_, text) =>
@@ -184,10 +190,15 @@ public sealed class BotRuntime : IAsyncDisposable
         _cts.Cancel();
         _mic?.Stop(); _mic?.Dispose();
         _vad?.Dispose();
-        if (_danmaku is not null) await _danmaku.StopAsync();
+        if (_danmaku is not null) { await _danmaku.StopAsync(); _danmaku.Dispose(); }
         if (_vts is not null) await _vts.DisconnectAsync();
         if (_obs is not null) await _obs.DisconnectAsync();
         _orchestrator?.Dispose();
+        _tts?.Dispose();
+        _llm?.Dispose();
+        _asr?.Dispose();
+        _player?.Dispose();
+        _embedding?.Dispose();
         _memoryDb?.Dispose();
         _cts.Dispose();
     }
