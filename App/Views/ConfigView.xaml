@@ -21,18 +21,26 @@
                       SelectedIndex="{Binding Working.Audio.InputDeviceIndex}" Margin="0,2,0,6" />
 
             <TextBlock Text="TTS 语音合成 · 秒生效" FontWeight="Bold" Margin="0,12,0,6" />
-            <TextBlock Text="Provider（如 fish-audio）" Foreground="Gray" />
+            <TextBlock Text="Provider（fish-audio / minimax / aliyun）" Foreground="Gray" />
             <TextBox Text="{Binding Working.Tts.Provider}" Margin="0,2,0,6" />
             <TextBlock Text="API Key（留空=不修改）" Foreground="Gray" />
             <PasswordBox x:Name="TtsKey" Margin="0,2,0,6" />
-            <TextBlock Text="Voice ID" Foreground="Gray" />
+            <TextBlock Text="Voice ID（fish: reference_id；aliyun: 音色名如 longanyang）" Foreground="Gray" />
             <TextBox Text="{Binding Working.Tts.VoiceId}" Margin="0,2,0,6" />
+            <TextBlock Text="Model（留空=默认：fish s1 / minimax speech-02-hd / aliyun cosyvoice-v3-flash）" Foreground="Gray" />
+            <TextBox Text="{Binding Working.Tts.Model}" Margin="0,2,0,6" />
+            <TextBlock Text="GroupId（仅 MiniMax 必填）" Foreground="Gray" />
+            <TextBox Text="{Binding Working.Tts.GroupId}" Margin="0,2,0,6" />
+            <TextBlock Text="语速 Speed（0.5–2.0）" Foreground="Gray" />
+            <TextBox Text="{Binding Working.Tts.Speed}" Margin="0,2,0,6" />
 
             <TextBlock Text="ASR 语音识别 · 秒生效" FontWeight="Bold" Margin="0,12,0,6" />
-            <TextBlock Text="Provider" Foreground="Gray" />
+            <TextBlock Text="Provider（aliyun = DashScope 实时识别）" Foreground="Gray" />
             <TextBox Text="{Binding Working.Asr.Provider}" Margin="0,2,0,6" />
             <TextBlock Text="API Key（留空=不修改）" Foreground="Gray" />
             <PasswordBox x:Name="AsrKey" Margin="0,2,0,6" />
+            <TextBlock Text="Model（留空=默认：aliyun paraformer-realtime-v2）" Foreground="Gray" />
+            <TextBox Text="{Binding Working.Asr.Model}" Margin="0,2,0,6" />
 
             <TextBlock Text="VTS · 连接改动需重连" FontWeight="Bold" Margin="0,12,0,6" />
             <TextBlock Text="Host" Foreground="Gray" />
