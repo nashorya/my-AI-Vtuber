@@ -1,0 +1,62 @@
+<UserControl x:Class="AIVTuber.App.Views.MonitorView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Margin="12">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="2*" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <StackPanel Grid.Column="0" Margin="0,0,12,0">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="状态: " FontWeight="Bold" />
+                <TextBlock Text="{Binding State}" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                <TextBlock Text="VTS:" /><TextBlock Text="{Binding VtsConnected}" Margin="4,0,12,0" />
+                <TextBlock Text="OBS:" /><TextBlock Text="{Binding ObsConnected}" Margin="4,0,12,0" />
+                <TextBlock Text="弹幕:" /><TextBlock Text="{Binding DanmakuActive}" Margin="4,0,0,0" />
+            </StackPanel>
+            <Border BorderBrush="#DDD" BorderThickness="1" Margin="0,12,0,0" Padding="8" MinHeight="160">
+                <StackPanel>
+                    <TextBlock Text="实时对话" Foreground="Gray" />
+                    <TextBlock Text="用户" Foreground="Gray" Margin="0,8,0,0" />
+                    <TextBlock Text="{Binding UserText}" TextWrapping="Wrap" />
+                    <TextBlock Text="AI" Foreground="#3B6" Margin="0,8,0,0" />
+                    <TextBlock Text="{Binding AssistantText}" TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+
+        <StackPanel Grid.Column="1">
+            <Border BorderBrush="#DDD" BorderThickness="1" Padding="8">
+                <StackPanel>
+                    <TextBlock Text="当前情绪" Foreground="Gray" />
+                    <TextBlock Text="{Binding Emotion}" FontSize="16" />
+                </StackPanel>
+            </Border>
+            <Border BorderBrush="#DDD" BorderThickness="1" Padding="8" Margin="0,8,0,0">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="弹幕队列 " Foreground="Gray" />
+                        <TextBlock Text="{Binding DanmakuQueueCount}" Foreground="Gray" />
+                    </StackPanel>
+                    <ItemsControl ItemsSource="{Binding DanmakuQueue}" Margin="0,6,0,0">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="{Binding Username}" Foreground="Gray" Margin="0,0,6,0" />
+                                    <TextBlock Text="{Binding Content}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                <TextBlock Text="ASR " /><TextBlock Text="{Binding AsrLatencyMs}" /><TextBlock Text="ms  " />
+                <TextBlock Text="首句 " /><TextBlock Text="{Binding FirstSentenceMs}" /><TextBlock Text="ms" />
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+</UserControl>

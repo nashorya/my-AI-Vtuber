@@ -1,0 +1,17 @@
+<Window x:Class="AIVTuber.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:views="clr-namespace:AIVTuber.App.Views"
+        Title="AIVTuber 控制台" Height="600" Width="900">
+    <TabControl Margin="6">
+        <TabItem Header="监控">
+            <views:MonitorView x:Name="MonitorView" />
+        </TabItem>
+        <TabItem Header="配置">
+            <TextBlock Text="配置页（Phase 2）" Margin="16" Foreground="Gray" />
+        </TabItem>
+        <TabItem Header="记忆">
+            <TextBlock Text="记忆页（Phase 3）" Margin="16" Foreground="Gray" />
+        </TabItem>
+    </TabControl>
+</Window>
