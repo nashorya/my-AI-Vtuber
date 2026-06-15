@@ -29,9 +29,9 @@ public sealed class BotRuntime : IAsyncDisposable
     private LlmClient _memoryLlm = null!; // owned by BotRuntime so it can be disposed (MemoryExtractor is not IDisposable)
     private VtsClient? _vts;
     private ObsClient? _obs;
-    private AsrClient _asr = null!;
+    private IAsrClient _asr = null!;   // provider-specific (whisper-HTTP or DashScope-WebSocket)
     private LlmClient _llm = null!;
-    private TtsClient _tts = null!;
+    private ITtsClient _tts = null!;   // provider-specific (fish/minimax HTTP or DashScope WebSocket)
     private AudioPlayer _player = null!;
     private BotOrchestrator _orchestrator = null!;
     private MicrophoneCapture? _mic;
@@ -135,18 +135,28 @@ public sealed class BotRuntime : IAsyncDisposable
         _ = _obs.ConnectAsync(_cts.Token);
     }
 
+    private static IAsrClient CreateAsrClient(AsrConfig asr)
+        => asr.Provider.ToLowerInvariant() is "aliyun" or "dashscope"
+            ? new DashScopeAsrClient(asr)
+            : new AsrClient(
+                asr.Provider.Contains("deepseek") ? $"https://{asr.Provider}" : $"https://api.{asr.Provider}.com",
+                asr.ApiKey);
+
+    private static ITtsClient CreateTtsClient(TtsConfig tts)
+        => tts.Provider.ToLowerInvariant() is "aliyun" or "cosyvoice" or "dashscope"
+            ? new DashScopeTtsClient(tts)
+            : new TtsClient(tts);
+
     private void InitPipeline()
     {
         _orchestrator?.Dispose();
-        _asr?.Dispose();
+        (_asr as IDisposable)?.Dispose();
         _llm?.Dispose();
-        _tts?.Dispose();
+        (_tts as IDisposable)?.Dispose();
 
-        _asr = new AsrClient(
-            _config.Asr.Provider.Contains("deepseek") ? $"https://{_config.Asr.Provider}" : $"https://api.{_config.Asr.Provider}.com",
-            _config.Asr.ApiKey);
+        _asr = CreateAsrClient(_config.Asr);
         _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Llm.SystemPrompt);
-        _tts = new TtsClient(_config.Tts);
+        _tts = CreateTtsClient(_config.Tts);
         _player ??= new AudioPlayer();
         _orchestrator = new BotOrchestrator(_asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts);
 
@@ -320,9 +330,9 @@ public sealed class BotRuntime : IAsyncDisposable
         if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); }
         if (_obs is not null) { await _obs.DisconnectAsync(); _obs.Dispose(); }
         _orchestrator?.Dispose();
-        _tts?.Dispose();
+        (_tts as IDisposable)?.Dispose();
         _llm?.Dispose();
-        _asr?.Dispose();
+        (_asr as IDisposable)?.Dispose();
         _player?.Dispose();
         _memoryLlm?.Dispose();
         _embedding?.Dispose();
