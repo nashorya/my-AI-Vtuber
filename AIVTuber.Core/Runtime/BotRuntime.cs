@@ -185,6 +185,91 @@ public sealed class BotRuntime : IAsyncDisposable
         catch (Exception ex) { Console.WriteLine($"[弹幕] 启动失败: {ex.Message}"); }
     }
 
+    /// <summary>
+    /// Applies a new config at runtime, rebuilding only the modules whose settings changed.
+    /// Light changes are instant; heavy changes reconnect a module (~1-2s). Changes take
+    /// effect from the next interaction.
+    /// </summary>
+    public async Task ApplyConfigAsync(AppConfig newConfig)
+    {
+        var change = ConfigDiff.Compute(_config, newConfig);
+        _config = newConfig;
+        if (change == RuntimeChange.None) return;
+
+        // Heavy: memory store / audio / connections.
+        if (change.HasFlag(RuntimeChange.ReopenMemory)) await RebuildMemoryAsync();
+        if (change.HasFlag(RuntimeChange.RestartAudio)) RestartAudio();
+        if (change.HasFlag(RuntimeChange.ReconnectVts)) await ReconnectVtsAsync();
+        if (change.HasFlag(RuntimeChange.ReconnectObs)) await ReconnectObsAsync();
+        if (change.HasFlag(RuntimeChange.RestartDanmaku) || change.HasFlag(RuntimeChange.RebuildDanmakuSelector))
+            await RestartDanmakuAsync();
+
+        // Light: memory extraction cadence updated in place.
+        if (change.HasFlag(RuntimeChange.UpdateMemoryParams))
+            _memoryExtractor = new MemoryExtractor(
+                new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Llm.SystemPrompt),
+                _factRepo, _config.Memory, _conversation);
+
+        // Recreating any pipeline client, or changing the VTS/OBS params the orchestrator
+        // and subtitle handlers capture, requires rebuilding + re-wiring the orchestrator.
+        if (change.HasFlag(RuntimeChange.RebuildLlm) || change.HasFlag(RuntimeChange.RebuildAsr) ||
+            change.HasFlag(RuntimeChange.RebuildTts) || change.HasFlag(RuntimeChange.UpdateVtsParams) ||
+            change.HasFlag(RuntimeChange.UpdateObsParams))
+        {
+            RewirePipeline();
+        }
+    }
+
+    private async Task RebuildMemoryAsync()
+    {
+        _embedding?.Dispose();
+        _memoryDb?.Dispose();
+        await InitMemoryAsync();
+    }
+
+    private void RestartAudio()
+    {
+        _mic?.Stop(); _mic?.Dispose();
+        _vad?.Dispose();
+        StartAudio();
+    }
+
+    private async Task ReconnectVtsAsync()
+    {
+        if (_vts is not null) await _vts.DisconnectAsync();
+        await InitVtsAsync();
+        RewirePipeline();
+    }
+
+    private async Task ReconnectObsAsync()
+    {
+        if (_obs is not null) await _obs.DisconnectAsync();
+        InitObs();
+        RewirePipeline();
+    }
+
+    private async Task RestartDanmakuAsync()
+    {
+        if (_danmaku is not null) { await _danmaku.StopAsync(); _danmaku.Dispose(); }
+        _danmaku = null;
+        _selector = null;
+        await InitDanmakuAsync();
+    }
+
+    /// <summary>
+    /// Rebuilds the orchestrator + pipeline clients (InitPipeline disposes the old ones and
+    /// reuses the AudioPlayer) and re-attaches the danmaku speaking handlers if danmaku is active.
+    /// </summary>
+    private void RewirePipeline()
+    {
+        InitPipeline();
+        if (_selector is not null)
+        {
+            _orchestrator.OnAiStartSpeaking += (_, _) => _selector.SetSpeaking(true);
+            _orchestrator.OnAiStopSpeaking += (_, _) => { _selector.SetSpeaking(false); _selector.TrySelectNext(); };
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();
