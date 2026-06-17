@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using AIVTuber.Core.Audio;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Vts;
 
@@ -47,6 +48,7 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
         _applyAsync = applyAsync;
         _getVtsHotkeys = getVtsHotkeys ?? (() => Task.FromResult(new List<VtsHotkeyInfo>()));
         RefreshLoopbackSources();
+        RefreshOutputDevices();
 
         EmotionRows = new ObservableCollection<EmotionMapRow>(
             Working.Vts.EmotionMap.Select(kv => new EmotionMapRow { Emotion = kv.Key, HotkeyId = kv.Value }));
@@ -184,6 +186,42 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
         list.Sort((a, b) => string.Compare(a.ProcessName, b.ProcessName, StringComparison.OrdinalIgnoreCase));
         list.Insert(0, LoopbackSource.All);
         return list;
+    }
+
+    // ── Virtual mic output device picker ─────────────────────────────────────
+
+    private List<string> _outputDevices = [];
+    public List<string> OutputDevices
+    {
+        get => _outputDevices;
+        private set => SetField(ref _outputDevices, value);
+    }
+
+    private string _selectedOutputDevice = "";
+    public string SelectedOutputDevice
+    {
+        get => _selectedOutputDevice;
+        set
+        {
+            SetField(ref _selectedOutputDevice, value);
+            Working.Audio.VirtualMicDeviceName = value ?? "";
+        }
+    }
+
+    public void RefreshOutputDevices()
+    {
+        try
+        {
+            OutputDevices = VirtualMicMixer.ListRenderDevices().ToList();
+        }
+        catch
+        {
+            OutputDevices = [];
+        }
+        var current = Working.Audio.VirtualMicDeviceName;
+        _selectedOutputDevice = OutputDevices.FirstOrDefault(d =>
+            d.Contains(current, StringComparison.OrdinalIgnoreCase)) ?? current;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SelectedOutputDevice)));
     }
 
     private string _status = "";

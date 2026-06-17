@@ -108,6 +108,25 @@
                              IsChecked="{Binding Working.Audio.EnableLoopbackListen}"
                              Margin="0,0,0,8" />
 
+            <ui:ToggleSwitch Content="输出到虚拟麦克风（连麦 / 直播姬）"
+                             IsChecked="{Binding Working.Audio.EnableVirtualMic}"
+                             Margin="0,0,0,8" />
+
+            <TextBlock Text="虚拟麦克风设备（渲染端，如 CABLE Input）" Style="{StaticResource FieldLabel}" />
+            <ComboBox ItemsSource="{Binding OutputDevices}"
+                      SelectedItem="{Binding SelectedOutputDevice}"
+                      IsEnabled="{Binding Working.Audio.EnableVirtualMic}"
+                      Margin="0,0,0,4" />
+            <ui:Button Content="刷新设备列表"
+                       Icon="{ui:SymbolIcon Symbol=ArrowSync24}"
+                       Click="OnRefreshOutputDevices"
+                       IsEnabled="{Binding Working.Audio.EnableVirtualMic}"
+                       Margin="0,0,0,4" />
+            <TextBlock FontSize="11" Margin="0,0,0,16"
+                       TextWrapping="Wrap"
+                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                       Text="需先安装 VB-Cable，并将直播姬麦克风改为「CABLE Output」。请戴耳机，避免外放被真实麦克风拾取产生回音。本 app 不运行时直播姬将无麦克风输入，属正常现象。" />
+
             <TextBlock Text="监听来源（仅在开启时生效）" Style="{StaticResource FieldLabel}" />
             <ComboBox ItemsSource="{Binding LoopbackSources}"
                       SelectedItem="{Binding SelectedLoopbackSource}"

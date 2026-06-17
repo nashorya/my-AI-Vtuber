@@ -35,6 +35,12 @@ public partial class ConfigView : UserControl
         await vm.RefreshLoopbackSourcesAsync();
     }
 
+    private void OnRefreshOutputDevices(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not ConfigViewModel vm) return;
+        vm.RefreshOutputDevices();
+    }
+
     private void OnAddEmotionRow(object sender, RoutedEventArgs e)
     {
         if (DataContext is not ConfigViewModel vm) return;

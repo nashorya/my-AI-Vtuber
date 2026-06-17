@@ -38,6 +38,13 @@ public sealed class AudioPlayer : IDisposable
     public event EventHandler? PlaybackFinished;
 
     /// <summary>
+    /// Fired for every raw PCM chunk that passes through PlayChunksAsync, at the original
+    /// TTS sample rate (<see cref="DefaultSampleRate"/>). Used by VirtualMicMixer to tap the
+    /// audio stream without interfering with normal playback.
+    /// </summary>
+    public event EventHandler<byte[]>? PcmChunkPlayed;
+
+    /// <summary>
     /// Plays a WAV or MP3 byte array. Blocks until playback completes.
     /// </summary>
     public async Task PlayAsync(byte[] audioData, CancellationToken cancellationToken = default)
@@ -183,7 +190,10 @@ public sealed class AudioPlayer : IDisposable
             try
             {
                 await foreach (var chunk in chunks.WithCancellation(ct))
+                {
                     sink.Write(chunk, 0, chunk.Length);
+                    PcmChunkPlayed?.Invoke(this, chunk);
+                }
             }
             catch (OperationCanceledException) { }
             finally { sink.CompleteWriting(); }

@@ -28,6 +28,12 @@ public sealed class AudioConfig
     /// When set, uses the Windows 11 per-process loopback API — no virtual sound card needed.
     /// When empty, captures the entire speaker mix (whole-system loopback).</summary>
     public string LoopbackProcessName { get; set; } = string.Empty;
+    /// <summary>When true, mixes mic + AI TTS and writes to <see cref="VirtualMicDeviceName"/>
+    /// so streaming software can pick up both voices from a single virtual microphone input.</summary>
+    public bool EnableVirtualMic { get; set; } = false;
+    /// <summary>Friendly name of the render device to write the mix into (e.g. "CABLE Input (VB-Audio Virtual Cable)").
+    /// Empty = first available render device.</summary>
+    public string VirtualMicDeviceName { get; set; } = string.Empty;
 
     // VAD parameters
     public int VadAggressiveness { get; set; } = 2; // 0-3

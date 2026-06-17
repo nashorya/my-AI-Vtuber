@@ -83,7 +83,9 @@ public static class ConfigDiff
             a.Audio.LoopbackProcessName != b.Audio.LoopbackProcessName ||
             a.Audio.VadAggressiveness != b.Audio.VadAggressiveness ||
             a.Audio.PreSpeechPaddingMs != b.Audio.PreSpeechPaddingMs ||
-            a.Audio.PostSpeechSilenceMs != b.Audio.PostSpeechSilenceMs)
+            a.Audio.PostSpeechSilenceMs != b.Audio.PostSpeechSilenceMs ||
+            a.Audio.EnableVirtualMic != b.Audio.EnableVirtualMic ||
+            a.Audio.VirtualMicDeviceName != b.Audio.VirtualMicDeviceName)
             c |= RuntimeChange.RestartAudio;
 
         return c;

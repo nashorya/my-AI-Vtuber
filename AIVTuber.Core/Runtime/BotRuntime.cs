@@ -40,6 +40,7 @@ public sealed class BotRuntime : IAsyncDisposable
     private AIVTuber.Core.Audio.LoopbackCapture? _loopback;
     private AIVTuber.Core.Audio.ProcessLoopbackCapture? _processLoopback;
     private VadDetector? _loopbackVad;
+    private AIVTuber.Core.Audio.VirtualMicMixer? _virtualMic;
     private BilibiliDanmakuClient? _danmaku;
     private DanmakuSelector? _selector;
 
@@ -216,7 +217,12 @@ public sealed class BotRuntime : IAsyncDisposable
         _asr = CreateAsrClient(_config.Asr);
         _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Vts.BuildSystemPrompt(_config.Llm.SystemPrompt));
         _tts = CreateTtsClient(_config.Tts);
-        _player ??= new AudioPlayer();
+        if (_player is null)
+        {
+            _player = new AudioPlayer();
+            // Single stable tap: reads _virtualMic field, so mixer restarts pick up automatically.
+            _player.PcmChunkPlayed += (_, chunk) => _virtualMic?.WriteTts(chunk);
+        }
         _orchestrator = new BotOrchestrator(_asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts);
 
         _orchestrator.OnError += (_, msg) => PipelineError?.Invoke(this, msg);
@@ -361,6 +367,28 @@ public sealed class BotRuntime : IAsyncDisposable
             _stateTracker.Started();
         }
 
+        // Optional virtual mic mixer: routes mic + AI TTS into a virtual render device
+        // so streaming software (直播姬) can pick up both voices from CABLE Output.
+        if (_config.Audio.EnableVirtualMic)
+        {
+            try
+            {
+                _virtualMic = new AIVTuber.Core.Audio.VirtualMicMixer(_config.Audio.VirtualMicDeviceName);
+                _virtualMic.Start();
+                // Feed real mic frames into the mixer — not gated by _micMuted (mute only stops AI listening)
+                _mic.AudioFrameAvailable += (_, buf) => _virtualMic?.WriteMic(buf);
+                Console.WriteLine($"[虚拟麦克风] 混音器已启动 → {_config.Audio.VirtualMicDeviceName}");
+            }
+            catch (Exception ex)
+            {
+                var msg = $"[虚拟麦克风] 启动失败: {ex.Message}";
+                Console.WriteLine(msg);
+                PipelineError?.Invoke(this, msg);
+                _virtualMic?.Dispose();
+                _virtualMic = null;
+            }
+        }
+
         // Optional second channel: system audio for PK / co-streaming scenarios
         if (_config.Audio.EnableLoopbackListen)
         {
@@ -485,6 +513,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _loopback?.Stop(); _loopback?.Dispose(); _loopback = null;
         _processLoopback?.Stop(); _processLoopback?.Dispose(); _processLoopback = null;
         _loopbackVad?.Dispose(); _loopbackVad = null;
+        _virtualMic?.Stop(); _virtualMic?.Dispose(); _virtualMic = null;
         StartAudio();
     }
 
@@ -531,6 +560,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _loopback?.Stop(); _loopback?.Dispose();
         _processLoopback?.Stop(); _processLoopback?.Dispose();
         _loopbackVad?.Dispose();
+        _virtualMic?.Stop(); _virtualMic?.Dispose(); _virtualMic = null;
         if (_danmaku is not null) { await _danmaku.StopAsync(); _danmaku.Dispose(); }
         if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); }
         if (_obs is not null) { await _obs.DisconnectAsync(); _obs.Dispose(); }
