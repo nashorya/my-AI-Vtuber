@@ -26,7 +26,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             runtime.CurrentConfig,
             MicrophoneCapture.ListDevices(),
             configManager.Save,
-            runtime.ApplyConfigAsync);
+            runtime.ApplyConfigAsync,
+            () => runtime.GetVtsHotkeysAsync());
     }
 
     private void OnNavigationLoaded(object sender, RoutedEventArgs e)

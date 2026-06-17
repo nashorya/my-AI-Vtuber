@@ -19,8 +19,12 @@ public sealed class LlmClient : ILlmClient, IDisposable
     private readonly string _model;
     private readonly string _systemPrompt;
 
-    private static readonly Regex SentenceBoundaryRegex = new(@"[。！？；.!?\n]", RegexOptions.Compiled);
+    private static readonly Regex SentenceBoundaryRegex = new(@"[。！？；，,.!?;\n]", RegexOptions.Compiled);
     private static readonly Regex EmotionTagRegex = new(@"\[emotion:(\w+)\]", RegexOptions.Compiled);
+    // Strips *action text* and （动作）/(action) that LLMs sometimes emit as stage directions.
+    // Asterisk form: any non-newline chars between * … * on the same line.
+    // Parenthesis form: capped at 20 chars to avoid eating legitimate speech in （哈哈）.
+    private static readonly Regex ActionTextRegex = new(@"\*[^*\n]+\*|[（(][^）)\n]{1,20}[）)]", RegexOptions.Compiled);
 
     public event EventHandler<string>? OnSentenceReady;
     public event EventHandler<string>? OnEmotionDetected;
@@ -106,7 +110,7 @@ public sealed class LlmClient : ILlmClient, IDisposable
 
             if (ContainsSentenceBoundary(currentText, out var sentence, out var remainder))
             {
-                var trimmed = sentence.Trim();
+                var trimmed = StripActionText(StripEmotionTags(sentence)).Trim();
                 if (!string.IsNullOrWhiteSpace(trimmed))
                 {
                     OnSentenceReady?.Invoke(this, trimmed);
@@ -117,7 +121,7 @@ public sealed class LlmClient : ILlmClient, IDisposable
         }
 
         // Emit any remaining text as a sentence
-        var remaining = buffer.ToString().Trim();
+        var remaining = StripActionText(StripEmotionTags(buffer.ToString())).Trim();
         if (!string.IsNullOrWhiteSpace(remaining))
         {
             OnSentenceReady?.Invoke(this, remaining);
@@ -153,6 +157,9 @@ public sealed class LlmClient : ILlmClient, IDisposable
     /// </summary>
     internal static string StripEmotionTags(string text)
         => EmotionTagRegex.Replace(text, string.Empty);
+
+    internal static string StripActionText(string text)
+        => ActionTextRegex.Replace(text, string.Empty);
 
     internal static bool ContainsSentenceBoundary(string text, out string sentence, out string remainder)
     {

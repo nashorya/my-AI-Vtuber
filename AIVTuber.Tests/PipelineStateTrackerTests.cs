@@ -13,16 +13,18 @@ public class PipelineStateTrackerTests
     }
 
     [Fact]
-    public void VoiceFlow_ComputesAsrAndFirstSentenceLatency()
+    public void VoiceFlow_ComputesAsrLlmAndTtsLatency()
     {
         var t = new PipelineStateTracker();
         t.InputStarted(1000);
         Assert.Equal(PipelineState.Thinking, t.State);
-        t.TranscriptReady(1300);
+        t.TranscriptReady(1300);           // ASR = 300 ms
         Assert.Equal(300, t.LastAsrLatencyMs);
-        t.SpeakingStarted(2100);
+        t.LlmFirstSentenceReady(1900);     // LLM = 600 ms
+        Assert.Equal(600, t.LastLlmLatencyMs);
+        t.SpeakingStarted(2100);           // TTS = 200 ms
         Assert.Equal(PipelineState.Speaking, t.State);
-        Assert.Equal(800, t.LastFirstSentenceMs);
+        Assert.Equal(200, t.LastTtsLatencyMs);
         t.SpeakingStopped();
         Assert.Equal(PipelineState.Listening, t.State);
     }
@@ -34,8 +36,10 @@ public class PipelineStateTrackerTests
         t.TextInputStarted(500);
         Assert.Null(t.LastAsrLatencyMs);
         Assert.Equal(PipelineState.Thinking, t.State);
-        t.SpeakingStarted(1200);
-        Assert.Equal(700, t.LastFirstSentenceMs);
+        t.LlmFirstSentenceReady(1000);     // LLM = 500 ms
+        Assert.Equal(500, t.LastLlmLatencyMs);
+        t.SpeakingStarted(1200);           // TTS = 200 ms
+        Assert.Equal(200, t.LastTtsLatencyMs);
     }
 
     [Fact]
@@ -50,17 +54,18 @@ public class PipelineStateTrackerTests
     }
 
     [Fact]
-    public void SpeakingStarted_WithoutInput_ClearsStaleFirstSentenceLatency()
+    public void SpeakingStarted_WithoutLlmReady_TtsLatencyIsNull()
     {
         var t = new PipelineStateTracker();
-        // A normal turn establishes a latency...
+        // Normal turn — establishes LLM latency
         t.InputStarted(1000);
         t.TranscriptReady(1200);
+        t.LlmFirstSentenceReady(1800);
         t.SpeakingStarted(2000);
-        Assert.Equal(800, t.LastFirstSentenceMs);
-        // ...then an interrupted turn speaks with no tracked input; latency must not be stale.
+        Assert.Equal(200, t.LastTtsLatencyMs);
+        // Interrupted turn: speaking fires without a preceding LlmFirstSentenceReady
         t.SpeakingStarted(3000);
-        Assert.Null(t.LastFirstSentenceMs);
+        Assert.Null(t.LastTtsLatencyMs);
     }
 
     [Fact]
@@ -70,11 +75,12 @@ public class PipelineStateTrackerTests
         t.InputStarted(1000);
         t.TranscriptReady(1300); // ASR 300
         Assert.Equal(300, t.LastAsrLatencyMs);
-        t.SpeakingStarted(1500);
+        t.LlmFirstSentenceReady(1500);
+        t.SpeakingStarted(1600);
         t.SpeakingStopped();
 
         t.InputStarted(5000);
-        t.TranscriptReady(5100); // ASR 100, from the new turn (not 4100 from the old start)
+        t.TranscriptReady(5100); // ASR 100, from the new turn
         Assert.Equal(100, t.LastAsrLatencyMs);
     }
 }

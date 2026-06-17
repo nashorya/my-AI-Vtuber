@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using AIVTuber.Core.Audio;
 using AIVTuber.Core.Bot;
 using AIVTuber.Core.Config;
@@ -36,6 +37,9 @@ public sealed class BotRuntime : IAsyncDisposable
     private BotOrchestrator _orchestrator = null!;
     private MicrophoneCapture? _mic;
     private VadDetector? _vad;
+    private AIVTuber.Core.Audio.LoopbackCapture? _loopback;
+    private AIVTuber.Core.Audio.ProcessLoopbackCapture? _processLoopback;
+    private VadDetector? _loopbackVad;
     private BilibiliDanmakuClient? _danmaku;
     private DanmakuSelector? _selector;
 
@@ -44,22 +48,62 @@ public sealed class BotRuntime : IAsyncDisposable
     public PipelineStateTracker StateTracker => _stateTracker;
     public event EventHandler? AiStartSpeaking;
     public event EventHandler? AiStopSpeaking;
+    /// <summary>Fired when any pipeline stage (ASR/LLM/TTS) encounters a non-cancellation error.</summary>
+    public event EventHandler<string>? PipelineError;
+    /// <summary>Fired per mic frame with RMS in [0,1] for a level indicator.</summary>
+    public event EventHandler<float>? MicLevelUpdated;
+    /// <summary>Fired per loopback frame with RMS in [0,1] for a level indicator.</summary>
+    public event EventHandler<float>? LoopbackLevelUpdated;
 
-    public bool VtsConnected => _vts is not null;
+    public bool VtsConnected => _vts?.IsConnected == true;
     public bool ObsConnected => _obs is not null;
     public bool DanmakuActive => _danmaku is not null;
+    public bool LocalAsrActive => _asr is LocalAsrClient;
+
+    private volatile bool _localAsrReachable;
+    public bool LocalAsrReachable => _localAsrReachable;
+    public event EventHandler<bool>? LocalAsrReachableChanged;
+
+    private Process? _asrServerProcess;
+
+    /// <summary>Returns hotkeys in the currently loaded VTS model, or empty if not connected.</summary>
+    public Task<List<VtsHotkeyInfo>> GetVtsHotkeysAsync(CancellationToken ct = default)
+        => _vts?.GetHotkeyListAsync(ct) ?? Task.FromResult(new List<VtsHotkeyInfo>());
 
     /// <summary>Fired with the user's recognized speech / danmaku text.</summary>
     public event EventHandler<string>? UserTranscript;
     /// <summary>Fired with each completed AI sentence.</summary>
     public event EventHandler<string>? SentenceReady;
-    /// <summary>Fired with a detected emotion tag.</summary>
+    /// <summary>Fired with a detected emotion tag from the LLM output.</summary>
     public event EventHandler<string>? EmotionDetected;
+    /// <summary>Fired with the user's detected emotion from Qwen-ASR (null/neutral suppressed).</summary>
+    public event EventHandler<string>? UserEmotionDetected;
+    /// <summary>Fired with transcribed text from system audio (loopback/PC source).</summary>
+    public event EventHandler<string>? LoopbackTranscript;
 
     public AppConfig CurrentConfig => _config;
     public ViewerRepository ViewerRepository => _viewerRepo;
     public FactRepository FactRepository => _factRepo;
     public DanmakuSelector? Selector => _selector;
+
+    private volatile bool _micMuted;
+    public bool MicMuted => _micMuted;
+    public void SetMicMuted(bool muted) => _micMuted = muted;
+
+    // True while AI is speaking — loopback VAD feed is paused to prevent self-hearing.
+    private volatile bool _loopbackVadMuted;
+
+    private static float ComputeRms(byte[] pcm16)
+    {
+        int samples = pcm16.Length / 2;
+        double sum = 0;
+        for (int i = 0; i < samples; i++)
+        {
+            float s = BitConverter.ToInt16(pcm16, i * 2) / 32768f;
+            sum += s * s;
+        }
+        return (float)Math.Sqrt(sum / Math.Max(samples, 1));
+    }
 
     public BotRuntime(AppConfig config, string baseDir)
     {
@@ -77,6 +121,7 @@ public sealed class BotRuntime : IAsyncDisposable
         await InitDanmakuAsync();
         StartAudio();
         _stateTracker.Started();
+        _ = StartLocalAsrServerAsync();
     }
 
     private async Task InitMemoryAsync()
@@ -109,7 +154,7 @@ public sealed class BotRuntime : IAsyncDisposable
     private void BuildMemoryExtractor()
     {
         _memoryLlm?.Dispose();
-        _memoryLlm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Llm.SystemPrompt);
+        _memoryLlm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Vts.BuildSystemPrompt(_config.Llm.SystemPrompt));
         _memoryExtractor = new MemoryExtractor(_memoryLlm, _factRepo, _config.Memory, _conversation);
     }
 
@@ -118,12 +163,16 @@ public sealed class BotRuntime : IAsyncDisposable
         try
         {
             _vts = new VtsClient(_config.Vts);
+            _vts.OnError += (_, msg) => PipelineError?.Invoke(this, $"[VTS] {msg}");
+            _vts.OnDisconnected += (_, reason) => PipelineError?.Invoke(this, $"[VTS] 已断开: {reason}");
             await _vts.ConnectAsync(_cts.Token);
             Console.WriteLine("[VTS] 已连接 VTube Studio");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[VTS] 连接失败: {ex.Message}");
+            var msg = $"[VTS] 连接失败: {ex.Message}";
+            Console.WriteLine(msg);
+            PipelineError?.Invoke(this, msg);
             _vts = null;
         }
     }
@@ -136,11 +185,21 @@ public sealed class BotRuntime : IAsyncDisposable
     }
 
     private static IAsrClient CreateAsrClient(AsrConfig asr)
-        => asr.Provider.ToLowerInvariant() is "aliyun" or "dashscope"
-            ? new DashScopeAsrClient(asr)
-            : new AsrClient(
-                asr.Provider.Contains("deepseek") ? $"https://{asr.Provider}" : $"https://api.{asr.Provider}.com",
-                asr.ApiKey);
+    {
+        if (asr.Provider.ToLowerInvariant() is "local")
+            return new LocalAsrClient(asr.LocalAsrUrl);
+
+        if (asr.Provider.ToLowerInvariant() is "aliyun" or "dashscope")
+        {
+            // Qwen-ASR uses a different WebSocket protocol (OpenAI Realtime-style) at /realtime
+            return !string.IsNullOrWhiteSpace(asr.Model) && asr.Model.StartsWith("qwen", StringComparison.OrdinalIgnoreCase)
+                ? new QwenAsrClient(asr)
+                : new DashScopeAsrClient(asr);
+        }
+        return new AsrClient(
+            asr.Provider.Contains("deepseek") ? $"https://{asr.Provider}" : $"https://api.{asr.Provider}.com",
+            asr.ApiKey);
+    }
 
     private static ITtsClient CreateTtsClient(TtsConfig tts)
         => tts.Provider.ToLowerInvariant() is "aliyun" or "cosyvoice" or "dashscope"
@@ -155,10 +214,12 @@ public sealed class BotRuntime : IAsyncDisposable
         (_tts as IDisposable)?.Dispose();
 
         _asr = CreateAsrClient(_config.Asr);
-        _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Llm.SystemPrompt);
+        _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Vts.BuildSystemPrompt(_config.Llm.SystemPrompt));
         _tts = CreateTtsClient(_config.Tts);
         _player ??= new AudioPlayer();
         _orchestrator = new BotOrchestrator(_asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts);
+
+        _orchestrator.OnError += (_, msg) => PipelineError?.Invoke(this, msg);
 
         _orchestrator.OnUserTranscript += async (_, text) =>
         {
@@ -173,6 +234,8 @@ public sealed class BotRuntime : IAsyncDisposable
             SentenceReady?.Invoke(this, s);
         };
         _orchestrator.OnEmotionDetected += (_, e) => EmotionDetected?.Invoke(this, e);
+        _orchestrator.OnUserEmotionDetected += (_, e) => UserEmotionDetected?.Invoke(this, e);
+        _orchestrator.OnLoopbackTranscript += (_, t) => LoopbackTranscript?.Invoke(this, t);
 
         if (_obs is not null)
         {
@@ -181,6 +244,13 @@ public sealed class BotRuntime : IAsyncDisposable
             _orchestrator.OnUserTranscript += async (_, t)
                 => await _obs.SetSubtitleAsync($"[用户] {t}", _config.Obs.UserTextComponent, _cts.Token);
         }
+
+        _orchestrator.OnFirstSentenceToTts += (_, _) =>
+            _stateTracker.LlmFirstSentenceReady(Environment.TickCount64);
+
+        // Mute loopback VAD while AI is playing so it doesn't hear its own TTS output.
+        _orchestrator.OnAiStartSpeaking += (_, _) => _loopbackVadMuted = true;
+        _orchestrator.OnAiStopSpeaking  += (_, _) => _loopbackVadMuted = false;
 
         // Stable speaking->selector bridge, added once per orchestrator. Null-safe so it works
         // whether or not danmaku is active, and reads the current _selector field after rebuilds —
@@ -200,16 +270,84 @@ public sealed class BotRuntime : IAsyncDisposable
         };
     }
 
+    /// <summary>
+    /// Starts asr_server.py as a hidden background process, then polls /health until ready.
+    /// Fires LocalAsrReachableChanged when the server comes online or fails to start.
+    /// </summary>
+    public async Task StartLocalAsrServerAsync()
+    {
+        if (_asr is not LocalAsrClient localAsr) return;
+
+        // Kill any previously owned process first
+        StopLocalAsrServer();
+
+        var scriptPath = Path.Combine(_baseDir, "asr_server.py");
+        var si = new ProcessStartInfo
+        {
+            FileName = _config.Asr.PythonPath,
+            Arguments = $"\"{scriptPath}\"",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+
+        _asrServerProcess = new Process { StartInfo = si, EnableRaisingEvents = true };
+        _asrServerProcess.Exited += (_, _) =>
+        {
+            _localAsrReachable = false;
+            LocalAsrReachableChanged?.Invoke(this, false);
+            PipelineError?.Invoke(this, "[Local ASR] 服务进程已退出");
+        };
+
+        try { _asrServerProcess.Start(); }
+        catch (Exception ex)
+        {
+            PipelineError?.Invoke(this, $"[Local ASR] 启动失败: {ex.Message}");
+            return;
+        }
+
+        // Poll /health until the model finishes loading (can take a few seconds)
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        while (DateTime.UtcNow < deadline && !_cts.Token.IsCancellationRequested)
+        {
+            if (await localAsr.PingAsync(_cts.Token))
+            {
+                _localAsrReachable = true;
+                LocalAsrReachableChanged?.Invoke(this, true);
+                return;
+            }
+            await Task.Delay(500, _cts.Token).ConfigureAwait(false);
+        }
+
+        _localAsrReachable = false;
+        LocalAsrReachableChanged?.Invoke(this, false);
+        PipelineError?.Invoke(this, "[Local ASR] 服务启动超时（60s），请检查 Python 环境");
+    }
+
+    public void StopLocalAsrServer()
+    {
+        try { _asrServerProcess?.Kill(entireProcessTree: true); }
+        catch { /* already dead */ }
+        _asrServerProcess?.Dispose();
+        _asrServerProcess = null;
+        _localAsrReachable = false;
+    }
+
     private void StartAudio()
     {
         _mic = new MicrophoneCapture(_config.Audio.InputDeviceIndex);
         _vad = new VadDetector(_config.Audio.VadAggressiveness, _config.Audio.PreSpeechPaddingMs, _config.Audio.PostSpeechSilenceMs);
         _mic.AudioFrameAvailable += (_, buf) => _vad.Feed(buf);
+        _mic.LevelUpdated += (_, level) => MicLevelUpdated?.Invoke(this, level);
+        _mic.ErrorOccurred += (_, ex) => PipelineError?.Invoke(this, $"[麦克风] {ex.Message}");
         _vad.SpeechDetected += async (_, seg) =>
         {
+            if (_micMuted) return;
             _stateTracker.InputStarted(Environment.TickCount64);
             var history = _conversation.BuildMessages();
-            await _orchestrator.ProcessSpeechAsync(seg, history);
+            // Mic has highest priority: always interrupts (including any loopback processing)
+            await _orchestrator.ProcessSpeechAsync(seg, history, _config.Input.MicTemplate);
         };
         try
         {
@@ -217,10 +355,58 @@ public sealed class BotRuntime : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            // Invalid device index or no microphone attached — log and continue.
-            // The user can fix audio.input_device_index in the config page and restart.
-            Console.WriteLine($"[音频] 麦克风启动失败: {ex.Message}");
-            _stateTracker.Started(); // still enter Listening state so the monitor shows it
+            var msg = $"[麦克风] 启动失败: {ex.Message}";
+            Console.WriteLine(msg);
+            PipelineError?.Invoke(this, msg);
+            _stateTracker.Started();
+        }
+
+        // Optional second channel: system audio for PK / co-streaming scenarios
+        if (_config.Audio.EnableLoopbackListen)
+        {
+            try
+            {
+                _loopbackVad = new VadDetector(_config.Audio.VadAggressiveness, _config.Audio.PreSpeechPaddingMs, _config.Audio.PostSpeechSilenceMs);
+                _loopbackVad.SpeechDetected += async (_, seg) =>
+                {
+                    var tagged = new AIVTuber.Core.Audio.SpeechSegment
+                    {
+                        AudioData = seg.AudioData, StartTime = seg.StartTime, EndTime = seg.EndTime,
+                        Source = AIVTuber.Core.Audio.AudioSource.Loopback,
+                    };
+                    await _orchestrator.ProcessLoopbackSpeechAsync(tagged, _conversation.BuildMessages(), _config.Input.LoopbackTemplate);
+                };
+
+                if (!string.IsNullOrWhiteSpace(_config.Audio.LoopbackProcessName))
+                {
+                    // Per-process capture — Windows 10 2004+ / Windows 11, no virtual sound card
+                    _processLoopback = new AIVTuber.Core.Audio.ProcessLoopbackCapture(_config.Audio.LoopbackProcessName);
+                    _processLoopback.AudioFrameAvailable += (_, buf) => { if (!_loopbackVadMuted) _loopbackVad!.Feed(buf); };
+                    _processLoopback.LevelUpdated += (_, level) => LoopbackLevelUpdated?.Invoke(this, level);
+                    _processLoopback.ErrorOccurred += (_, ex) => PipelineError?.Invoke(this, $"[内录-进程] {ex.Message}");
+                    _processLoopback.Start();
+                    Console.WriteLine($"[音频] 进程内录已启动 → {_config.Audio.LoopbackProcessName}");
+                }
+                else
+                {
+                    // Whole-system loopback. The VAD feed is muted while the AI is speaking
+                    // (via _loopbackVadMuted) so the AI never reacts to its own TTS output.
+                    _loopback = new AIVTuber.Core.Audio.LoopbackCapture(16000,
+                        string.IsNullOrWhiteSpace(_config.Audio.LoopbackDeviceName) ? null : _config.Audio.LoopbackDeviceName);
+                    _loopback.AudioFrameAvailable += (_, buf) => { if (!_loopbackVadMuted) _loopbackVad!.Feed(buf); };
+                    _loopback.AudioFrameAvailable += (_, buf) => LoopbackLevelUpdated?.Invoke(this,
+                        buf.Length >= 2 ? ComputeRms(buf) : 0f);
+                    _loopback.Start();
+                    Console.WriteLine("[音频] 全局内录已启动（PK 模式）");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[音频] 内录启动失败: {ex.Message}");
+                _loopback?.Dispose(); _loopback = null;
+                _processLoopback?.Dispose(); _processLoopback = null;
+                _loopbackVad?.Dispose(); _loopbackVad = null;
+            }
         }
     }
 
@@ -245,7 +431,10 @@ public sealed class BotRuntime : IAsyncDisposable
             _stateTracker.TextInputStarted(Environment.TickCount64);
             await _viewerRepo.RecordInteractionAsync(d.Uid, d.Platform, d.Username);
             var history = _conversation.BuildMessages(d.Uid);
-            await _orchestrator.ProcessTextAsync(d.Content, history);
+            var text = _config.Input.DanmakuTemplate
+                .Replace("{username}", d.Username)
+                .Replace("{content}", d.Content);
+            await _orchestrator.ProcessTextAsync(text, history);
         };
         return selector;
     }
@@ -293,6 +482,9 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         _mic?.Stop(); _mic?.Dispose();
         _vad?.Dispose();
+        _loopback?.Stop(); _loopback?.Dispose(); _loopback = null;
+        _processLoopback?.Stop(); _processLoopback?.Dispose(); _processLoopback = null;
+        _loopbackVad?.Dispose(); _loopbackVad = null;
         StartAudio();
     }
 
@@ -336,9 +528,13 @@ public sealed class BotRuntime : IAsyncDisposable
         _cts.Cancel();
         _mic?.Stop(); _mic?.Dispose();
         _vad?.Dispose();
+        _loopback?.Stop(); _loopback?.Dispose();
+        _processLoopback?.Stop(); _processLoopback?.Dispose();
+        _loopbackVad?.Dispose();
         if (_danmaku is not null) { await _danmaku.StopAsync(); _danmaku.Dispose(); }
         if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); }
         if (_obs is not null) { await _obs.DisconnectAsync(); _obs.Dispose(); }
+        StopLocalAsrServer();
         _orchestrator?.Dispose();
         (_tts as IDisposable)?.Dispose();
         _llm?.Dispose();

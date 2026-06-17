@@ -3,6 +3,8 @@ using WebRtcVadSharp;
 
 namespace AIVTuber.Core.Audio;
 
+public enum AudioSource { Microphone, Loopback }
+
 /// <summary>
 /// Represents a detected speech segment with its audio data and timestamps.
 /// </summary>
@@ -11,6 +13,7 @@ public sealed class SpeechSegment
     public byte[] AudioData { get; init; } = [];
     public DateTime StartTime { get; init; }
     public DateTime EndTime { get; init; }
+    public AudioSource Source { get; init; } = AudioSource.Microphone;
 }
 
 /// <summary>

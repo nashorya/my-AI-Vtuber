@@ -37,8 +37,10 @@ internal static class DashScopeProtocol
             },
         }, Json);
 
-    /// <summary>run-task for realtime TTS (CosyVoice), PCM output at the given rate.</summary>
-    public static string RunTaskTts(string taskId, string model, string voice, int sampleRate, double rate) =>
+    /// <summary>run-task for realtime TTS (CosyVoice), PCM output at the given rate.
+    /// <paramref name="instructions"/> is an optional natural-language style directive (e.g. "用开心的语气说话").
+    /// CosyVoice v3+ models support this; older models ignore it.</summary>
+    public static string RunTaskTts(string taskId, string model, string voice, int sampleRate, double rate, string? instructions = null) =>
         JsonSerializer.Serialize(new
         {
             header = new { action = "run-task", task_id = taskId, streaming = "duplex" },
@@ -48,17 +50,30 @@ internal static class DashScopeProtocol
                 task = "tts",
                 function = "SpeechSynthesizer",
                 model,
-                parameters = new
-                {
-                    text_type = "PlainText",
-                    voice,
-                    format = "pcm",
-                    sample_rate = sampleRate,
-                    volume = 50,
-                    rate,
-                    pitch = 1,
-                    enable_ssml = false,
-                },
+                parameters = instructions is null
+                    ? (object)new
+                    {
+                        text_type = "PlainText",
+                        voice,
+                        format = "pcm",
+                        sample_rate = sampleRate,
+                        volume = 50,
+                        rate,
+                        pitch = 1,
+                        enable_ssml = false,
+                    }
+                    : new
+                    {
+                        text_type = "PlainText",
+                        voice,
+                        format = "pcm",
+                        sample_rate = sampleRate,
+                        volume = 50,
+                        rate,
+                        pitch = 1,
+                        enable_ssml = false,
+                        instructions,
+                    },
                 input = new { },
             },
         }, Json);

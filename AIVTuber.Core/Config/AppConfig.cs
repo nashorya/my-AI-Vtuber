@@ -13,6 +13,7 @@ public sealed class AppConfig
     public ObsConfig Obs { get; set; } = new();
     public MemoryConfig Memory { get; set; } = new();
     public BilibiliConfig Bilibili { get; set; } = new();
+    public InputTemplateConfig Input { get; set; } = new();
 }
 
 public sealed class AudioConfig
@@ -20,6 +21,13 @@ public sealed class AudioConfig
     public int InputDeviceIndex { get; set; } = 0;
     public bool UseLoopback { get; set; } = false;
     public string LoopbackDeviceName { get; set; } = string.Empty;
+    /// <summary>When true, simultaneously captures system audio as a second channel.
+    /// Detected speech is transcribed and injected as "对面说：..." context for the LLM.</summary>
+    public bool EnableLoopbackListen { get; set; } = false;
+    /// <summary>Process name to capture (e.g. "chrome", "msedge", "obs64").
+    /// When set, uses the Windows 11 per-process loopback API — no virtual sound card needed.
+    /// When empty, captures the entire speaker mix (whole-system loopback).</summary>
+    public string LoopbackProcessName { get; set; } = string.Empty;
 
     // VAD parameters
     public int VadAggressiveness { get; set; } = 2; // 0-3
@@ -35,6 +43,10 @@ public sealed class AsrConfig
     /// <summary>Model name. Provider-specific; empty = the provider's default
     /// (e.g. aliyun/dashscope → paraformer-realtime-v2).</summary>
     public string Model { get; set; } = string.Empty;
+    /// <summary>Base URL of the local ASR HTTP service. Only used when Provider = "local".</summary>
+    public string LocalAsrUrl { get; set; } = "http://localhost:8765";
+    /// <summary>Python executable used to launch asr_server.py. Defaults to "python".</summary>
+    public string PythonPath { get; set; } = "python";
 }
 
 public sealed class LlmConfig
@@ -52,9 +64,9 @@ public sealed class TtsConfig
     public string ApiKey { get; set; } = string.Empty;
     public string VoiceId { get; set; } = string.Empty;
     /// <summary>Model name. Provider-specific; empty = the provider's default
-    /// (fish → s1, minimax → speech-02-hd, aliyun → cosyvoice-v3-flash).</summary>
+    /// (fish → s1, minimax → speech-2.8-hd, aliyun → cosyvoice-v3-flash).</summary>
     public string Model { get; set; } = string.Empty;
-    /// <summary>MiniMax only: the GroupId issued with the API key (required by t2a_v2).</summary>
+    /// <summary>MiniMax only: no longer required — new platform (api.minimaxi.com) uses Bearer-only auth.</summary>
     public string GroupId { get; set; } = string.Empty;
     /// <summary>Synthesis speed multiplier (0.5–2.0).</summary>
     public double Speed { get; set; } = 1.0;
@@ -65,7 +77,21 @@ public sealed class VtsConfig
     public string Host { get; set; } = "localhost";
     public int Port { get; set; } = 8001;
     public float MouthScale { get; set; } = 1.5f;
+    /// <summary>Emotion word (as emitted by the LLM in "[emotion:word]") -> VTS hotkeyID.
+    /// Editable from the Config tab; see <see cref="BuildSystemPrompt"/>.</summary>
     public Dictionary<string, string> EmotionMap { get; set; } = new();
+
+    /// <summary>
+    /// Appends an auto-generated "[emotion:word]" vocabulary hint built from EmotionMap's keys,
+    /// so the prompt always advertises exactly the emotion words that are actually wired to a
+    /// VTS hotkey — no need to hand-edit the system prompt every time a mapping is added.
+    /// </summary>
+    public string BuildSystemPrompt(string basePrompt)
+    {
+        if (EmotionMap.Count == 0) return basePrompt;
+        var words = string.Join("、", EmotionMap.Keys);
+        return $"{basePrompt}\n\n你可以在合适的时候在句子里插入 [emotion:词] 标记来触发对应的表情/动作（这个标记不会被读出来或显示给观众）。可用的词只有：{words}。每句话最多用一个，没有合适的情绪就不要加。";
+    }
 }
 
 public sealed class ObsConfig
@@ -86,6 +112,16 @@ public sealed class MemoryConfig
     public int ExtractEveryNTurns { get; set; } = 5;
     /// <summary>Path to the bge-small-zh ONNX model directory.</summary>
     public string EmbeddingModelPath { get; set; } = "models/bge-small-zh";
+}
+
+public sealed class InputTemplateConfig
+{
+    /// <summary>Wraps mic-captured speech before sending to LLM. Use {text} as placeholder.</summary>
+    public string MicTemplate { get; set; } = "（你的创造者对你说：{text}）";
+    /// <summary>Wraps loopback-captured speech (opponent streamer). Use {text} as placeholder.</summary>
+    public string LoopbackTemplate { get; set; } = "（你听到对面说：{text}）";
+    /// <summary>Wraps danmaku. Use {username} and {content} as placeholders.</summary>
+    public string DanmakuTemplate { get; set; } = "（弹幕 {username}：{content}）";
 }
 
 public sealed class BilibiliConfig

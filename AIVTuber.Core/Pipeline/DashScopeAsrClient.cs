@@ -17,7 +17,7 @@ public sealed class DashScopeAsrClient : IAsrClient
 
     public DashScopeAsrClient(AsrConfig config) => _config = config;
 
-    public async Task<string> RecognizeAsync(byte[] pcm16k, CancellationToken cancellationToken = default)
+    public async Task<AsrResult> RecognizeAsync(byte[] pcm16k, CancellationToken cancellationToken = default)
     {
         var model = string.IsNullOrWhiteSpace(_config.Model) ? "paraformer-realtime-v2" : _config.Model;
 
@@ -35,7 +35,7 @@ public sealed class DashScopeAsrClient : IAsrClient
         {
             var msg = await DashScopeSocket.ReceiveMessageAsync(ws, cancellationToken);
             if (msg is null) break;
-            if (msg.Value.Type != WebSocketMessageType.Text) continue; // ASR sends only text frames
+            if (msg.Value.Type != WebSocketMessageType.Text) continue;
 
             var json = Encoding.UTF8.GetString(msg.Value.Bytes);
             var (ev, err) = DashScopeProtocol.ParseEvent(json);
@@ -57,7 +57,7 @@ public sealed class DashScopeAsrClient : IAsrClient
 
                 case "task-finished":
                     await DashScopeSocket.CloseAsync(ws);
-                    return transcript.ToString();
+                    return new AsrResult(transcript.ToString());
 
                 case "task-failed":
                     await DashScopeSocket.CloseAsync(ws);
@@ -65,10 +65,10 @@ public sealed class DashScopeAsrClient : IAsrClient
             }
         }
 
-        return transcript.ToString();
+        return new AsrResult(transcript.ToString());
     }
 
-    public async IAsyncEnumerable<string> StreamRecognizeAsync(
+    public async IAsyncEnumerable<AsrResult> StreamRecognizeAsync(
         IAsyncEnumerable<byte[]> audioStream,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
@@ -79,7 +79,7 @@ public sealed class DashScopeAsrClient : IAsrClient
         if (buffer.Count > 0)
         {
             var result = await RecognizeAsync(buffer.ToArray(), cancellationToken);
-            if (!string.IsNullOrWhiteSpace(result)) yield return result;
+            if (!string.IsNullOrWhiteSpace(result.Text)) yield return result;
         }
     }
 }

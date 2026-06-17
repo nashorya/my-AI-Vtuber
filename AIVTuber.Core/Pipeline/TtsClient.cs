@@ -32,19 +32,20 @@ public sealed class TtsClient : ITtsClient, IDisposable
     public async IAsyncEnumerable<byte[]> StreamAsync(
         string text,
         string voiceId,
+        string? emotion,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         switch (_provider)
         {
             case "minimax":
-                var audio = await MiniMaxSynthesizeAsync(text, voiceId, cancellationToken);
+                var audio = await MiniMaxSynthesizeAsync(text, voiceId, emotion, cancellationToken);
                 if (audio.Length > 0) yield return audio;
                 break;
 
             case "fish-audio":
             case "fish":
             default:
-                await foreach (var chunk in FishStreamAsync(text, voiceId, cancellationToken))
+                await foreach (var chunk in FishStreamAsync(text, voiceId, emotion, cancellationToken))
                     yield return chunk;
                 break;
         }
@@ -53,10 +54,12 @@ public sealed class TtsClient : ITtsClient, IDisposable
     // ---- fish.audio ----
 
     private async IAsyncEnumerable<byte[]> FishStreamAsync(
-        string text, string voiceId, [EnumeratorCancellation] CancellationToken cancellationToken)
+        string text, string voiceId, string? emotion, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var model = string.IsNullOrWhiteSpace(_config.Model) ? "s1" : _config.Model;
-        var json = BuildFishRequestJson(text, voiceId, _config.Speed, AudioPlayer.DefaultSampleRate);
+        // S2 supports inline emotion tags; S1 ignores them harmlessly.
+        var textWithEmotion = ApplyFishEmotionTag(text, emotion);
+        var json = BuildFishRequestJson(textWithEmotion, voiceId, _config.Speed, AudioPlayer.DefaultSampleRate);
 
         var request = new HttpRequestMessage(HttpMethod.Post, "https://api.fish.audio/v1/tts")
         {
@@ -97,13 +100,14 @@ public sealed class TtsClient : ITtsClient, IDisposable
 
     // ---- MiniMax t2a_v2 ----
 
-    private async Task<byte[]> MiniMaxSynthesizeAsync(string text, string voiceId, CancellationToken cancellationToken)
+    private async Task<byte[]> MiniMaxSynthesizeAsync(string text, string voiceId, string? emotion, CancellationToken cancellationToken)
     {
-        var model = string.IsNullOrWhiteSpace(_config.Model) ? "speech-02-hd" : _config.Model;
-        var url = "https://api.minimax.io/v1/t2a_v2";
-        if (!string.IsNullOrWhiteSpace(_config.GroupId)) url += $"?GroupId={_config.GroupId}";
+        var model = string.IsNullOrWhiteSpace(_config.Model) ? "speech-2.8-hd" : _config.Model;
+        // New platform: api.minimaxi.com — no GroupId query param, just Bearer token.
+        const string url = "https://api.minimaxi.com/v1/t2a_v2";
 
-        var json = BuildMiniMaxRequestJson(text, voiceId, model, _config.Speed, AudioPlayer.DefaultSampleRate);
+        var miniMaxEmotion = MapToMiniMaxEmotion(emotion);
+        var json = BuildMiniMaxRequestJson(text, voiceId, model, _config.Speed, AudioPlayer.DefaultSampleRate, miniMaxEmotion);
         var request = new HttpRequestMessage(HttpMethod.Post, url)
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json")
@@ -116,16 +120,56 @@ public sealed class TtsClient : ITtsClient, IDisposable
         return ParseMiniMaxAudio(body);
     }
 
-    /// <summary>Builds the MiniMax t2a_v2 request body (non-streaming, PCM at the given rate).</summary>
-    internal static string BuildMiniMaxRequestJson(string text, string voiceId, string model, double speed, int sampleRate)
-        => JsonSerializer.Serialize(new
+    /// <summary>Builds the MiniMax t2a_v2 request body (non-streaming, PCM at the given rate).
+    /// <paramref name="emotion"/> is the MiniMax emotion value or null to let the model choose.</summary>
+    internal static string BuildMiniMaxRequestJson(string text, string voiceId, string model, double speed, int sampleRate, string? emotion = null)
+    {
+        // emotion must be omitted (not null) from JSON when not set, so we build two anonymous types.
+        object voiceSetting = emotion is null
+            ? new { voice_id = voiceId, speed, vol = 1.0, pitch = 0 }
+            : new { voice_id = voiceId, speed, vol = 1.0, pitch = 0, emotion };
+
+        return JsonSerializer.Serialize(new
         {
             model,
             text,
             stream = false,
-            voice_setting = new { voice_id = voiceId, speed },
+            voice_setting = voiceSetting,
             audio_setting = new { sample_rate = sampleRate, format = "pcm", channel = 1 },
         }, JsonOptions);
+    }
+
+    /// <summary>Maps our internal emotion name to a MiniMax emotion value. Returns null for unknown/neutral.</summary>
+    private static string? MapToMiniMaxEmotion(string? emotion) => emotion?.ToLowerInvariant() switch
+    {
+        "happy"     => "happy",
+        "sad"       => "sad",
+        "angry"     => "angry",
+        "fearful"   => "fearful",
+        "disgusted" => "disgusted",
+        "surprised" => "surprised",
+        "calm"      => "calm",
+        "neutral"   => "calm",
+        "whisper"   => "whisper",
+        _           => null,
+    };
+
+    /// <summary>Prepends an inline emotion tag to text for Fish Audio S2. S1 ignores unknown tags.</summary>
+    private static string ApplyFishEmotionTag(string text, string? emotion)
+    {
+        var tag = emotion?.ToLowerInvariant() switch
+        {
+            "happy"     => "[happy]",
+            "sad"       => "[sad]",
+            "angry"     => "[angry]",
+            "fearful"   => "[fearful]",
+            "disgusted" => "[disgusted]",
+            "surprised" => "[surprised]",
+            "whisper"   => "[whispers]",
+            _           => null,
+        };
+        return tag is null ? text : $"{tag} {text}";
+    }
 
     /// <summary>Parses a MiniMax t2a_v2 JSON response: checks base_resp.status_code, then hex-decodes
     /// data.audio into raw PCM bytes. Throws on a non-zero status code.</summary>

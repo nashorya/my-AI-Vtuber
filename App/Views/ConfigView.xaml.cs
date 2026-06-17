@@ -22,4 +22,28 @@ public partial class ConfigView : UserControl
         try { await vm.SaveAsync(); }
         finally { SaveButton.IsEnabled = true; }
     }
+
+    private async void OnQueryVtsHotkeys(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not ConfigViewModel vm) return;
+        await vm.QueryVtsHotkeysAsync();
+    }
+
+    private async void OnRefreshLoopbackSources(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not ConfigViewModel vm) return;
+        await vm.RefreshLoopbackSourcesAsync();
+    }
+
+    private void OnAddEmotionRow(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not ConfigViewModel vm) return;
+        vm.AddEmotionRow();
+    }
+
+    private void OnRemoveEmotionRow(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not ConfigViewModel vm) return;
+        if (sender is FrameworkElement { Tag: EmotionMapRow row }) vm.RemoveEmotionRow(row);
+    }
 }

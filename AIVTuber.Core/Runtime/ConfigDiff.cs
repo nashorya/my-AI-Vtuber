@@ -79,6 +79,8 @@ public static class ConfigDiff
         if (a.Audio.InputDeviceIndex != b.Audio.InputDeviceIndex ||
             a.Audio.UseLoopback != b.Audio.UseLoopback ||
             a.Audio.LoopbackDeviceName != b.Audio.LoopbackDeviceName ||
+            a.Audio.EnableLoopbackListen != b.Audio.EnableLoopbackListen ||
+            a.Audio.LoopbackProcessName != b.Audio.LoopbackProcessName ||
             a.Audio.VadAggressiveness != b.Audio.VadAggressiveness ||
             a.Audio.PreSpeechPaddingMs != b.Audio.PreSpeechPaddingMs ||
             a.Audio.PostSpeechSilenceMs != b.Audio.PostSpeechSilenceMs)

@@ -17,6 +17,15 @@ public sealed class VtsClient : IDisposable
     private const string PluginName = "AIVTuber";
     private const string PluginDeveloper = "AIVTuberDev";
 
+    /// <summary>
+    /// VTS rejects InjectParameterDataRequest for built-in Live2D parameters like
+    /// ParamMouthOpenY ("only for tracking parameters"). We create our own custom
+    /// tracking parameter and inject into that instead. The user must map it to the
+    /// model's mouth-open parameter once in VTS (Settings → Live2D Parameter Mapping,
+    /// or drag it onto ParamMouthOpenY in the model's parameter list).
+    /// </summary>
+    public const string MouthParameterId = "AIVTuberMouthOpen";
+
     private readonly VtsConfig _config;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly Dictionary<string, TaskCompletionSource<VtsResponse>> _pending = new();
@@ -30,6 +39,9 @@ public sealed class VtsClient : IDisposable
     public event EventHandler<string>? OnError;
 
     public VtsClient(VtsConfig config) => _config = config;
+
+    /// <summary>True only while the WebSocket is actually open (not just "ConnectAsync was called once").</summary>
+    public bool IsConnected => _ws?.State == WebSocketState.Open;
 
     /// <summary>Connects and authenticates. The user must approve the plugin in the VTS UI the first
     /// time (the token request). Each connect fetches a fresh token.</summary>
@@ -65,6 +77,19 @@ public sealed class VtsClient : IDisposable
             var reason = authResp?.Data?.TryGetProperty("reason", out var r) == true ? r.GetString() : "unknown";
             throw new InvalidOperationException($"VTS authentication failed: {reason}");
         }
+
+        // Built-in Live2D parameters (e.g. ParamMouthOpenY) can't be injected directly —
+        // VTS only allows injection into custom tracking parameters. Create ours once;
+        // if it already exists VTS returns an APIError, which we ignore.
+        await RequestAsync("ParameterCreationRequest", new Dictionary<string, object>
+        {
+            ["parameterName"] = MouthParameterId,
+            ["explanation"] = "AIVTuber lip-sync (RMS-driven mouth open)",
+            ["min"] = 0f,
+            ["max"] = 1f,
+            ["defaultValue"] = 0f,
+        }, ct).ConfigureAwait(false);
+
         OnConnected?.Invoke(this, EventArgs.Empty);
     }
 
@@ -96,10 +121,10 @@ public sealed class VtsClient : IDisposable
     }
 
     public Task SetMouthAsync(float rms, CancellationToken ct = default)
-        => InjectParameterAsync("ParamMouthOpenY", Math.Clamp(rms * _config.MouthScale, 0f, 1f), ct);
+        => InjectParameterAsync(MouthParameterId, Math.Clamp(rms * _config.MouthScale, 0f, 1f), ct);
 
     public Task CloseMouthAsync(CancellationToken ct = default)
-        => InjectParameterAsync("ParamMouthOpenY", 0f, ct);
+        => InjectParameterAsync(MouthParameterId, 0f, ct);
 
     /// <summary>Send a request and wait for the matching response (by requestID), with a 30s timeout.</summary>
     private async Task<VtsResponse?> RequestAsync(string messageType, Dictionary<string, object> data, CancellationToken ct)
