@@ -77,6 +77,7 @@ public static class ConfigDiff
             c |= RuntimeChange.ReopenMemory;
 
         if (a.Audio.InputDeviceIndex != b.Audio.InputDeviceIndex ||
+            a.Audio.OutputDeviceIndex != b.Audio.OutputDeviceIndex ||
             a.Audio.UseLoopback != b.Audio.UseLoopback ||
             a.Audio.LoopbackDeviceName != b.Audio.LoopbackDeviceName ||
             a.Audio.EnableLoopbackListen != b.Audio.EnableLoopbackListen ||

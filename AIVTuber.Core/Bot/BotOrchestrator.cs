@@ -218,6 +218,7 @@ public sealed class BotOrchestrator : IDisposable
 
     private async Task RunStreamingPipelineAsync(List<Message> history, string userInput, CancellationToken ct)
     {
+        AIVTuber.Core.Diagnostics.DebugLog.Write($"[LLM输入] {userInput}");
         var sentenceChannel = Channel.CreateBounded<string>(3);
 
         var producerTask = Task.Run(async () =>
@@ -236,7 +237,7 @@ public sealed class BotOrchestrator : IDisposable
                     if (cleaned.Length != raw.Length) { buffer.Clear(); buffer.Append(cleaned); }
                     if (LlmClient.ContainsSentenceBoundary(buffer.ToString(), out var sentence, out var remainder))
                     {
-                        var trimmed = sentence.Trim();
+                        var trimmed = LlmClient.StripActionText(LlmClient.StripEmotionTags(LlmClient.StripPartialTags(sentence))).Trim();
                         if (!string.IsNullOrWhiteSpace(trimmed))
                         {
                             sentencesEmitted++;
@@ -246,7 +247,7 @@ public sealed class BotOrchestrator : IDisposable
                         buffer.Append(remainder);
                     }
                 }
-                var remaining = buffer.ToString().Trim();
+                var remaining = LlmClient.StripActionText(LlmClient.StripEmotionTags(LlmClient.StripPartialTags(buffer.ToString()))).Trim();
                 if (!string.IsNullOrWhiteSpace(remaining))
                 {
                     sentencesEmitted++;

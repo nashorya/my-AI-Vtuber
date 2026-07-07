@@ -99,6 +99,29 @@ ON CONFLICT(uid, platform) DO UPDATE SET
         }
     }
 
+    public async Task<List<Viewer>> GetAllAsync()
+    {
+        var results = new List<Viewer>();
+        var conn = _db.GetConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT uid, platform, nickname, first_seen, last_seen, interaction_count, notes FROM viewers ORDER BY last_seen DESC";
+        using var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false);
+        while (await reader.ReadAsync().ConfigureAwait(false))
+        {
+            results.Add(new Viewer
+            {
+                Uid = reader.GetString(0),
+                Platform = reader.GetString(1),
+                Nickname = reader.IsDBNull(2) ? null : reader.GetString(2),
+                FirstSeen = reader.IsDBNull(3) ? null : reader.GetString(3),
+                LastSeen = reader.IsDBNull(4) ? null : reader.GetString(4),
+                InteractionCount = reader.GetInt32(5),
+                Notes = reader.IsDBNull(6) ? null : reader.GetString(6)
+            });
+        }
+        return results;
+    }
+
     /// <summary>Check if a viewer is a "regular" (interaction count > threshold).</summary>
     public async Task<bool> IsRegularAsync(string uid, string platform, int threshold = 5)
     {

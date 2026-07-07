@@ -20,13 +20,15 @@ public sealed class AudioPlayer : IDisposable
     private bool _disposed;
     private CancellationTokenSource? _playCts;
     private readonly int _sampleRate;
+    private readonly int _deviceIndex;
 
-    public AudioPlayer(int sampleRate = DefaultSampleRate)
+    public AudioPlayer(int sampleRate = DefaultSampleRate, int deviceIndex = -1)
     {
         _sampleRate = sampleRate;
+        _deviceIndex = deviceIndex;
     }
 
-    /// <summary>
+/// <summary>
     /// Fired every ~30ms during playback with the RMS value (0.0 - 1.0 range typically).
     /// Used for lip sync (VTS mouth parameter).
     /// </summary>
@@ -72,7 +74,7 @@ public sealed class AudioPlayer : IDisposable
         try
         {
             using var reader = new StreamAudioReader(audioStream, _sampleRate);
-            _waveOut = new WaveOutEvent();
+            _waveOut = new WaveOutEvent { DeviceNumber = _deviceIndex };
             _waveOut.Init(reader);
 
             var tcs = new TaskCompletionSource<bool>();
@@ -122,7 +124,7 @@ public sealed class AudioPlayer : IDisposable
         var stream = new StreamingAudioStream();
         var reader = new StreamAudioReader(stream, _sampleRate);
 
-        _waveOut = new WaveOutEvent();
+        _waveOut = new WaveOutEvent { DeviceNumber = _deviceIndex };
         _waveOut.Init(reader);
         _waveOut.Play();
 
@@ -190,10 +192,7 @@ public sealed class AudioPlayer : IDisposable
             try
             {
                 await foreach (var chunk in chunks.WithCancellation(ct))
-                {
                     sink.Write(chunk, 0, chunk.Length);
-                    PcmChunkPlayed?.Invoke(this, chunk);
-                }
             }
             catch (OperationCanceledException) { }
             finally { sink.CompleteWriting(); }
@@ -202,7 +201,19 @@ public sealed class AudioPlayer : IDisposable
         try
         {
             using var reader = new StreamAudioReader(sink, _sampleRate);
-            _waveOut = new WaveOutEvent();
+            // Fire PcmChunkPlayed when WaveOut actually reads the bytes (playback time),
+            // not when chunks arrive in the buffer, so CABLE and speakers stay in sync.
+            var pcmEvent = PcmChunkPlayed;
+            if (pcmEvent is not null)
+            {
+                reader.OnRead = (buf, off, len) =>
+                {
+                    var copy = new byte[len];
+                    Array.Copy(buf, off, copy, 0, len);
+                    pcmEvent.Invoke(this, copy);
+                };
+            }
+            _waveOut = new WaveOutEvent { DeviceNumber = _deviceIndex };
             _waveOut.Init(reader);
 
             var tcs = new TaskCompletionSource<bool>();
@@ -334,18 +345,18 @@ public sealed class AudioPlayer : IDisposable
             }
         }
 
+        // When set, called with each buffer of PCM bytes as WaveOut actually reads them.
+        // Fires at true playback time (not write time), keeping downstream consumers in sync.
+        public Action<byte[], int, int>? OnRead { get; set; }
+
         public override int Read(byte[] buffer, int offset, int count)
         {
-            // For supported formats, try to use WaveFormatConversion
-            // For simplicity, we read raw PCM data
             int bytesRead = _sourceStream.Read(buffer, offset, count);
-
-            // Calculate RMS from the read bytes (16-bit PCM)
             if (bytesRead > 0)
             {
                 CalculateRms(buffer, offset, bytesRead);
+                OnRead?.Invoke(buffer, offset, bytesRead);
             }
-
             return bytesRead;
         }
 

@@ -132,6 +132,26 @@
                     </Border>
                 </Border>
 
+                <!-- Stop speaking (interrupt) — only shown while the AI is thinking/speaking,
+                     so it never pushes the mic-mute button off the toolbar when idle. -->
+                <ui:Button x:Name="StopSpeakingButton"
+                           Content="截停说话"
+                           Margin="0,0,8,0" Padding="10,4"
+                           FontSize="12"
+                           Click="OnStopSpeakingClicked">
+                    <ui:Button.Style>
+                        <Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}">
+                            <Setter Property="Visibility" Value="Collapsed" />
+                            <Setter Property="Appearance" Value="Danger" />
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding CanStop}" Value="True">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ui:Button.Style>
+                </ui:Button>
+
                 <!-- Mic mute toggle -->
                 <ui:Button x:Name="MicMuteButton"
                            Margin="0,0,0,0" Padding="10,4"

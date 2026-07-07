@@ -14,6 +14,12 @@ public partial class MonitorView : UserControl
             vm.ToggleMicMute();
     }
 
+    private void OnStopSpeakingClicked(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is MonitorViewModel vm)
+            vm.StopSpeaking();
+    }
+
     private void OnRestartLocalAsr(object sender, RoutedEventArgs e)
     {
         if (DataContext is MonitorViewModel vm)

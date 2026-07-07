@@ -13,11 +13,13 @@ public sealed class AsrClient : IAsrClient, IDisposable
     private readonly HttpClient _httpClient;
     private readonly string _baseUrl;
     private readonly string _apiKey;
+    private readonly string _model;
 
-    public AsrClient(string baseUrl, string apiKey)
+    public AsrClient(string baseUrl, string apiKey, string? model = null)
     {
         _baseUrl = baseUrl.TrimEnd('/');
         _apiKey = apiKey;
+        _model = NormalizeModel(model);
         _httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
     }
 
@@ -29,7 +31,7 @@ public sealed class AsrClient : IAsrClient, IDisposable
         var fileContent = new ByteArrayContent(wavData);
         fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/wav");
         content.Add(fileContent, "file", "audio.wav");
-        content.Add(new StringContent("whisper-1"), "model");
+        content.Add(new StringContent(_model), "model");
         content.Add(new StringContent("zh"), "language");
 
         var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/v1/audio/transcriptions")
@@ -39,7 +41,7 @@ public sealed class AsrClient : IAsrClient, IDisposable
         request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _apiKey);
 
         using var response = await _httpClient.SendAsync(request, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await EnsureSuccessWithBodyAsync(response, cancellationToken);
 
         var json = await response.Content.ReadAsStringAsync(cancellationToken);
         var result = JsonSerializer.Deserialize<TranscriptionResponse>(json);
@@ -84,6 +86,21 @@ public sealed class AsrClient : IAsrClient, IDisposable
 
         writer.Flush();
         return ms.ToArray();
+    }
+
+    internal static string NormalizeModel(string? model)
+        => string.IsNullOrWhiteSpace(model) ? "whisper-1" : model.Trim();
+
+    private static async Task EnsureSuccessWithBodyAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode) return;
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var detail = string.IsNullOrWhiteSpace(body) ? "" : $": {body}";
+        throw new HttpRequestException(
+            $"ASR HTTP {(int)response.StatusCode} {response.ReasonPhrase}{detail}",
+            null,
+            response.StatusCode);
     }
 
     public void Dispose() => _httpClient.Dispose();

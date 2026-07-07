@@ -81,7 +81,15 @@ public sealed class ProcessLoopbackCapture : IDisposable
                 {
                     var procs = Process.GetProcessesByName(_processName!);
                     if (procs.Length == 0) { Thread.Sleep(2000); continue; }
-                    pid = (uint)procs[0].Id;
+                    // Prefer the process that owns a main window: it's the top-level app
+                    // whose process tree (INCLUDE_TARGET_PROCESS_TREE) covers embedded
+                    // helper processes (e.g. livehime → bililive_browser, which actually
+                    // renders the PK/连麦 audio). Windowless siblings would miss them.
+                    var target = procs.FirstOrDefault(p => p.MainWindowHandle != IntPtr.Zero) ?? procs[0];
+                    pid = (uint)target.Id;
+                    Diagnostics.DebugLog.Write($"[内录] 锁定进程 {_processName} pid={pid} " +
+                        $"窗口='{target.MainWindowTitle}' 同名进程数={procs.Length} " +
+                        $"(候选pid: {string.Join(",", procs.Select(p => p.Id))})");
                     foreach (var p in procs) p.Dispose();
                 }
 
@@ -136,11 +144,15 @@ public sealed class ProcessLoopbackCapture : IDisposable
             try
             {
                 sourceFormat = WaveFormat.MarshalFromPtr(fmtPtr);
-                // Initialize in shared mode with loopback flag
+                // Process loopback virtual device is already a capture source — do NOT pass
+                // AUDCLNT_STREAMFLAGS_LOOPBACK (that flag is for real render-endpoint loopback).
+                // Using it here causes Initialize to return S_OK but leaves the client
+                // uninitialized → 0x88890001 (AUDCLNT_E_NOT_INITIALIZED) on Start/GetBuffer.
+                // hnsBufferDuration must also be 0 for the process loopback API.
                 Marshal.ThrowExceptionForHR(audioClient.Initialize(
-                    0,           // AUDCLNT_SHAREMODE_SHARED
-                    0x00020000,  // AUDCLNT_STREAMFLAGS_LOOPBACK
-                    100_000_000, // 10-second buffer in 100-ns units
+                    0,  // AUDCLNT_SHAREMODE_SHARED
+                    0,  // no stream flags — virtual device handles loopback internally
+                    0,  // hnsBufferDuration must be 0
                     0, fmtPtr, Guid.Empty));
             }
             finally { Marshal.FreeCoTaskMem(fmtPtr); }
@@ -162,6 +174,13 @@ public sealed class ProcessLoopbackCapture : IDisposable
             int frameBytes = _targetSampleRate * 2 * 30 / 1000; // 30 ms chunks
 
             Marshal.ThrowExceptionForHR(audioClient.Start());
+            Diagnostics.DebugLog.Write($"[内录] 采集已启动 源格式={sourceFormat.SampleRate}Hz/" +
+                $"{sourceFormat.Channels}ch/{sourceFormat.BitsPerSample}bit");
+
+            // Diagnostic: report the loudest captured sample every ~2s so we can tell whether
+            // the target process is rendering any audio at all (e.g. 对面主播's voice).
+            float diagPeak = 0f;
+            var diagClock = System.Diagnostics.Stopwatch.StartNew();
 
             while (_running)
             {
@@ -190,6 +209,15 @@ public sealed class ProcessLoopbackCapture : IDisposable
                     if (read <= 0) continue;
                     var frame = chunk[..read];
                     AudioFrameAvailable?.Invoke(this, frame);
+                    float framePeak = Diagnostics.DebugLog.PeakRms(frame);
+                    if (framePeak > diagPeak) diagPeak = framePeak;
+                    if (diagClock.ElapsedMilliseconds >= 2000)
+                    {
+                        Diagnostics.DebugLog.Write($"[内录] 近2秒峰值={diagPeak:F3} " +
+                            $"(muted={(_running ? "" : "stop")})");
+                        diagPeak = 0f;
+                        diagClock.Restart();
+                    }
                     if (LevelUpdated is not null)
                     {
                         int samples = read / 2;

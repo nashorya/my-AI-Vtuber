@@ -19,7 +19,7 @@ public sealed class LocalAsrClient : IAsrClient
         using var content = new ByteArrayContent(pcm16k);
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
         var response = await _http.PostAsync($"{_baseUrl}/recognize?sr=16000", content, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await EnsureSuccessWithBodyAsync(response, cancellationToken);
         var result = await response.Content.ReadFromJsonAsync<AsrResponse>(cancellationToken: cancellationToken);
         return new AsrResult(result?.Text ?? "");
     }
@@ -49,6 +49,18 @@ public sealed class LocalAsrClient : IAsrClient
             return resp.IsSuccessStatusCode;
         }
         catch { return false; }
+    }
+
+    private static async Task EnsureSuccessWithBodyAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode) return;
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var detail = string.IsNullOrWhiteSpace(body) ? "" : $": {body}";
+        throw new HttpRequestException(
+            $"Local ASR HTTP {(int)response.StatusCode} {response.ReasonPhrase}{detail}",
+            null,
+            response.StatusCode);
     }
 
     private sealed record AsrResponse(string Text);

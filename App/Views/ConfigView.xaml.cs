@@ -17,6 +17,9 @@ public partial class ConfigView : UserControl
         if (!string.IsNullOrEmpty(LlmKey.Password)) vm.Working.Llm.ApiKey = LlmKey.Password;
         if (!string.IsNullOrEmpty(TtsKey.Password)) vm.Working.Tts.ApiKey = TtsKey.Password;
         if (!string.IsNullOrEmpty(AsrKey.Password)) vm.Working.Asr.ApiKey = AsrKey.Password;
+        if (!string.IsNullOrEmpty(BiliSessdata.Password)) vm.Working.Bilibili.Sessdata = BiliSessdata.Password;
+        if (!string.IsNullOrEmpty(BiliJct.Password)) vm.Working.Bilibili.BiliJct = BiliJct.Password;
+        if (!string.IsNullOrEmpty(BiliBuvid3.Password)) vm.Working.Bilibili.Buvid3 = BiliBuvid3.Password;
 
         SaveButton.IsEnabled = false;
         try { await vm.SaveAsync(); }

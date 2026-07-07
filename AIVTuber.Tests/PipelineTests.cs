@@ -246,6 +246,15 @@ public class AsrClientTests
         client.Dispose();
         client.Dispose();
     }
+
+    [Theory]
+    [InlineData(null, "whisper-1")]
+    [InlineData("", "whisper-1")]
+    [InlineData("  custom-asr  ", "custom-asr")]
+    public void NormalizeModel_UsesConfiguredModelOrDefault(string? configured, string expected)
+    {
+        Assert.Equal(expected, AsrClient.NormalizeModel(configured));
+    }
 }
 
 public class MessageTests

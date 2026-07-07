@@ -19,6 +19,10 @@ public sealed class AppConfig
 public sealed class AudioConfig
 {
     public int InputDeviceIndex { get; set; } = 0;
+    /// <summary>Output device index for TTS playback. -1 = system default.
+    /// Set this to your real speakers/headphones so you can hear the AI even when
+    /// the system default output is a virtual cable used for streaming.</summary>
+    public int OutputDeviceIndex { get; set; } = -1;
     public bool UseLoopback { get; set; } = false;
     public string LoopbackDeviceName { get; set; } = string.Empty;
     /// <summary>When true, simultaneously captures system audio as a second channel.

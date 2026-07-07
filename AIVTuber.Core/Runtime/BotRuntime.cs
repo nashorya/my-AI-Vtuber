@@ -58,7 +58,9 @@ public sealed class BotRuntime : IAsyncDisposable
 
     public bool VtsConnected => _vts?.IsConnected == true;
     public bool ObsConnected => _obs is not null;
-    public bool DanmakuActive => _danmaku is not null;
+    /// <summary>True only when the danmaku bridge subprocess is actually alive — not merely
+    /// when the client object exists.</summary>
+    public bool DanmakuActive => _danmaku?.IsBridgeRunning == true;
     public bool LocalAsrActive => _asr is LocalAsrClient;
 
     private volatile bool _localAsrReachable;
@@ -87,12 +89,36 @@ public sealed class BotRuntime : IAsyncDisposable
     public FactRepository FactRepository => _factRepo;
     public DanmakuSelector? Selector => _selector;
 
+    public Task ForceExtractMemoryAsync() => _memoryExtractor.ExtractFactsAsync();
+
     private volatile bool _micMuted;
     public bool MicMuted => _micMuted;
     public void SetMicMuted(bool muted) => _micMuted = muted;
 
+    /// <summary>Immediately stops any in-progress AI generation/speech: cancels the pipeline,
+    /// halts playback, and closes the VTS mouth. Safe to call when idle (no-op).</summary>
+    public void StopSpeaking() => _orchestrator?.Interrupt();
+
     // True while AI is speaking — loopback VAD feed is paused to prevent self-hearing.
     private volatile bool _loopbackVadMuted;
+
+    // Minimum segment peak (0..1) to send loopback audio to ASR. Below this it's silence/noise,
+    // and the local ASR fabricates phantom 对面 lines from it. Real speech is well above this.
+    private const float LoopbackAsrMinPeak = 0.05f;
+    private const float MicAsrMinPeak = 0.03f;
+
+    /// <summary>Feeds a loopback frame to its VAD unless the AI itself is speaking (which would
+    /// otherwise feed the AI's own TTS back into the 对面 channel).</summary>
+    private void FeedLoopback(byte[] buf)
+    {
+        if (_loopbackVad is null) return;
+        if (_loopbackVadMuted)
+        {
+            _loopbackVad.Reset(); // drop any half-open segment so it can't merge across the gap
+            return;
+        }
+        _loopbackVad.Feed(buf);
+    }
 
     private static float ComputeRms(byte[] pcm16)
     {
@@ -199,13 +225,17 @@ public sealed class BotRuntime : IAsyncDisposable
         }
         return new AsrClient(
             asr.Provider.Contains("deepseek") ? $"https://{asr.Provider}" : $"https://api.{asr.Provider}.com",
-            asr.ApiKey);
+            asr.ApiKey,
+            asr.Model);
     }
 
     private static ITtsClient CreateTtsClient(TtsConfig tts)
-        => tts.Provider.ToLowerInvariant() is "aliyun" or "cosyvoice" or "dashscope"
-            ? new DashScopeTtsClient(tts)
-            : new TtsClient(tts);
+        => tts.Provider.ToLowerInvariant() switch
+        {
+            "aliyun" or "cosyvoice" or "dashscope" => new DashScopeTtsClient(tts),
+            "minimax" => new MiniMaxWsTtsClient(tts),
+            _ => new TtsClient(tts),
+        };
 
     private void InitPipeline()
     {
@@ -219,7 +249,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _tts = CreateTtsClient(_config.Tts);
         if (_player is null)
         {
-            _player = new AudioPlayer();
+            _player = new AudioPlayer(deviceIndex: _config.Audio.OutputDeviceIndex);
             // Single stable tap: reads _virtualMic field, so mixer restarts pick up automatically.
             _player.PcmChunkPlayed += (_, chunk) => _virtualMic?.WriteTts(chunk);
         }
@@ -229,6 +259,7 @@ public sealed class BotRuntime : IAsyncDisposable
 
         _orchestrator.OnUserTranscript += async (_, text) =>
         {
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风识别] 「{text}」");
             _stateTracker.TranscriptReady(Environment.TickCount64);
             _conversation.AddUserMessage(text);
             UserTranscript?.Invoke(this, text);
@@ -241,7 +272,11 @@ public sealed class BotRuntime : IAsyncDisposable
         };
         _orchestrator.OnEmotionDetected += (_, e) => EmotionDetected?.Invoke(this, e);
         _orchestrator.OnUserEmotionDetected += (_, e) => UserEmotionDetected?.Invoke(this, e);
-        _orchestrator.OnLoopbackTranscript += (_, t) => LoopbackTranscript?.Invoke(this, t);
+        _orchestrator.OnLoopbackTranscript += (_, t) =>
+        {
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录识别→对面] 「{t}」");
+            LoopbackTranscript?.Invoke(this, t);
+        };
 
         if (_obs is not null)
         {
@@ -256,7 +291,7 @@ public sealed class BotRuntime : IAsyncDisposable
 
         // Mute loopback VAD while AI is playing so it doesn't hear its own TTS output.
         _orchestrator.OnAiStartSpeaking += (_, _) => _loopbackVadMuted = true;
-        _orchestrator.OnAiStopSpeaking  += (_, _) => _loopbackVadMuted = false;
+        _orchestrator.OnAiStopSpeaking  += (_, _) => { _loopbackVadMuted = false; _loopbackVad?.Reset(); };
 
         // Stable speaking->selector bridge, added once per orchestrator. Null-safe so it works
         // whether or not danmaku is active, and reads the current _selector field after rebuilds —
@@ -344,12 +379,21 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         _mic = new MicrophoneCapture(_config.Audio.InputDeviceIndex);
         _vad = new VadDetector(_config.Audio.VadAggressiveness, _config.Audio.PreSpeechPaddingMs, _config.Audio.PostSpeechSilenceMs);
-        _mic.AudioFrameAvailable += (_, buf) => _vad.Feed(buf);
+        _mic.AudioFrameAvailable += (_, buf) => { if (!_micMuted) _vad.Feed(buf); };
         _mic.LevelUpdated += (_, level) => MicLevelUpdated?.Invoke(this, level);
         _mic.ErrorOccurred += (_, ex) => PipelineError?.Invoke(this, $"[麦克风] {ex.Message}");
         _vad.SpeechDetected += async (_, seg) =>
         {
+            var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
+            AIVTuber.Core.Diagnostics.DebugLog.Write(
+                $"[麦克风段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
+                $"峰值={peak:F3} micMuted={_micMuted}");
             if (_micMuted) return;
+            if (peak < MicAsrMinPeak)
+            {
+                AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风段] 能量过低(<{MicAsrMinPeak})，跳过ASR");
+                return;
+            }
             _stateTracker.InputStarted(Environment.TickCount64);
             var history = _conversation.BuildMessages();
             // Mic has highest priority: always interrupts (including any loopback processing)
@@ -375,8 +419,8 @@ public sealed class BotRuntime : IAsyncDisposable
             {
                 _virtualMic = new AIVTuber.Core.Audio.VirtualMicMixer(_config.Audio.VirtualMicDeviceName);
                 _virtualMic.Start();
-                // Feed real mic frames into the mixer — not gated by _micMuted (mute only stops AI listening)
-                _mic.AudioFrameAvailable += (_, buf) => _virtualMic?.WriteMic(buf);
+                // Real mic is intentionally not injected into the virtual cable here. The
+                // cable carries AI TTS only; mic capture remains available for AI listening.
                 Console.WriteLine($"[虚拟麦克风] 混音器已启动 → {_config.Audio.VirtualMicDeviceName}");
             }
             catch (Exception ex)
@@ -397,6 +441,18 @@ public sealed class BotRuntime : IAsyncDisposable
                 _loopbackVad = new VadDetector(_config.Audio.VadAggressiveness, _config.Audio.PreSpeechPaddingMs, _config.Audio.PostSpeechSilenceMs);
                 _loopbackVad.SpeechDetected += async (_, seg) =>
                 {
+                    var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
+                    AIVTuber.Core.Diagnostics.DebugLog.Write(
+                        $"[内录段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
+                        $"峰值={peak:F3} loopbackMuted={_loopbackVadMuted}");
+                    // Energy gate: the local ASR (Qwen) hallucinates plausible Chinese from silence/
+                    // near-silent noise. Real speech peaks ~0.4+, hallucination-prone segments ≤0.02.
+                    // Drop low-energy segments so they never reach ASR and get mislabeled as 对面.
+                    if (peak < LoopbackAsrMinPeak)
+                    {
+                        AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
+                        return;
+                    }
                     var tagged = new AIVTuber.Core.Audio.SpeechSegment
                     {
                         AudioData = seg.AudioData, StartTime = seg.StartTime, EndTime = seg.EndTime,
@@ -409,23 +465,27 @@ public sealed class BotRuntime : IAsyncDisposable
                 {
                     // Per-process capture — Windows 10 2004+ / Windows 11, no virtual sound card
                     _processLoopback = new AIVTuber.Core.Audio.ProcessLoopbackCapture(_config.Audio.LoopbackProcessName);
-                    _processLoopback.AudioFrameAvailable += (_, buf) => { if (!_loopbackVadMuted) _loopbackVad!.Feed(buf); };
+                    _processLoopback.AudioFrameAvailable += (_, buf) => FeedLoopback(buf);
                     _processLoopback.LevelUpdated += (_, level) => LoopbackLevelUpdated?.Invoke(this, level);
                     _processLoopback.ErrorOccurred += (_, ex) => PipelineError?.Invoke(this, $"[内录-进程] {ex.Message}");
                     _processLoopback.Start();
+                    AIVTuber.Core.Diagnostics.DebugLog.Write(
+                        $"[内录] 模式=进程内录 目标进程='{_config.Audio.LoopbackProcessName}'");
                     Console.WriteLine($"[音频] 进程内录已启动 → {_config.Audio.LoopbackProcessName}");
                 }
                 else
                 {
-                    // Whole-system loopback. The VAD feed is muted while the AI is speaking
-                    // (via _loopbackVadMuted) so the AI never reacts to its own TTS output.
+                    // Whole-system loopback. This path uses the selected Windows render
+                    // endpoint, which is more predictable for browser tests such as Edge.
                     _loopback = new AIVTuber.Core.Audio.LoopbackCapture(16000,
                         string.IsNullOrWhiteSpace(_config.Audio.LoopbackDeviceName) ? null : _config.Audio.LoopbackDeviceName);
-                    _loopback.AudioFrameAvailable += (_, buf) => { if (!_loopbackVadMuted) _loopbackVad!.Feed(buf); };
+                    _loopback.AudioFrameAvailable += (_, buf) => FeedLoopback(buf);
                     _loopback.AudioFrameAvailable += (_, buf) => LoopbackLevelUpdated?.Invoke(this,
                         buf.Length >= 2 ? ComputeRms(buf) : 0f);
+                    _loopback.ErrorOccurred += (_, ex) => PipelineError?.Invoke(this, $"[内录] {ex.Message}");
                     _loopback.Start();
-                    Console.WriteLine("[音频] 全局内录已启动（PK 模式）");
+                    AIVTuber.Core.Diagnostics.DebugLog.Write("[内录] 模式=全局内录(WASAPI)");
+                    Console.WriteLine("[音频] 全局内录已启动（全部音源）");
                 }
             }
             catch (Exception ex)
@@ -444,8 +504,21 @@ public sealed class BotRuntime : IAsyncDisposable
         _selector = CreateSelector();
         _danmaku = new BilibiliDanmakuClient(_config.Bilibili);
         _danmaku.OnDanmaku += (_, d) => { _selector?.Enqueue(d); _selector?.TrySelectNext(); };
-        try { await _danmaku.StartAsync(_cts.Token); }
-        catch (Exception ex) { Console.WriteLine($"[弹幕] 启动失败: {ex.Message}"); }
+        // Surface bridge health to the UI error banner, and pipe its stdout/stderr to the debug log.
+        _danmaku.OnError += (_, msg) => PipelineError?.Invoke(this, $"[弹幕] {msg}");
+        _danmaku.OnProcessExited += (_, msg) => PipelineError?.Invoke(this, $"[弹幕] {msg}");
+        _danmaku.OnBridgeOutput += (_, line) => AIVTuber.Core.Diagnostics.DebugLog.Write($"[弹幕桥] {line}");
+        try
+        {
+            await _danmaku.StartAsync(_cts.Token);
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[弹幕] 已启动，监听端口 {_config.Bilibili.PushPort}，房间 {_config.Bilibili.RoomId}");
+        }
+        catch (Exception ex)
+        {
+            var msg = $"[弹幕] 启动失败: {ex.Message}";
+            Console.WriteLine(msg);
+            PipelineError?.Invoke(this, msg);
+        }
     }
 
     /// <summary>Creates a DanmakuSelector with its selection handler wired. Speaking state is

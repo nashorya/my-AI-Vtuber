@@ -67,7 +67,14 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
     }
 
     private PipelineState _state = PipelineState.Idle;
-    public PipelineState State { get => _state; private set => SetField(ref _state, value); }
+    public PipelineState State
+    {
+        get => _state;
+        private set { if (SetField(ref _state, value)) OnPropertyChanged(nameof(CanStop)); }
+    }
+
+    /// <summary>True while the AI is generating or speaking — gates the "截停说话" button.</summary>
+    public bool CanStop => _state is PipelineState.Thinking or PipelineState.Speaking;
 
     private string _userText = "";
     public string UserText { get => _userText; private set => SetField(ref _userText, value); }
@@ -155,12 +162,19 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
         _dispatch(() => MicMuted = muted);
     }
 
+    /// <summary>Interrupts the AI immediately — stops current speech/generation and playback.</summary>
+    public void StopSpeaking() => _runtime.StopSpeaking();
+
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    private void SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
+    private bool SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
     {
-        if (EqualityComparer<T>.Default.Equals(field, value)) return;
+        if (EqualityComparer<T>.Default.Equals(field, value)) return false;
         field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        OnPropertyChanged(name);
+        return true;
     }
+
+    private void OnPropertyChanged(string? name) =>
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }

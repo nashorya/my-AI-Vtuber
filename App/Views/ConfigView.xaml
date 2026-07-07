@@ -311,7 +311,41 @@
             </StackPanel>
 
             <ui:ToggleSwitch Content="启用 OBS 字幕" IsChecked="{Binding Working.Obs.Enable}" Margin="0,0,0,8" />
-            <ui:ToggleSwitch Content="启用 B站弹幕" IsChecked="{Binding Working.Bilibili.Enable}" Margin="0,0,0,24" />
+            <ui:ToggleSwitch Content="启用 B站弹幕" IsChecked="{Binding Working.Bilibili.Enable}" Margin="0,0,0,12" />
+
+            <TextBlock Text="直播间房间号（RoomId）" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Bilibili.RoomId, UpdateSourceTrigger=PropertyChanged}"
+                        PlaceholderText="如 12345" Margin="0,0,0,10" />
+
+            <TextBlock Text="SESSDATA（登录 Cookie，留空则保留原值）" Style="{StaticResource FieldLabel}" />
+            <ui:PasswordBox x:Name="BiliSessdata" PlaceholderText="…" Margin="0,0,0,4" />
+            <TextBlock Text="{Binding Working.Bilibili.Sessdata, Converter={StaticResource KeySetStatus}, Mode=OneWay}"
+                       Foreground="{Binding Working.Bilibili.Sessdata, Converter={StaticResource KeySetBrush}, Mode=OneWay}"
+                       FontSize="11" Margin="0,0,0,10" />
+
+            <TextBlock Text="bili_jct（登录 Cookie，留空则保留原值）" Style="{StaticResource FieldLabel}" />
+            <ui:PasswordBox x:Name="BiliJct" PlaceholderText="…" Margin="0,0,0,4" />
+            <TextBlock Text="{Binding Working.Bilibili.BiliJct, Converter={StaticResource KeySetStatus}, Mode=OneWay}"
+                       Foreground="{Binding Working.Bilibili.BiliJct, Converter={StaticResource KeySetBrush}, Mode=OneWay}"
+                       FontSize="11" Margin="0,0,0,10" />
+
+            <TextBlock Text="buvid3（登录 Cookie，留空则保留原值）" Style="{StaticResource FieldLabel}" />
+            <ui:PasswordBox x:Name="BiliBuvid3" PlaceholderText="…" Margin="0,0,0,4" />
+            <TextBlock Text="{Binding Working.Bilibili.Buvid3, Converter={StaticResource KeySetStatus}, Mode=OneWay}"
+                       Foreground="{Binding Working.Bilibili.Buvid3, Converter={StaticResource KeySetBrush}, Mode=OneWay}"
+                       FontSize="11" Margin="0,0,0,10" />
+
+            <TextBlock Text="弹幕推送端口（PushPort，本地接收 Python 桥）" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Bilibili.PushPort, UpdateSourceTrigger=PropertyChanged}"
+                        PlaceholderText="19876" Margin="0,0,0,10" />
+
+            <TextBlock Text="选弹幕间隔（秒，避免过度回复）" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Bilibili.SelectionIntervalSec, UpdateSourceTrigger=PropertyChanged}"
+                        PlaceholderText="8" Margin="0,0,0,10" />
+
+            <TextBlock Text="Python 路径" Style="{StaticResource FieldLabel}" />
+            <ui:TextBox Text="{Binding Working.Bilibili.PythonPath, UpdateSourceTrigger=PropertyChanged}"
+                        PlaceholderText="python" Margin="0,0,0,24" />
 
             <!-- ── Placeholder: Tools ── -->
             <StackPanel Orientation="Horizontal" Margin="0,0,0,12" Opacity="0.45">

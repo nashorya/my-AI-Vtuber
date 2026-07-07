@@ -9,7 +9,6 @@ namespace AIVTuber.Core.Audio;
 public sealed class LoopbackCapture : IDisposable
 {
     private WasapiLoopbackCapture? _capture;
-    private WaveInEvent? _silenceWaveIn;
     private BufferedWaveProvider? _bufferedProvider;
     private MediaFoundationResampler? _resampler;
     private readonly int _targetSampleRate;
@@ -129,17 +128,6 @@ public sealed class LoopbackCapture : IDisposable
                 ErrorOccurred?.Invoke(this, e.Exception);
         };
 
-        // Start a silence wave-in to keep the loopback stream active
-        // (WASAPI loopback requires an active render stream)
-        _silenceWaveIn = new WaveInEvent
-        {
-            DeviceNumber = 0,
-            WaveFormat = new WaveFormat(44100, 16, 2),
-            BufferMilliseconds = 100,
-        };
-        _silenceWaveIn.DataAvailable += (_, _) => { }; // discard
-        _silenceWaveIn.StartRecording();
-
         _capture.StartRecording();
         enumerator.Dispose();
     }
@@ -150,9 +138,6 @@ public sealed class LoopbackCapture : IDisposable
     public void Stop()
     {
         _capture?.StopRecording();
-        _silenceWaveIn?.StopRecording();
-        _silenceWaveIn?.Dispose();
-        _silenceWaveIn = null;
         _resampler?.Dispose();
         _resampler = null;
         _bufferedProvider = null;

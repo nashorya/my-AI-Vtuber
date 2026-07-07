@@ -1,8 +1,13 @@
 {
   "audio": {
     "input_device_index": 0,
+    "output_device_index": -1,
     "use_loopback": false,
     "loopback_device_name": "",
+    "enable_loopback_listen": false,
+    "loopback_process_name": "",
+    "enable_virtual_mic": false,
+    "virtual_mic_device_name": "",
     "vad_aggressiveness": 2,
     "pre_speech_padding_ms": 200,
     "post_speech_silence_ms": 500
@@ -10,7 +15,10 @@
   "asr": {
     "provider": "aliyun",
     "api_key": "<your-asr-api-key>",
-    "app_id": "<your-asr-app-id>"
+    "app_id": "<your-asr-app-id>",
+    "model": "",
+    "local_asr_url": "http://localhost:8765",
+    "python_path": "python"
   },
   "llm": {
     "base_url": "https://api.deepseek.com",
@@ -22,7 +30,10 @@
   "tts": {
     "provider": "fish-audio",
     "api_key": "<your-tts-api-key>",
-    "voice_id": "<your-voice-id>"
+    "voice_id": "<your-voice-id>",
+    "model": "",
+    "group_id": "",
+    "speed": 1
   },
   "vts": {
     "host": "localhost",
@@ -58,5 +69,10 @@
     "push_port": 19876,
     "selection_interval_sec": 8,
     "python_path": "python"
+  },
+  "input": {
+    "mic_template": "（你的创造者对你说：{text}）",
+    "loopback_template": "（你听到对面说：{text}）",
+    "danmaku_template": "（弹幕 {username}：{content}）"
   }
 }

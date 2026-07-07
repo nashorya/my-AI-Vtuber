@@ -11,7 +11,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 {
     private readonly MonitorView _monitorView;
     private readonly ConfigView _configView;
-    private readonly MemoryPlaceholderView _memoryView = new();
+    private readonly MemoryPlaceholderView _memoryView;
 
     public MainWindow(BotRuntime runtime, ConfigManager configManager)
     {
@@ -28,6 +28,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             configManager.Save,
             runtime.ApplyConfigAsync,
             () => runtime.GetVtsHotkeysAsync());
+
+        _memoryView = new MemoryPlaceholderView();
+        _memoryView.DataContext = new MemoryViewModel(
+            runtime, action => Dispatcher.Invoke(action));
     }
 
     private void OnNavigationLoaded(object sender, RoutedEventArgs e)
