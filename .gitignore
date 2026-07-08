@@ -32,4 +32,4 @@ __pycache__/
 *.pyc
 
 # ONNX model files (large, download separately)
-models/
+models/WebRtcVad.dll

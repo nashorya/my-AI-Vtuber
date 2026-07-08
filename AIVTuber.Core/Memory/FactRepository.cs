@@ -134,6 +134,27 @@ VALUES (@id, @subject_uid, @content, @importance, @expires, @embedding, @created
         await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
     }
 
+    public async Task<List<Fact>> GetAllAsync()
+    {
+        var results = new List<Fact>();
+        var conn = _db.GetConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT id,subject_uid,content,importance,expires,embedding,created_at,last_accessed,access_count FROM facts ORDER BY last_accessed DESC";
+        using var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false);
+        while (await reader.ReadAsync().ConfigureAwait(false))
+            results.Add(ReadFact(reader));
+        return results;
+    }
+
+    public async Task DeleteAsync(string factId)
+    {
+        var conn = _db.GetConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM facts WHERE id=@id";
+        cmd.Parameters.AddWithValue("@id", factId);
+        await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+    }
+
     public async Task UpdateWeightAsync(string factId, int delta)
     {
         var conn = _db.GetConnection();

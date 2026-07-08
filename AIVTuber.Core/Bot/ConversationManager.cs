@@ -50,63 +50,56 @@ public sealed class ConversationManager
     }
 
     /// <summary>
-    /// Builds the complete message list including system prompt + memory context.
-    /// Memory block includes: viewer profile (if uid known) + top-5 relevant facts.
+    /// Builds the complete message list. The system prompt is fixed (never changes per-turn)
+    /// so DeepSeek's prefix cache stays valid. Viewer profile and memory facts are injected
+    /// as a prefix on the latest user message instead, keeping them out of the cached prefix.
+    /// </summary>
+    /// <summary>
+    /// Builds the complete message list. The main system prompt is always first (fixed content)
+    /// so DeepSeek's prefix cache stays valid across turns. Memory context (viewer profile +
+    /// relevant facts) is injected as a second system message immediately after, keeping it
+    /// invisible to the LLM as "user speech" while still varying per-turn without breaking cache.
     /// </summary>
     public List<Message> BuildMessages(string? viewerUid = null)
     {
         lock (_lock)
         {
             var messages = new List<Message>();
-            var systemContent = BuildSystemPrompt(viewerUid);
-            if (!string.IsNullOrWhiteSpace(systemContent))
-                messages.Add(new Message { Role = MessageRole.System, Content = systemContent });
+
+            if (!string.IsNullOrWhiteSpace(_llmConfig.SystemPrompt))
+                messages.Add(new Message { Role = MessageRole.System, Content = _llmConfig.SystemPrompt });
+
+            // Second system message carries dynamic memory. Placing it here (after the long
+            // static prompt) preserves prefix cache on the static part while still grounding
+            // the LLM with current viewer context. It is NOT in user role, so the LLM won't
+            // interpret or recite it as user speech.
+            var context = BuildMemoryContext(viewerUid);
+            if (!string.IsNullOrEmpty(context))
+                messages.Add(new Message { Role = MessageRole.System, Content = context.TrimEnd() });
 
             messages.AddRange(_history);
             return messages;
         }
     }
 
-    /// <summary>Builds system prompt with optional memory context injected.</summary>
-    private string BuildSystemPrompt(string? viewerUid)
+    /// <summary>Builds viewer profile + relevant facts context block. Empty when no memory available.</summary>
+    private string BuildMemoryContext(string? viewerUid)
     {
-        var prompt = new StringBuilder();
+        var sb = new StringBuilder();
 
-        if (!string.IsNullOrWhiteSpace(_llmConfig.SystemPrompt))
-            prompt.AppendLine(_llmConfig.SystemPrompt);
-
-        // Inject viewer profile
         if (_viewerRepo is not null && !string.IsNullOrEmpty(viewerUid))
         {
             var viewer = _viewerRepo.GetAsync(viewerUid, "bilibili").GetAwaiter().GetResult();
             if (viewer is not null)
             {
-                prompt.AppendLine();
-                prompt.AppendLine($"【观众档案】UID: {viewer.Uid}, 昵称: {viewer.Nickname ?? "未知"}, " +
+                sb.AppendLine($"【观众档案】UID: {viewer.Uid}, 昵称: {viewer.Nickname ?? "未知"}, " +
                     $"互动次数: {viewer.InteractionCount}, 上次来访: {viewer.LastSeen}");
                 if (!string.IsNullOrEmpty(viewer.Notes))
-                    prompt.AppendLine($"备注: {viewer.Notes}");
+                    sb.AppendLine($"备注: {viewer.Notes}");
             }
         }
 
-        // Inject relevant facts
-        if (_factRepo is not null && _history.Count > 0)
-        {
-            var lastMsg = _history.LastOrDefault(m => m.Role == MessageRole.User);
-            if (lastMsg is not null)
-            {
-                var facts = _factRepo.SearchAsync(lastMsg.Content, null, 5).GetAwaiter().GetResult();
-                if (facts.Count > 0)
-                {
-                    prompt.AppendLine();
-                    prompt.AppendLine("【相关记忆】");
-                    foreach (var (fact, sim) in facts.Take(5))
-                        prompt.AppendLine($"- {fact.Content} (重要度:{fact.Importance}, 相似:{sim:F2})");
-                }
-            }
-        }
-
-        return prompt.ToString();
+        return sb.Length > 0 ? sb.AppendLine().ToString() : string.Empty;
     }
 
     public int GetEstimatedTokenCount()

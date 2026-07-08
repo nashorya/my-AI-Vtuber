@@ -65,6 +65,7 @@ public class ConfigManagerTests : IDisposable
 
         Assert.Equal(2, config.Audio.InputDeviceIndex);
         Assert.True(config.Audio.UseLoopback);
+        Assert.True(config.Audio.EnableLoopbackListen);
         Assert.Equal("Speaker", config.Audio.LoopbackDeviceName);
         Assert.Equal(3, config.Audio.VadAggressiveness);
         Assert.Equal(300, config.Audio.PreSpeechPaddingMs);
@@ -101,6 +102,26 @@ public class ConfigManagerTests : IDisposable
         Assert.True(loaded.Audio.UseLoopback);
         Assert.Equal("my-key", loaded.Llm.ApiKey);
         Assert.Equal("gpt-4", loaded.Llm.Model);
+    }
+
+    [Fact]
+    public void Load_PrefersExplicitEnableLoopbackListen_OverLegacyUseLoopback()
+    {
+        var json = """
+        {
+            "audio": {
+                "use_loopback": true,
+                "enable_loopback_listen": false
+            }
+        }
+        """;
+        File.WriteAllText(ConfigPath, json);
+
+        var manager = new ConfigManager(ConfigPath);
+        var config = manager.Load();
+
+        Assert.True(config.Audio.UseLoopback);
+        Assert.False(config.Audio.EnableLoopbackListen);
     }
 
     [Fact]

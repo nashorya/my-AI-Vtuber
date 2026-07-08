@@ -38,8 +38,10 @@ public sealed class VtsHotkeyInfo
     [JsonPropertyName("hotkeyID")]
     public string HotkeyId { get; set; } = string.Empty;
 
-    [JsonPropertyName("hotkeyName")]
+    [JsonPropertyName("name")]
     public string HotkeyName { get; set; } = string.Empty;
+
+    public override string ToString() => string.IsNullOrEmpty(HotkeyName) ? HotkeyId : $"{HotkeyName} ({HotkeyId})";
 }
 
 /// <summary>
@@ -47,6 +49,6 @@ public sealed class VtsHotkeyInfo
 /// </summary>
 public sealed class VtsHotkeyListResponse
 {
-    [JsonPropertyName("hotkeys")]
+    [JsonPropertyName("availableHotkeys")]
     public List<VtsHotkeyInfo>? Hotkeys { get; set; }
 }

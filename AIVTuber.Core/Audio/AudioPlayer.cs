@@ -11,20 +11,24 @@ public sealed class AudioPlayer : IDisposable
     /// <summary>
     /// Sample rate (Hz) the player assumes for incoming raw PCM. TTS clients must
     /// produce PCM at this rate (see TtsClient) or playback will be pitch/speed shifted.
+    /// 24000 Hz is supported by all three TTS providers (Fish Audio, MiniMax, DashScope
+    /// CosyVoice); 44100 is not in the CosyVoice spec and causes pitch-shifted audio.
     /// </summary>
-    public const int DefaultSampleRate = 44100;
+    public const int DefaultSampleRate = 24000;
 
     private WaveOutEvent? _waveOut;
     private bool _disposed;
     private CancellationTokenSource? _playCts;
     private readonly int _sampleRate;
+    private readonly int _deviceIndex;
 
-    public AudioPlayer(int sampleRate = DefaultSampleRate)
+    public AudioPlayer(int sampleRate = DefaultSampleRate, int deviceIndex = -1)
     {
         _sampleRate = sampleRate;
+        _deviceIndex = deviceIndex;
     }
 
-    /// <summary>
+/// <summary>
     /// Fired every ~30ms during playback with the RMS value (0.0 - 1.0 range typically).
     /// Used for lip sync (VTS mouth parameter).
     /// </summary>
@@ -34,6 +38,13 @@ public sealed class AudioPlayer : IDisposable
     /// Fired when the current playback has finished naturally (not stopped by user).
     /// </summary>
     public event EventHandler? PlaybackFinished;
+
+    /// <summary>
+    /// Fired for every raw PCM chunk that passes through PlayChunksAsync, at the original
+    /// TTS sample rate (<see cref="DefaultSampleRate"/>). Used by VirtualMicMixer to tap the
+    /// audio stream without interfering with normal playback.
+    /// </summary>
+    public event EventHandler<byte[]>? PcmChunkPlayed;
 
     /// <summary>
     /// Plays a WAV or MP3 byte array. Blocks until playback completes.
@@ -63,7 +74,7 @@ public sealed class AudioPlayer : IDisposable
         try
         {
             using var reader = new StreamAudioReader(audioStream, _sampleRate);
-            _waveOut = new WaveOutEvent();
+            _waveOut = new WaveOutEvent { DeviceNumber = _deviceIndex };
             _waveOut.Init(reader);
 
             var tcs = new TaskCompletionSource<bool>();
@@ -113,7 +124,7 @@ public sealed class AudioPlayer : IDisposable
         var stream = new StreamingAudioStream();
         var reader = new StreamAudioReader(stream, _sampleRate);
 
-        _waveOut = new WaveOutEvent();
+        _waveOut = new WaveOutEvent { DeviceNumber = _deviceIndex };
         _waveOut.Init(reader);
         _waveOut.Play();
 
@@ -159,6 +170,77 @@ public sealed class AudioPlayer : IDisposable
         }
     }
 
+    /// <summary>
+    /// Plays an open-ended sequence of raw PCM chunks as one continuous stream.
+    /// WaveOut is created once; chunks are written to a StreamingAudioStream as they
+    /// arrive, so there is no gap or re-init between sentences.
+    /// </summary>
+    public async Task PlayChunksAsync(IAsyncEnumerable<byte[]> chunks, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        Stop();
+
+        _playCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var ct = _playCts.Token;
+
+        var sink = new StreamingAudioStream();
+        ct.Register(sink.Abort);
+
+        // Feed chunks into sink on the thread pool while WaveOut reads from it below.
+        var feedTask = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var chunk in chunks.WithCancellation(ct))
+                    sink.Write(chunk, 0, chunk.Length);
+            }
+            catch (OperationCanceledException) { }
+            finally { sink.CompleteWriting(); }
+        });
+
+        try
+        {
+            using var reader = new StreamAudioReader(sink, _sampleRate);
+            // Fire PcmChunkPlayed when WaveOut actually reads the bytes (playback time),
+            // not when chunks arrive in the buffer, so CABLE and speakers stay in sync.
+            var pcmEvent = PcmChunkPlayed;
+            if (pcmEvent is not null)
+            {
+                reader.OnRead = (buf, off, len) =>
+                {
+                    var copy = new byte[len];
+                    Array.Copy(buf, off, copy, 0, len);
+                    pcmEvent.Invoke(this, copy);
+                };
+            }
+            _waveOut = new WaveOutEvent { DeviceNumber = _deviceIndex };
+            _waveOut.Init(reader);
+
+            var tcs = new TaskCompletionSource<bool>();
+            _waveOut.PlaybackStopped += (_, _) => tcs.TrySetResult(true);
+            _waveOut.Play();
+
+            using var rmsTimer = new PeriodicTimer(TimeSpan.FromMilliseconds(30));
+            while (await rmsTimer.WaitForNextTickAsync(ct).ConfigureAwait(false))
+            {
+                if (_waveOut is null || _waveOut.PlaybackState == PlaybackState.Stopped) break;
+                RmsUpdated?.Invoke(this, reader.GetCurrentRms());
+            }
+
+            if (!ct.IsCancellationRequested)
+            {
+                await tcs.Task.ConfigureAwait(false);
+                PlaybackFinished?.Invoke(this, EventArgs.Empty);
+            }
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            CleanupPlayback();
+            await feedTask.ConfigureAwait(false);
+        }
+    }
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -167,14 +249,17 @@ public sealed class AudioPlayer : IDisposable
     }
 
     /// <summary>
-    /// A stream that supports concurrent reading and writing for streaming audio playback.
+    /// Concurrent-write / blocking-read stream for gapless multi-sentence TTS playback.
+    /// Read() blocks (5 ms spin) while data is pending; returns 0 only after CompleteWriting()
+    /// or Abort() — so WaveOut never stops early between sentences.
     /// </summary>
     private sealed class StreamingAudioStream : Stream
     {
         private readonly List<byte[]> _chunks = [];
         private int _readOffset;
         private int _chunkIndex;
-        private bool _writingComplete;
+        private volatile bool _writingComplete;
+        private volatile bool _aborted;
         private readonly object _lockObj = new();
 
         public override bool CanRead => true;
@@ -187,53 +272,36 @@ public sealed class AudioPlayer : IDisposable
         {
             var chunk = new byte[count];
             Array.Copy(buffer, offset, chunk, 0, count);
-            lock (_lockObj)
-            {
-                _chunks.Add(chunk);
-            }
+            lock (_lockObj) { _chunks.Add(chunk); }
         }
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-            lock (_lockObj)
+            while (!_aborted)
             {
-                int totalRead = 0;
-                while (totalRead < count)
+                lock (_lockObj)
                 {
-                    if (_chunkIndex >= _chunks.Count)
+                    int totalRead = 0;
+                    while (totalRead < count && _chunkIndex < _chunks.Count)
                     {
-                        if (_writingComplete)
-                            return totalRead;
-
-                        // No data available yet, wait briefly
-                        break;
+                        var chunk = _chunks[_chunkIndex];
+                        int available = chunk.Length - _readOffset;
+                        int toRead = Math.Min(available, count - totalRead);
+                        Array.Copy(chunk, _readOffset, buffer, offset + totalRead, toRead);
+                        totalRead += toRead;
+                        _readOffset += toRead;
+                        if (_readOffset >= chunk.Length) { _chunkIndex++; _readOffset = 0; }
                     }
-
-                    var chunk = _chunks[_chunkIndex];
-                    int available = chunk.Length - _readOffset;
-                    int toRead = Math.Min(available, count - totalRead);
-                    Array.Copy(chunk, _readOffset, buffer, offset + totalRead, toRead);
-                    totalRead += toRead;
-                    _readOffset += toRead;
-
-                    if (_readOffset >= chunk.Length)
-                    {
-                        _chunkIndex++;
-                        _readOffset = 0;
-                    }
+                    if (totalRead > 0) return totalRead;
+                    if (_writingComplete) return 0;
                 }
-
-                return totalRead;
+                Thread.Sleep(5); // wait for next TTS chunk; WaveOut's internal buffer absorbs this
             }
+            return 0;
         }
 
-        public void CompleteWriting()
-        {
-            lock (_lockObj)
-            {
-                _writingComplete = true;
-            }
-        }
+        public void CompleteWriting() => _writingComplete = true;
+        public void Abort() => _aborted = true;
 
         public override void Flush() { }
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
@@ -277,18 +345,18 @@ public sealed class AudioPlayer : IDisposable
             }
         }
 
+        // When set, called with each buffer of PCM bytes as WaveOut actually reads them.
+        // Fires at true playback time (not write time), keeping downstream consumers in sync.
+        public Action<byte[], int, int>? OnRead { get; set; }
+
         public override int Read(byte[] buffer, int offset, int count)
         {
-            // For supported formats, try to use WaveFormatConversion
-            // For simplicity, we read raw PCM data
             int bytesRead = _sourceStream.Read(buffer, offset, count);
-
-            // Calculate RMS from the read bytes (16-bit PCM)
             if (bytesRead > 0)
             {
                 CalculateRms(buffer, offset, bytesRead);
+                OnRead?.Invoke(buffer, offset, bytesRead);
             }
-
             return bytesRead;
         }
 

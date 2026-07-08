@@ -25,12 +25,20 @@ public sealed class BotOrchestrator : IDisposable
     private CancellationTokenSource? _currentCts;
     private bool _isProcessing;
     private readonly object _lock = new();
+    // Last emotion detected in the current LLM stream; reset each new turn.
+    private volatile string? _currentEmotion;
 
     public event EventHandler? OnAiStartSpeaking;
     public event EventHandler? OnAiStopSpeaking;
+    public event EventHandler? OnFirstSentenceToTts;
     public event EventHandler<string>? OnEmotionDetected;
     public event EventHandler<string>? OnSentenceReady;
     public event EventHandler<string>? OnUserTranscript;
+    /// <summary>Fired when Qwen-ASR returns a non-neutral emotion for the user's speech.</summary>
+    public event EventHandler<string>? OnUserEmotionDetected;
+    /// <summary>Fired with the transcribed text from loopback (PC) audio.</summary>
+    public event EventHandler<string>? OnLoopbackTranscript;
+    public event EventHandler<string>? OnError;
 
     public BotOrchestrator(
         IAsrClient asr, ILlmClient llm, ITtsClient tts,
@@ -63,17 +71,34 @@ public sealed class BotOrchestrator : IDisposable
 
     private async void HandleEmotionAsync(string emotion)
     {
+        _currentEmotion = emotion;
         if (_vts is null) return;
         if (!_vtsConfig.EmotionMap.TryGetValue(emotion, out var hotkeyId)) return;
         try { await _vts.TriggerHotkeyAsync(hotkeyId); }
         catch (Exception ex) { Console.Error.WriteLine($"[VTS] Emotion hotkey error: {ex.Message}"); }
     }
 
+    private bool _rmsErrorLogged;
+
     private async void HandleRmsAsync(float rms)
     {
         if (_vts is null) return;
-        try { await _vts.SetMouthAsync(rms); }
-        catch { /* ignore VTS errors in RMS loop */ }
+        try
+        {
+            await _vts.SetMouthAsync(rms);
+            _rmsErrorLogged = false;
+        }
+        catch (Exception ex)
+        {
+            // Log only the first failure per outage to avoid spamming the ~30ms RMS loop.
+            if (!_rmsErrorLogged)
+            {
+                _rmsErrorLogged = true;
+                var msg = $"[VTS] 口型注入失败: {ex.Message}";
+                Console.Error.WriteLine(msg);
+                OnError?.Invoke(this, msg);
+            }
+        }
     }
 
     private async void TryCloseMouthAsync()
@@ -84,23 +109,77 @@ public sealed class BotOrchestrator : IDisposable
     }
 
     /// <summary>Process a speech segment from VAD. Interrupts any ongoing processing.</summary>
-    public async Task ProcessSpeechAsync(SpeechSegment speech, List<Message> history)
+    public async Task ProcessSpeechAsync(SpeechSegment speech, List<Message> history, string micTemplate)
     {
         Interrupt();
         lock (_lock) { _isProcessing = true; }
         _currentCts = new CancellationTokenSource();
         var ct = _currentCts.Token;
 
+        bool pipelineStarted = false;
         try
         {
-            var transcript = await _asr.RecognizeAsync(speech.AudioData, ct);
-            OnUserTranscript?.Invoke(this, transcript);
-            if (string.IsNullOrWhiteSpace(transcript) || ct.IsCancellationRequested) return;
-            await RunStreamingPipelineAsync(history, transcript, ct);
+            var result = await _asr.RecognizeAsync(speech.AudioData, ct);
+            if (string.IsNullOrWhiteSpace(result.Text) || ct.IsCancellationRequested) return;
+            OnUserTranscript?.Invoke(this, result.Text);
+            if (result.Emotion is not null)
+                OnUserEmotionDetected?.Invoke(this, result.Emotion);
+            pipelineStarted = true;
+            var annotated = AnnotateWithUserEmotion(result.Text, result.Emotion);
+            await RunStreamingPipelineAsync(history, micTemplate.Replace("{text}", annotated), ct);
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { Console.Error.WriteLine($"[Orchestrator] Error: {ex.Message}"); }
-        finally { lock (_lock) { _isProcessing = false; } }
+        catch (Exception ex)
+        {
+            var msg = $"[ASR/Pipeline] {ex.GetType().Name}: {ex.Message}";
+            Console.Error.WriteLine(msg);
+            OnError?.Invoke(this, msg);
+        }
+        finally
+        {
+            lock (_lock) { _isProcessing = false; }
+            // If pipeline never started (ASR error / empty transcript), still leave Thinking state.
+            if (!pipelineStarted) OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    /// <summary>
+    /// Process loopback (PC audio) speech. Lower priority than microphone:
+    /// skipped if the bot is already processing, and mic speech will cancel it via Interrupt().
+    /// Injects "对面说：xxx" context into the LLM without a full interrupt.
+    /// </summary>
+    public async Task ProcessLoopbackSpeechAsync(SpeechSegment speech, List<Message> history, string loopbackTemplate)
+    {
+        // Skip if mic or a previous loopback response is already running
+        lock (_lock)
+        {
+            if (_isProcessing) return;
+            _isProcessing = true;
+        }
+        _currentCts = new CancellationTokenSource();
+        var ct = _currentCts.Token;
+
+        bool pipelineStarted = false;
+        try
+        {
+            var result = await _asr.RecognizeAsync(speech.AudioData, ct);
+            if (string.IsNullOrWhiteSpace(result.Text) || ct.IsCancellationRequested) return;
+            OnLoopbackTranscript?.Invoke(this, result.Text);
+            pipelineStarted = true;
+            await RunStreamingPipelineAsync(history, loopbackTemplate.Replace("{text}", result.Text), ct);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            var msg = $"[Loopback/ASR] {ex.GetType().Name}: {ex.Message}";
+            Console.Error.WriteLine(msg);
+            OnError?.Invoke(this, msg);
+        }
+        finally
+        {
+            lock (_lock) { _isProcessing = false; }
+            if (!pipelineStarted) OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     /// <summary>Process text directly (e.g., from danmaku). Interrupts ongoing processing.</summary>
@@ -114,13 +193,19 @@ public sealed class BotOrchestrator : IDisposable
 
         try { await RunStreamingPipelineAsync(history, text, ct); }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { Console.Error.WriteLine($"[Orchestrator] Error: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            var msg = $"[Pipeline] {ex.GetType().Name}: {ex.Message}";
+            Console.Error.WriteLine(msg);
+            OnError?.Invoke(this, msg);
+        }
         finally { lock (_lock) { _isProcessing = false; } }
     }
 
     /// <summary>Interrupt any ongoing processing and stop playback immediately.</summary>
     public void Interrupt()
     {
+        _currentEmotion = null; // reset per-turn emotion
         var cts = _currentCts;
         _currentCts = null;
         cts?.Cancel();
@@ -133,73 +218,103 @@ public sealed class BotOrchestrator : IDisposable
 
     private async Task RunStreamingPipelineAsync(List<Message> history, string userInput, CancellationToken ct)
     {
+        AIVTuber.Core.Diagnostics.DebugLog.Write($"[LLM输入] {userInput}");
         var sentenceChannel = Channel.CreateBounded<string>(3);
 
         var producerTask = Task.Run(async () =>
         {
+            var rawAll = new StringBuilder();
+            int sentencesEmitted = 0;
             try
             {
                 var buffer = new StringBuilder();
                 await foreach (var token in _llm.StreamAsync(history, userInput, ct))
                 {
+                    rawAll.Append(token);
                     buffer.Append(token);
-                    // Strip [emotion:xxx] tags before sentence splitting so they are
-                    // never spoken by TTS. LlmClient fires OnEmotionDetected on the same
-                    // stream to drive VTS expressions, so we only need to remove them here.
-                    var cleaned = LlmClient.StripEmotionTags(buffer.ToString());
-                    if (cleaned.Length != buffer.Length)
-                    {
-                        buffer.Clear();
-                        buffer.Append(cleaned);
-                    }
+                    var raw = buffer.ToString();
+                    var cleaned = LlmClient.StripActionText(LlmClient.StripEmotionTags(raw));
+                    if (cleaned.Length != raw.Length) { buffer.Clear(); buffer.Append(cleaned); }
                     if (LlmClient.ContainsSentenceBoundary(buffer.ToString(), out var sentence, out var remainder))
                     {
-                        var trimmed = sentence.Trim();
+                        var trimmed = LlmClient.StripActionText(LlmClient.StripEmotionTags(LlmClient.StripPartialTags(sentence))).Trim();
                         if (!string.IsNullOrWhiteSpace(trimmed))
+                        {
+                            sentencesEmitted++;
                             await sentenceChannel.Writer.WriteAsync(trimmed, ct);
+                        }
                         buffer.Clear();
                         buffer.Append(remainder);
                     }
                 }
-                var remaining = buffer.ToString().Trim();
+                var remaining = LlmClient.StripActionText(LlmClient.StripEmotionTags(LlmClient.StripPartialTags(buffer.ToString()))).Trim();
                 if (!string.IsNullOrWhiteSpace(remaining))
+                {
+                    sentencesEmitted++;
                     await sentenceChannel.Writer.WriteAsync(remaining, ct);
+                }
+                if (sentencesEmitted == 0 && !string.IsNullOrWhiteSpace(rawAll.ToString()))
+                {
+                    var preview = rawAll.ToString().Trim();
+                    if (preview.Length > 80) preview = preview[..80] + "…";
+                    OnError?.Invoke(this, $"[LLM] 本轮回复被完全过滤掉了（可能整段都是动作/情绪标记），原始内容: {preview}");
+                }
             }
             finally { sentenceChannel.Writer.Complete(); }
         }, ct);
 
-        var consumerTask = Task.Run(async () =>
+        // Stream TTS chunks from all sentences into one continuous IAsyncEnumerable.
+        // WaveOut is created once in PlayChunksAsync — no re-init between sentences.
+        bool ttsStarted = false;
+        async IAsyncEnumerable<byte[]> TtsChunks([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken streamCt = default)
         {
-            await foreach (var sentence in sentenceChannel.Reader.ReadAllAsync(ct))
+            await foreach (var sentence in sentenceChannel.Reader.ReadAllAsync(streamCt))
             {
-                if (ct.IsCancellationRequested) break;
                 if (string.IsNullOrWhiteSpace(sentence)) continue;
-                try { await PlayTtsSentenceAsync(sentence, ct); }
-                catch (OperationCanceledException) { break; }
-                catch (Exception ex) { Console.Error.WriteLine($"[Orchestrator] TTS error: {ex.Message}"); }
+                if (!ttsStarted)
+                {
+                    ttsStarted = true;
+                    OnFirstSentenceToTts?.Invoke(this, EventArgs.Empty);
+                    OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
+                }
+                await foreach (var chunk in _tts.StreamAsync(sentence, _ttsConfig.VoiceId, _currentEmotion, streamCt))
+                    yield return chunk;
             }
-        }, ct);
+        }
 
-        await Task.WhenAll(producerTask, consumerTask);
-        OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
+        Exception? pipelineEx = null;
+        try
+        {
+            await _player.PlayChunksAsync(TtsChunks(ct), ct);
+            await producerTask;
+        }
+        catch (OperationCanceledException) { /* normal interrupt */ }
+        catch (Exception ex)
+        {
+            pipelineEx = ex;
+            var msg = $"[LLM/TTS] {ex.GetType().Name}: {ex.Message}";
+            Console.Error.WriteLine(msg);
+            OnError?.Invoke(this, msg);
+        }
+        finally
+        {
+            OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
+        }
 
-        if (producerTask.IsFaulted && producerTask.Exception is not null)
-            throw producerTask.Exception.InnerException ?? producerTask.Exception;
-        if (consumerTask.IsFaulted && consumerTask.Exception is not null)
-            throw consumerTask.Exception.InnerException ?? consumerTask.Exception;
+        if (pipelineEx is not null) throw pipelineEx;
     }
-    /// <summary>Collect TTS audio for a sentence and play it.</summary>
-    private async Task PlayTtsSentenceAsync(string sentence, CancellationToken ct)
+    private static string AnnotateWithUserEmotion(string text, string? emotion) => emotion switch
     {
-        var chunks = new List<byte[]>();
-        await foreach (var chunk in _tts.StreamAsync(sentence, _ttsConfig.VoiceId, ct))
-            chunks.Add(chunk);
-        if (chunks.Count == 0) return;
-        // Fire once per sentence, right before playback actually starts.
-        OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
-        var audioData = chunks.SelectMany(c => c).ToArray();
-        await _player.PlayAsync(audioData, ct);
-    }
+        null or "neutral" => text,
+        "happy"     => $"[用户当前情绪：愉快] {text}",
+        "sad"       => $"[用户当前情绪：悲伤] {text}",
+        "angry"     => $"[用户当前情绪：愤怒] {text}",
+        "fearful"   => $"[用户当前情绪：恐惧] {text}",
+        "disgusted" => $"[用户当前情绪：厌恶] {text}",
+        "surprised" => $"[用户当前情绪：惊讶] {text}",
+        _           => $"[用户当前情绪：{emotion}] {text}",
+    };
+
     public void Dispose()
     {
         Interrupt();

@@ -14,14 +14,9 @@ public sealed class MicrophoneCapture : IDisposable
     private readonly int _frameDurationMs;
     private bool _disposed;
 
-    /// <summary>
-    /// Fired when a new audio frame is available (16-bit mono PCM bytes).
-    /// </summary>
     public event EventHandler<byte[]>? AudioFrameAvailable;
-
-    /// <summary>
-    /// Fired when an audio recording error occurs.
-    /// </summary>
+    /// <summary>Fired per frame with RMS in [0, 1]. Use for a mic level indicator.</summary>
+    public event EventHandler<float>? LevelUpdated;
     public event EventHandler<Exception>? ErrorOccurred;
 
     public MicrophoneCapture(int deviceIndex = 0, int sampleRate = 16000, int frameDurationMs = 30)
@@ -86,11 +81,21 @@ public sealed class MicrophoneCapture : IDisposable
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
-        if (e.BytesRecorded > 0)
+        if (e.BytesRecorded <= 0) return;
+        var buffer = new byte[e.BytesRecorded];
+        Array.Copy(e.Buffer, buffer, e.BytesRecorded);
+        AudioFrameAvailable?.Invoke(this, buffer);
+
+        if (LevelUpdated is not null)
         {
-            var buffer = new byte[e.BytesRecorded];
-            Array.Copy(e.Buffer, buffer, e.BytesRecorded);
-            AudioFrameAvailable?.Invoke(this, buffer);
+            int samples = e.BytesRecorded / 2;
+            double sum = 0;
+            for (int i = 0; i < samples; i++)
+            {
+                float s = BitConverter.ToInt16(e.Buffer, i * 2) / 32768f;
+                sum += s * s;
+            }
+            LevelUpdated.Invoke(this, (float)Math.Sqrt(sum / Math.Max(samples, 1)));
         }
     }
 

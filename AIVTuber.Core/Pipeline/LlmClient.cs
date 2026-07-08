@@ -19,8 +19,14 @@ public sealed class LlmClient : ILlmClient, IDisposable
     private readonly string _model;
     private readonly string _systemPrompt;
 
-    private static readonly Regex SentenceBoundaryRegex = new(@"[。！？；.!?\n]", RegexOptions.Compiled);
+    private static readonly Regex SentenceBoundaryRegex = new(@"[。！？；，,.!?;\n]", RegexOptions.Compiled);
     private static readonly Regex EmotionTagRegex = new(@"\[emotion:(\w+)\]", RegexOptions.Compiled);
+    // Strips *action text* and （动作）/(action) that LLMs sometimes emit as stage directions.
+    // Asterisk form: any non-newline chars between * … * on the same line.
+    // Parenthesis form: no length cap — long action descriptions like （她翻了个白眼，靠在椅背上）must also be stripped.
+    private static readonly Regex ActionTextRegex = new(@"\*[^*\n]+\*|[（(][^）)\n]+[）)]|【[^】\n]+】", RegexOptions.Compiled);
+    // Strips unclosed [ tags at end of a sentence fragment (cut mid-tag during streaming).
+    private static readonly Regex PartialTagRegex = new(@"\[[^\]]*$", RegexOptions.Compiled);
 
     public event EventHandler<string>? OnSentenceReady;
     public event EventHandler<string>? OnEmotionDetected;
@@ -29,7 +35,7 @@ public sealed class LlmClient : ILlmClient, IDisposable
     {
         _baseUrl = baseUrl.TrimEnd('/');
         _apiKey = apiKey;
-        _model = model;
+        _model = model.Trim();
         _systemPrompt = systemPrompt;
         _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
     }
@@ -45,7 +51,12 @@ public sealed class LlmClient : ILlmClient, IDisposable
         {
             model = _model,
             messages = messages,
-            stream = true
+            stream = true,
+            // Safety cap only — brevity is enforced by the system prompt ("一句顶十句别啰嗦").
+            // Must stay wide enough that a normal short reply finishes naturally (EOS) WITH its
+            // trailing [emotion:xxx] tag intact; a tight cap (e.g. 128) hard-truncates mid-sentence
+            // and drops the emotion tag that drives VTS expression + TTS emotion.
+            max_tokens = 256
         };
 
         var json = JsonSerializer.Serialize(requestBody, JsonOptions);
@@ -106,7 +117,7 @@ public sealed class LlmClient : ILlmClient, IDisposable
 
             if (ContainsSentenceBoundary(currentText, out var sentence, out var remainder))
             {
-                var trimmed = sentence.Trim();
+                var trimmed = StripActionText(StripEmotionTags(sentence)).Trim();
                 if (!string.IsNullOrWhiteSpace(trimmed))
                 {
                     OnSentenceReady?.Invoke(this, trimmed);
@@ -117,7 +128,7 @@ public sealed class LlmClient : ILlmClient, IDisposable
         }
 
         // Emit any remaining text as a sentence
-        var remaining = buffer.ToString().Trim();
+        var remaining = StripActionText(StripEmotionTags(buffer.ToString())).Trim();
         if (!string.IsNullOrWhiteSpace(remaining))
         {
             OnSentenceReady?.Invoke(this, remaining);
@@ -153,6 +164,16 @@ public sealed class LlmClient : ILlmClient, IDisposable
     /// </summary>
     internal static string StripEmotionTags(string text)
         => EmotionTagRegex.Replace(text, string.Empty);
+
+    internal static string StripActionText(string text)
+        => ActionTextRegex.Replace(text, string.Empty);
+
+    /// <summary>
+    /// Removes partial/unclosed tags left at the end of a sentence that was cut mid-tag
+    /// (e.g. "你好[emotion:开心，" where the sentence boundary landed inside the tag).
+    /// </summary>
+    internal static string StripPartialTags(string text)
+        => PartialTagRegex.Replace(text, string.Empty);
 
     internal static bool ContainsSentenceBoundary(string text, out string sentence, out string remainder)
     {

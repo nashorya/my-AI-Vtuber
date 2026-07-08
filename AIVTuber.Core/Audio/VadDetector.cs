@@ -3,6 +3,8 @@ using WebRtcVadSharp;
 
 namespace AIVTuber.Core.Audio;
 
+public enum AudioSource { Microphone, Loopback }
+
 /// <summary>
 /// Represents a detected speech segment with its audio data and timestamps.
 /// </summary>
@@ -11,6 +13,7 @@ public sealed class SpeechSegment
     public byte[] AudioData { get; init; } = [];
     public DateTime StartTime { get; init; }
     public DateTime EndTime { get; init; }
+    public AudioSource Source { get; init; } = AudioSource.Microphone;
 }
 
 /// <summary>
@@ -31,8 +34,15 @@ public sealed class VadDetector : IDisposable
     private DateTime _speechStartTime;
     private readonly ConcurrentQueue<byte[]> _preSpeechBuffer = new();
     private readonly List<byte[]> _currentSpeechFrames = [];
-    private DateTime _lastSpeechTime;
+    // Silence is measured in AUDIO time (consecutive non-speech frames × frameDurationMs),
+    // not wall-clock. Loopback capture delivers frames in bursts, so a wall-clock timeout
+    // never elapses mid-burst and segments grow unbounded (observed: 36s segments).
+    private int _silenceFrames;
     private readonly object _lock = new();
+
+    /// <summary>True while a speech segment is in progress. Used to gate other channels
+    /// (e.g. suppress loopback while the local mic is actively speaking).</summary>
+    public bool IsSpeaking { get { lock (_lock) return _isSpeaking; } }
 
     /// <summary>
     /// Fired when a complete speech segment is detected.
@@ -118,7 +128,7 @@ public sealed class VadDetector : IDisposable
                 }
 
                 _currentSpeechFrames.Add(frame);
-                _lastSpeechTime = now;
+                _silenceFrames = 0;
             }
             else
             {
@@ -127,8 +137,9 @@ public sealed class VadDetector : IDisposable
                     // Still collect frames during post-speech silence period
                     _currentSpeechFrames.Add(frame);
 
-                    var silenceDuration = (now - _lastSpeechTime).TotalMilliseconds;
-                    if (silenceDuration >= _postSpeechSilenceMs)
+                    _silenceFrames++;
+                    var silenceMs = _silenceFrames * _frameDurationMs;
+                    if (silenceMs >= _postSpeechSilenceMs)
                     {
                         // Speech segment ended
                         _isSpeaking = false;
@@ -186,6 +197,22 @@ public sealed class VadDetector : IDisposable
         };
 
         SpeechDetected?.Invoke(this, segment);
+    }
+
+    /// <summary>
+    /// Discards all buffered audio and resets VAD state.
+    /// Call this when the source changes (e.g. loopback unmutes after TTS) to prevent
+    /// stale frames from the previous speaking period being emitted as a speech segment.
+    /// </summary>
+    public void Reset()
+    {
+        lock (_lock)
+        {
+            _isSpeaking = false;
+            _silenceFrames = 0;
+            _currentSpeechFrames.Clear();
+            while (_preSpeechBuffer.TryDequeue(out _)) { }
+        }
     }
 
     public void Dispose()

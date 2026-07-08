@@ -65,7 +65,9 @@ public sealed class ConfigManager
         }
 
         var json = File.ReadAllText(_configPath);
-        return JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
+        var config = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
+        ApplyLegacyCompatibility(json, config);
+        return config;
     }
 
     /// <summary>
@@ -75,6 +77,23 @@ public sealed class ConfigManager
     {
         var json = JsonSerializer.Serialize(config, JsonOptions);
         File.WriteAllText(_configPath, json);
+    }
+
+    private static void ApplyLegacyCompatibility(string json, AppConfig config)
+    {
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty("audio", out var audio) ||
+            audio.ValueKind != JsonValueKind.Object)
+            return;
+
+        // Older configs used use_loopback for PK/PC-audio listening. The runtime now uses
+        // enable_loopback_listen, so migrate only when the new key is absent.
+        if (!audio.TryGetProperty("enable_loopback_listen", out _) &&
+            audio.TryGetProperty("use_loopback", out var legacyUseLoopback) &&
+            legacyUseLoopback.ValueKind is JsonValueKind.True or JsonValueKind.False)
+        {
+            config.Audio.EnableLoopbackListen = legacyUseLoopback.GetBoolean();
+        }
     }
 
     /// <summary>
