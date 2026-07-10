@@ -279,6 +279,39 @@
             </ItemsControl>
             <ui:Button Content="添加映射" Icon="{ui:SymbolIcon Symbol=Add24}" Click="OnAddEmotionRow" Margin="0,0,0,24" />
 
+            <TextBlock Text="动作 → 动画热键白名单" Style="{StaticResource FieldLabel}" />
+            <TextBlock Text="LLM 只可输出这里列出的 [action:动作名]；请先在 VTS 为 motion3 动作创建 TriggerAnimation 热键，再查询并导入。"
+                       FontSize="11" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                       Margin="0,0,0,8" />
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <ui:Button Content="导入动画热键" Icon="{ui:SymbolIcon Symbol=ArrowDownload24}"
+                           Click="OnImportAnimationHotkeys" Margin="0,0,6,0" />
+                <ui:Button Content="添加动作映射" Icon="{ui:SymbolIcon Symbol=Add24}"
+                           Click="OnAddActionRow" />
+            </StackPanel>
+            <ItemsControl ItemsSource="{Binding ActionRows}" Margin="0,0,0,24">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="2*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <ui:TextBox Grid.Column="0" Text="{Binding Action, UpdateSourceTrigger=PropertyChanged}"
+                                        PlaceholderText="动作名，如 head_shake" Margin="0,0,6,0" />
+                            <ComboBox Grid.Column="1" Margin="0,0,6,0"
+                                      ItemsSource="{Binding DataContext.HotkeyList, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                      DisplayMemberPath="HotkeyName"
+                                      SelectedValuePath="HotkeyId"
+                                      SelectedValue="{Binding HotkeyId, UpdateSourceTrigger=PropertyChanged}" />
+                            <ui:Button Grid.Column="2" Icon="{ui:SymbolIcon Symbol=Delete24}"
+                                       Click="OnRemoveActionRow" Tag="{Binding}" />
+                        </Grid>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
             <!-- ── Input Templates ── -->
             <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
                 <TextBlock Text="输入格式模板" Style="{StaticResource SectionHeader}" />

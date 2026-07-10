@@ -41,7 +41,17 @@ public sealed class VtsHotkeyInfo
     [JsonPropertyName("name")]
     public string HotkeyName { get; set; } = string.Empty;
 
-    public override string ToString() => string.IsNullOrEmpty(HotkeyName) ? HotkeyId : $"{HotkeyName} ({HotkeyId})";
+    [JsonPropertyName("type")]
+    public string Type { get; set; } = string.Empty;
+
+    [JsonPropertyName("file")]
+    public string File { get; set; } = string.Empty;
+
+    public override string ToString()
+    {
+        var name = string.IsNullOrEmpty(HotkeyName) ? HotkeyId : HotkeyName;
+        return string.IsNullOrEmpty(Type) ? name : $"{name} · {Type}";
+    }
 }
 
 /// <summary>

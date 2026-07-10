@@ -36,6 +36,11 @@ public interface ILlmClient
     event EventHandler<string>? OnEmotionDetected;
 
     /// <summary>
+    /// Fires when a structured avatar action tag is detected (e.g., [action:head_shake]).
+    /// </summary>
+    event EventHandler<string>? OnActionDetected;
+
+    /// <summary>
     /// Streams LLM response tokens. Each yielded string is a token chunk.
     /// </summary>
     IAsyncEnumerable<string> StreamAsync(

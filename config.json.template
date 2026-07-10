@@ -44,6 +44,10 @@
       "sad": "<hotkey_id>",
       "angry": "<hotkey_id>",
       "surprised": "<hotkey_id>"
+    },
+    "action_map": {
+      "head_shake": "<trigger-animation-hotkey-id>",
+      "head_nod": "<trigger-animation-hotkey-id>"
     }
   },
   "obs": {

@@ -88,6 +88,51 @@ public class ConfigViewModelTests
     }
 
     [Fact]
+    public void Working_DeepCopies_ActionMapDictionary()
+    {
+        var current = new AppConfig();
+        current.Vts.ActionMap["wave"] = "1";
+        var vm = Make(current);
+
+        vm.Working.Vts.ActionMap["wave"] = "999";
+
+        Assert.Equal("1", current.Vts.ActionMap["wave"]);
+        Assert.NotSame(current.Vts.ActionMap, vm.Working.Vts.ActionMap);
+    }
+
+    [Fact]
+    public void ImportAnimationHotkeys_ImportsOnlyTriggerAnimation()
+    {
+        var vm = new ConfigViewModel(
+            new AppConfig(), ["麦克风"], _ => { }, _ => Task.CompletedTask,
+            () => Task.FromResult(new List<AIVTuber.Core.Vts.VtsHotkeyInfo>()));
+        var hotkeyListProperty = typeof(ConfigViewModel).GetProperty(nameof(ConfigViewModel.HotkeyList))!;
+        hotkeyListProperty.SetValue(vm, new List<AIVTuber.Core.Vts.VtsHotkeyInfo>
+        {
+            new() { HotkeyId = "motion-1", HotkeyName = "摇头", Type = "TriggerAnimation", File = "shake.motion3.json" },
+            new() { HotkeyId = "expression-1", HotkeyName = "脸红", Type = "ToggleExpression" },
+        });
+
+        vm.ImportAnimationHotkeys();
+
+        var row = Assert.Single(vm.ActionRows);
+        Assert.Equal("摇头", row.Action);
+        Assert.Equal("motion-1", row.HotkeyId);
+    }
+
+    [Fact]
+    public async Task SaveAsync_SyncsActionRowsToConfig()
+    {
+        AppConfig? saved = null;
+        var vm = Make(save: c => saved = c);
+        vm.ActionRows.Add(new ActionMapRow { Action = "head_shake", HotkeyId = "motion-1" });
+
+        await vm.SaveAsync();
+
+        Assert.Equal("motion-1", saved!.Vts.ActionMap["head_shake"]);
+    }
+
+    [Fact]
     public async Task SaveAsync_RaisesPropertyChangedForStatus()
     {
         var vm = Make();

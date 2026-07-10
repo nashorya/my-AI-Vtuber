@@ -153,6 +153,20 @@ public class ConfigManagerTests : IDisposable
         Assert.Equal("aliyun", config.Asr.Provider); // default
     }
 
+    [Fact]
+    public void Save_RoundTripsVtsActionMap()
+    {
+        var manager = new ConfigManager(ConfigPath);
+        var config = new AppConfig();
+        config.Vts.ActionMap["head_nod"] = "motion-hotkey";
+
+        manager.Save(config);
+        var loaded = manager.Load();
+
+        Assert.Equal("motion-hotkey", loaded.Vts.ActionMap["head_nod"]);
+        Assert.Contains("action_map", File.ReadAllText(ConfigPath));
+    }
+
     public void Dispose()
     {
         try

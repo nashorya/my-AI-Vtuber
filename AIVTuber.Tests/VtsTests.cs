@@ -64,6 +64,8 @@ public class VtsConfigTests
         Assert.Equal(1.5f, config.MouthScale);
         Assert.NotNull(config.EmotionMap);
         Assert.Empty(config.EmotionMap);
+        Assert.NotNull(config.ActionMap);
+        Assert.Empty(config.ActionMap);
     }
 
     [Fact]
@@ -90,6 +92,26 @@ public class VtsConfigTests
         Assert.Equal("192.168.1.100", config.Host);
         Assert.Equal(8002, config.Port);
     }
+
+    [Fact]
+    public void BuildSystemPrompt_AdvertisesOnlyConfiguredActions()
+    {
+        var config = new VtsConfig
+        {
+            ActionMap = new Dictionary<string, string>
+            {
+                ["head_shake"] = "hotkey-1",
+                ["wave"] = "hotkey-2",
+            }
+        };
+
+        var prompt = config.BuildSystemPrompt("base prompt");
+
+        Assert.Contains("[action:动作名]", prompt);
+        Assert.Contains("head_shake", prompt);
+        Assert.Contains("wave", prompt);
+        Assert.DoesNotContain("hotkey-1", prompt);
+    }
 }
 
 public class VtsModelsTests
@@ -100,6 +122,8 @@ public class VtsModelsTests
         var info = new VtsHotkeyInfo();
         Assert.Equal(string.Empty, info.HotkeyId);
         Assert.Equal(string.Empty, info.HotkeyName);
+        Assert.Equal(string.Empty, info.Type);
+        Assert.Equal(string.Empty, info.File);
     }
 
     [Fact]

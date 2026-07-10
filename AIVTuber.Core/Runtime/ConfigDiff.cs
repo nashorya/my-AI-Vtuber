@@ -49,7 +49,9 @@ public static class ConfigDiff
         if (a.Tts.Provider != b.Tts.Provider || a.Tts.ApiKey != b.Tts.ApiKey || a.Tts.VoiceId != b.Tts.VoiceId)
             c |= RuntimeChange.RebuildTts;
 
-        if (a.Vts.MouthScale != b.Vts.MouthScale || !DictEqual(a.Vts.EmotionMap, b.Vts.EmotionMap))
+        if (a.Vts.MouthScale != b.Vts.MouthScale ||
+            !DictEqual(a.Vts.EmotionMap, b.Vts.EmotionMap) ||
+            !DictEqual(a.Vts.ActionMap, b.Vts.ActionMap))
             c |= RuntimeChange.UpdateVtsParams;
         if (a.Vts.Host != b.Vts.Host || a.Vts.Port != b.Vts.Port)
             c |= RuntimeChange.ReconnectVts;

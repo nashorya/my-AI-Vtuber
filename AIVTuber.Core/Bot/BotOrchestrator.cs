@@ -32,6 +32,7 @@ public sealed class BotOrchestrator : IDisposable
     public event EventHandler? OnAiStopSpeaking;
     public event EventHandler? OnFirstSentenceToTts;
     public event EventHandler<string>? OnEmotionDetected;
+    public event EventHandler<string>? OnActionDetected;
     public event EventHandler<string>? OnSentenceReady;
     public event EventHandler<string>? OnUserTranscript;
     /// <summary>Fired when Qwen-ASR returns a non-neutral emotion for the user's speech.</summary>
@@ -57,8 +58,14 @@ public sealed class BotOrchestrator : IDisposable
         _llm.OnSentenceReady += (_, s) => OnSentenceReady?.Invoke(this, s);
         _llm.OnEmotionDetected += (_, emotion) =>
         {
+            _currentEmotion = emotion;
             OnEmotionDetected?.Invoke(this, emotion);
-            HandleEmotionAsync(emotion);
+            _ = TriggerMappedHotkeyAsync(_vtsConfig.EmotionMap, emotion, "emotion");
+        };
+        _llm.OnActionDetected += (_, action) =>
+        {
+            OnActionDetected?.Invoke(this, action);
+            _ = TriggerMappedHotkeyAsync(_vtsConfig.ActionMap, action, "action");
         };
 
         // Wire up RMS -> VTS lip-sync
@@ -69,13 +76,38 @@ public sealed class BotOrchestrator : IDisposable
         }
     }
 
-    private async void HandleEmotionAsync(string emotion)
+    private async Task TriggerMappedHotkeyAsync(
+        IReadOnlyDictionary<string, string> map, string name, string kind)
     {
-        _currentEmotion = emotion;
         if (_vts is null) return;
-        if (!_vtsConfig.EmotionMap.TryGetValue(emotion, out var hotkeyId)) return;
+        if (!TryGetHotkeyId(map, name, out var hotkeyId)) return;
         try { await _vts.TriggerHotkeyAsync(hotkeyId); }
-        catch (Exception ex) { Console.Error.WriteLine($"[VTS] Emotion hotkey error: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            var message = $"[VTS] {kind} hotkey error: {ex.Message}";
+            Console.Error.WriteLine(message);
+            OnError?.Invoke(this, message);
+        }
+    }
+
+    private static bool TryGetHotkeyId(
+        IReadOnlyDictionary<string, string> map, string name, out string hotkeyId)
+    {
+        if (map.TryGetValue(name, out hotkeyId!) && !string.IsNullOrWhiteSpace(hotkeyId))
+            return true;
+
+        foreach (var pair in map)
+        {
+            if (pair.Key.Equals(name, StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(pair.Value))
+            {
+                hotkeyId = pair.Value;
+                return true;
+            }
+        }
+
+        hotkeyId = string.Empty;
+        return false;
     }
 
     private bool _rmsErrorLogged;
@@ -233,11 +265,11 @@ public sealed class BotOrchestrator : IDisposable
                     rawAll.Append(token);
                     buffer.Append(token);
                     var raw = buffer.ToString();
-                    var cleaned = LlmClient.StripActionText(LlmClient.StripEmotionTags(raw));
+                    var cleaned = LlmClient.StripActionText(LlmClient.StripControlTags(raw));
                     if (cleaned.Length != raw.Length) { buffer.Clear(); buffer.Append(cleaned); }
                     if (LlmClient.ContainsSentenceBoundary(buffer.ToString(), out var sentence, out var remainder))
                     {
-                        var trimmed = LlmClient.StripActionText(LlmClient.StripEmotionTags(LlmClient.StripPartialTags(sentence))).Trim();
+                        var trimmed = LlmClient.StripActionText(LlmClient.StripControlTags(LlmClient.StripPartialTags(sentence))).Trim();
                         if (!string.IsNullOrWhiteSpace(trimmed))
                         {
                             sentencesEmitted++;
@@ -247,7 +279,7 @@ public sealed class BotOrchestrator : IDisposable
                         buffer.Append(remainder);
                     }
                 }
-                var remaining = LlmClient.StripActionText(LlmClient.StripEmotionTags(LlmClient.StripPartialTags(buffer.ToString()))).Trim();
+                var remaining = LlmClient.StripActionText(LlmClient.StripControlTags(LlmClient.StripPartialTags(buffer.ToString()))).Trim();
                 if (!string.IsNullOrWhiteSpace(remaining))
                 {
                     sentencesEmitted++;

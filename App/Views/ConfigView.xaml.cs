@@ -55,4 +55,20 @@ public partial class ConfigView : UserControl
         if (DataContext is not ConfigViewModel vm) return;
         if (sender is FrameworkElement { Tag: EmotionMapRow row }) vm.RemoveEmotionRow(row);
     }
+
+    private void OnAddActionRow(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is ConfigViewModel vm) vm.AddActionRow();
+    }
+
+    private void OnRemoveActionRow(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not ConfigViewModel vm) return;
+        if (sender is FrameworkElement { Tag: ActionMapRow row }) vm.RemoveActionRow(row);
+    }
+
+    private void OnImportAnimationHotkeys(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is ConfigViewModel vm) vm.ImportAnimationHotkeys();
+    }
 }

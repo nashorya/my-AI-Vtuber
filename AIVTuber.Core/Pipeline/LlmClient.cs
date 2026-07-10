@@ -21,6 +21,7 @@ public sealed class LlmClient : ILlmClient, IDisposable
 
     private static readonly Regex SentenceBoundaryRegex = new(@"[。！？；，,.!?;\n]", RegexOptions.Compiled);
     private static readonly Regex EmotionTagRegex = new(@"\[emotion:(\w+)\]", RegexOptions.Compiled);
+    private static readonly Regex ActionTagRegex = new(@"\[action:([^\]\r\n]+)\]", RegexOptions.Compiled);
     // Strips *action text* and （动作）/(action) that LLMs sometimes emit as stage directions.
     // Asterisk form: any non-newline chars between * … * on the same line.
     // Parenthesis form: no length cap — long action descriptions like （她翻了个白眼，靠在椅背上）must also be stripped.
@@ -30,6 +31,7 @@ public sealed class LlmClient : ILlmClient, IDisposable
 
     public event EventHandler<string>? OnSentenceReady;
     public event EventHandler<string>? OnEmotionDetected;
+    public event EventHandler<string>? OnActionDetected;
 
     public LlmClient(string baseUrl, string apiKey, string model, string systemPrompt)
     {
@@ -115,9 +117,14 @@ public sealed class LlmClient : ILlmClient, IDisposable
                 emotionMatch = EmotionTagRegex.Match(currentText);
             }
 
+            currentText = ExtractActionTags(currentText,
+                action => OnActionDetected?.Invoke(this, action));
+            buffer.Clear();
+            buffer.Append(currentText);
+
             if (ContainsSentenceBoundary(currentText, out var sentence, out var remainder))
             {
-                var trimmed = StripActionText(StripEmotionTags(sentence)).Trim();
+                var trimmed = StripActionText(StripControlTags(sentence)).Trim();
                 if (!string.IsNullOrWhiteSpace(trimmed))
                 {
                     OnSentenceReady?.Invoke(this, trimmed);
@@ -128,7 +135,7 @@ public sealed class LlmClient : ILlmClient, IDisposable
         }
 
         // Emit any remaining text as a sentence
-        var remaining = StripActionText(StripEmotionTags(buffer.ToString())).Trim();
+        var remaining = StripActionText(StripControlTags(buffer.ToString())).Trim();
         if (!string.IsNullOrWhiteSpace(remaining))
         {
             OnSentenceReady?.Invoke(this, remaining);
@@ -164,6 +171,20 @@ public sealed class LlmClient : ILlmClient, IDisposable
     /// </summary>
     internal static string StripEmotionTags(string text)
         => EmotionTagRegex.Replace(text, string.Empty);
+
+    internal static string StripActionTags(string text)
+        => ActionTagRegex.Replace(text, string.Empty);
+
+    internal static string StripControlTags(string text)
+        => StripActionTags(StripEmotionTags(text));
+
+    internal static string ExtractActionTags(string text, Action<string> onAction)
+        => ActionTagRegex.Replace(text, match =>
+        {
+            var action = match.Groups[1].Value.Trim();
+            if (action.Length > 0) onAction(action);
+            return string.Empty;
+        });
 
     internal static string StripActionText(string text)
         => ActionTextRegex.Replace(text, string.Empty);

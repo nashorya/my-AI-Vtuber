@@ -42,6 +42,15 @@ public class ConfigDiffTests
     }
 
     [Fact]
+    public void VtsActionMapChange_IsLightUpdateParams()
+    {
+        var b = Base();
+        b.Vts.ActionMap["head_shake"] = "animation-hotkey";
+
+        Assert.Equal(RuntimeChange.UpdateVtsParams, ConfigDiff.Compute(Base(), b));
+    }
+
+    [Fact]
     public void VtsConnectionChange_IsHeavyReconnect()
     {
         var b = Base();

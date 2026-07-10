@@ -23,6 +23,19 @@ public sealed class EmotionMapRow : INotifyPropertyChanged
     private void OnChanged([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new(name));
 }
 
+/// <summary>One semantic LLM action mapped to a VTS hotkey.</summary>
+public sealed class ActionMapRow : INotifyPropertyChanged
+{
+    private string _action = "";
+    private string _hotkeyId = "";
+
+    public string Action { get => _action; set { _action = value; OnChanged(); } }
+    public string HotkeyId { get => _hotkeyId; set { _hotkeyId = value; OnChanged(); } }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private void OnChanged([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new(name));
+}
+
 /// <summary>
 /// Config tab view-model. Holds an editable deep-copy of the running config (so edits don't
 /// touch the live config until saved), exposes the input-device list (injected so it stays
@@ -52,6 +65,8 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
 
         EmotionRows = new ObservableCollection<EmotionMapRow>(
             Working.Vts.EmotionMap.Select(kv => new EmotionMapRow { Emotion = kv.Key, HotkeyId = kv.Value }));
+        ActionRows = new ObservableCollection<ActionMapRow>(
+            Working.Vts.ActionMap.Select(kv => new ActionMapRow { Action = kv.Key, HotkeyId = kv.Value }));
     }
 
     // ── Emotion → VTS hotkey mapping (Config tab editor) ─────────────────────
@@ -59,16 +74,66 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
     /// <summary>Editable rows backing <see cref="VtsConfig.EmotionMap"/>; flushed to
     /// Working.Vts.EmotionMap by <see cref="SaveAsync"/>.</summary>
     public ObservableCollection<EmotionMapRow> EmotionRows { get; }
+    public ObservableCollection<ActionMapRow> ActionRows { get; }
 
     public void AddEmotionRow() => EmotionRows.Add(new EmotionMapRow());
 
     public void RemoveEmotionRow(EmotionMapRow row) => EmotionRows.Remove(row);
+    public void AddActionRow() => ActionRows.Add(new ActionMapRow());
+    public void RemoveActionRow(ActionMapRow row) => ActionRows.Remove(row);
 
     private void SyncEmotionMap()
     {
         Working.Vts.EmotionMap = EmotionRows
             .Where(r => !string.IsNullOrWhiteSpace(r.Emotion) && !string.IsNullOrWhiteSpace(r.HotkeyId))
             .ToDictionary(r => r.Emotion.Trim(), r => r.HotkeyId);
+    }
+
+    private void SyncActionMap()
+    {
+        Working.Vts.ActionMap = ActionRows
+            .Where(r => !string.IsNullOrWhiteSpace(r.Action) && !string.IsNullOrWhiteSpace(r.HotkeyId))
+            .GroupBy(r => r.Action.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.Last().HotkeyId, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Adds all VTS animation hotkeys to the LLM action allow-list.</summary>
+    public void ImportAnimationHotkeys()
+    {
+        var existingIds = ActionRows.Select(r => r.HotkeyId).ToHashSet(StringComparer.Ordinal);
+        var imported = 0;
+        foreach (var hotkey in HotkeyList.Where(h =>
+                     h.Type.Equals("TriggerAnimation", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (!existingIds.Add(hotkey.HotkeyId)) continue;
+            var alias = BuildActionAlias(hotkey);
+            alias = MakeUniqueActionAlias(alias);
+            ActionRows.Add(new ActionMapRow { Action = alias, HotkeyId = hotkey.HotkeyId });
+            imported++;
+        }
+        Status = imported == 0 ? "没有新的动画热键可导入" : $"已导入 {imported} 个动画动作，请保存应用";
+    }
+
+    private string MakeUniqueActionAlias(string alias)
+    {
+        var existing = ActionRows.Select(r => r.Action).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!existing.Contains(alias)) return alias;
+        var suffix = 2;
+        while (existing.Contains($"{alias}_{suffix}")) suffix++;
+        return $"{alias}_{suffix}";
+    }
+
+    internal static string BuildActionAlias(VtsHotkeyInfo hotkey)
+    {
+        var source = !string.IsNullOrWhiteSpace(hotkey.HotkeyName)
+            ? hotkey.HotkeyName
+            : Path.GetFileNameWithoutExtension(Path.GetFileNameWithoutExtension(hotkey.File));
+        if (string.IsNullOrWhiteSpace(source)) return "action";
+
+        var chars = source.Trim().Select(ch =>
+            char.IsLetterOrDigit(ch) || ch is '_' or '-' ? ch : '_').ToArray();
+        var alias = new string(chars).Trim('_');
+        return string.IsNullOrWhiteSpace(alias) ? "action" : alias;
     }
 
     // ── Loopback source picker ────────────────────────────────────────────────
@@ -267,6 +332,7 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
         try
         {
             SyncEmotionMap();
+            SyncActionMap();
             _save(Working);
             try
             {

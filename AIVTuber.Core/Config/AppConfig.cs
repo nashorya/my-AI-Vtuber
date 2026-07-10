@@ -90,6 +90,9 @@ public sealed class VtsConfig
     /// <summary>Emotion word (as emitted by the LLM in "[emotion:word]") -> VTS hotkeyID.
     /// Editable from the Config tab; see <see cref="BuildSystemPrompt"/>.</summary>
     public Dictionary<string, string> EmotionMap { get; set; } = new();
+    /// <summary>Semantic action name (as emitted by the LLM in "[action:name]") -> VTS hotkeyID.
+    /// Keep this as an explicit allow-list so the LLM cannot invoke arbitrary VTS hotkeys.</summary>
+    public Dictionary<string, string> ActionMap { get; set; } = new();
 
     /// <summary>
     /// Appends an auto-generated "[emotion:word]" vocabulary hint built from EmotionMap's keys,
@@ -98,9 +101,20 @@ public sealed class VtsConfig
     /// </summary>
     public string BuildSystemPrompt(string basePrompt)
     {
-        if (EmotionMap.Count == 0) return basePrompt;
-        var words = string.Join("、", EmotionMap.Keys);
-        return $"{basePrompt}\n\n你可以在合适的时候在句子里插入 [emotion:词] 标记来触发对应的表情/动作（这个标记不会被读出来或显示给观众）。可用的词只有：{words}。每句话最多用一个，没有合适的情绪就不要加。";
+        var instructions = new List<string>();
+        if (EmotionMap.Count > 0)
+        {
+            var words = string.Join("、", EmotionMap.Keys);
+            instructions.Add($"你可以在合适的时候插入 [emotion:词] 来切换表情。可用的情绪词只有：{words}。每句话最多一个，不要创造列表外的词。标记不会被读出或显示。");
+        }
+        if (ActionMap.Count > 0)
+        {
+            var actions = string.Join("、", ActionMap.Keys);
+            instructions.Add($"你可以在动作应该开始的位置插入 [action:动作名] 来触发模型动作。可用的动作名只有：{actions}。只在语义合适时使用，每句话最多一个，不要创造列表外的动作。标记不会被读出或显示。");
+        }
+
+        if (instructions.Count == 0) return basePrompt;
+        return string.Join("\n\n", new[] { basePrompt }.Concat(instructions));
     }
 }
 

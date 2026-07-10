@@ -66,6 +66,25 @@ public class LlmClientTests
     }
 
     [Fact]
+    public void ExtractActionTags_EmitsActionAndRemovesTag()
+    {
+        var actions = new List<string>();
+
+        var text = LlmClient.ExtractActionTags(
+            "才不是呢[action:head_shake]。", actions.Add);
+
+        Assert.Equal("才不是呢。", text);
+        Assert.Equal(["head_shake"], actions);
+    }
+
+    [Fact]
+    public void StripControlTags_RemovesEmotionAndActionTags()
+    {
+        Assert.Equal("你好。", LlmClient.StripControlTags(
+            "[emotion:happy]你好[action:wave]。"));
+    }
+
+    [Fact]
     public void Constructor_SetsProperties()
     {
         using var client = new LlmClient("https://api.test.com", "test-key", "test-model", "You are a bot");

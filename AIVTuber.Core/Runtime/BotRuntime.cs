@@ -77,6 +77,8 @@ public sealed class BotRuntime : IAsyncDisposable
     public event EventHandler<string>? UserTranscript;
     /// <summary>Fired with each completed AI sentence.</summary>
     public event EventHandler<string>? SentenceReady;
+    /// <summary>Fired when the LLM emits a structured avatar action tag.</summary>
+    public event EventHandler<string>? ActionDetected;
     /// <summary>Fired with a detected emotion tag from the LLM output.</summary>
     public event EventHandler<string>? EmotionDetected;
     /// <summary>Fired with the user's detected emotion from Qwen-ASR (null/neutral suppressed).</summary>
@@ -271,6 +273,7 @@ public sealed class BotRuntime : IAsyncDisposable
             SentenceReady?.Invoke(this, s);
         };
         _orchestrator.OnEmotionDetected += (_, e) => EmotionDetected?.Invoke(this, e);
+        _orchestrator.OnActionDetected += (_, a) => ActionDetected?.Invoke(this, a);
         _orchestrator.OnUserEmotionDetected += (_, e) => UserEmotionDetected?.Invoke(this, e);
         _orchestrator.OnLoopbackTranscript += (_, t) =>
         {
