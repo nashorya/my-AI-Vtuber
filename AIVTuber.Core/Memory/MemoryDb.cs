@@ -21,10 +21,27 @@ public sealed class MemoryDb : IDisposable
     /// <summary>Initializes the database and creates tables if they don't exist.</summary>
     public async Task InitializeAsync()
     {
-        lock (_lock) { _connection = new SqliteConnection(_connectionString); }
-        await _connection.OpenAsync().ConfigureAwait(false);
+        SqliteConnection connection;
+        lock (_lock)
+        {
+            if (_connection is not null)
+                throw new InvalidOperationException("Database is already initialized.");
 
-        await CreateTablesAsync().ConfigureAwait(false);
+            connection = new SqliteConnection(_connectionString);
+            _connection = connection;
+        }
+
+        try
+        {
+            await connection.OpenAsync().ConfigureAwait(false);
+            await CreateTablesAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            lock (_lock) { _connection = null; }
+            await connection.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     /// <summary>Gets an open connection. Must call InitializeAsync first.</summary>
@@ -88,7 +105,14 @@ CREATE INDEX IF NOT EXISTS idx_conversations_session ON conversations(session_id
 
     public void Dispose()
     {
-        _connection?.Close();
-        _connection?.Dispose();
+        SqliteConnection? connection;
+        lock (_lock)
+        {
+            connection = _connection;
+            _connection = null;
+        }
+
+        connection?.Dispose();
+        SqliteConnection.ClearAllPools();
     }
 }
