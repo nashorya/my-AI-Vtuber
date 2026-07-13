@@ -6,45 +6,33 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  build:
+  baseline-evidence:
+    name: Windows baseline evidence (non-blocking)
     runs-on: windows-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup .NET 10
+      - name: Setup pinned .NET SDK
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '10.0.x'
+          global-json-file: global.json
 
-      - name: Build solution (compile check)
-        run: dotnet build AIVTuber.slnx -c Release
-
-      - name: Publish single-file exe (win-x64, self-contained)
-        run: dotnet publish App/App.csproj -c Release -r win-x64 -o publish
-
-      - name: Zip package
+      - name: Capture restore/build/test/audit/publish evidence
         shell: pwsh
-        run: Compress-Archive -Path publish/* -DestinationPath AIVTuber-win-x64.zip
+        run: >-
+          ./scripts/Invoke-VerificationBatch.ps1
+          -OutputDirectory artifacts/verification-baseline
+          -MinimumTests 1
 
-      - name: Upload build artifact
+      - name: Upload baseline evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: AIVTuber-win-x64
-          path: AIVTuber-win-x64.zip
-
-      - name: Publish prerelease
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: wpf-monitor-preview
-          name: WPF 监控页预览（CI 构建，未人工验证）
-          prerelease: true
-          files: AIVTuber-win-x64.zip
-          body: |
-            Phase 1 WPF 仪表盘（监控页）预览构建，自 feature/wpf-monitor 分支自动编译。
-
-            ⚠️ 仅保证 CI 在 Windows 上编译通过，未经人工运行验证。
-
-            用法：下载 AIVTuber-win-x64.zip 解压 → 在 AIVTuber.exe 同目录放一份配好 LLM/TTS key 的 config.json（可用 config.json.template 改）→ 双击 AIVTuber.exe。
+          name: windows-verification-baseline-${{ github.sha }}
+          path: artifacts/verification-baseline
+          if-no-files-found: error
+          retention-days: 30
