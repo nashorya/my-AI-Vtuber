@@ -11,11 +11,34 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$temporaryDriveName = $null
+$executionRoot = $root
+if ($root.StartsWith("\\")) {
+    foreach ($driveCode in 90..68) {
+        $candidate = [char]$driveCode
+        if ($null -eq (Get-PSDrive -Name $candidate -ErrorAction SilentlyContinue)) {
+            $temporaryDriveName = [string]$candidate
+            break
+        }
+    }
+    if ($null -eq $temporaryDriveName) {
+        throw "No free drive letter is available for UNC repository root $root."
+    }
+
+    New-PSDrive -Name $temporaryDriveName -PSProvider FileSystem -Root $root -Scope Script -Persist | Out-Null
+    $executionRoot = "${temporaryDriveName}:\"
+}
+
 $outputPath = if ([IO.Path]::IsPathRooted($OutputDirectory)) {
-    $OutputDirectory
+    if ($null -ne $temporaryDriveName -and $OutputDirectory.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+        Join-Path $executionRoot $OutputDirectory.Substring($root.Length).TrimStart([char]'\', [char]'/')
+    }
+    else {
+        $OutputDirectory
+    }
 }
 else {
-    Join-Path $root $OutputDirectory
+    Join-Path $executionRoot $OutputDirectory
 }
 # PowerShell's provider resolver preserves UNC roots (including \\wsl.localhost\...)
 # that System.IO.Path.GetFullPath can reject or reinterpret.
@@ -94,7 +117,7 @@ function Invoke-DotNetStage {
     try {
         $startInfo = [Diagnostics.ProcessStartInfo]::new()
         $startInfo.FileName = (Get-Command dotnet).Source
-        $startInfo.WorkingDirectory = $root
+        $startInfo.WorkingDirectory = $executionRoot
         $startInfo.UseShellExecute = $false
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
@@ -139,6 +162,7 @@ try {
     [ordered]@{
         captured_at = [DateTimeOffset]::UtcNow.ToString("o")
         repository_root = $root
+        execution_root = $executionRoot
         head = $head
         branch = $branch
         runner_os = $env:RUNNER_OS
@@ -242,4 +266,7 @@ try {
 }
 finally {
     Pop-Location
+    if ($null -ne $temporaryDriveName) {
+        Remove-PSDrive -Name $temporaryDriveName -Scope Script -Force -ErrorAction SilentlyContinue
+    }
 }
