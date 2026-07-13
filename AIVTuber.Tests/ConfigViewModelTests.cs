@@ -33,7 +33,7 @@ public class ConfigViewModelTests
     }
 
     [Fact]
-    public async Task SaveAsync_SavesAndAppliesWorkingCopy()
+    public async Task SaveAsync_SavesAndAppliesIndependentCopies()
     {
         AppConfig? saved = null, applied = null;
         var vm = Make(save: c => saved = c, apply: c => { applied = c; return Task.CompletedTask; });
@@ -41,8 +41,10 @@ public class ConfigViewModelTests
 
         await vm.SaveAsync();
 
-        Assert.Same(vm.Working, saved);
-        Assert.Same(vm.Working, applied);
+        Assert.NotSame(vm.Working, saved);
+        Assert.NotSame(vm.Working, applied);
+        Assert.NotSame(saved, applied);
+        Assert.NotSame(saved!.Llm, applied!.Llm);
         Assert.Equal("new-model", saved!.Llm.Model);
         Assert.Contains("已保存并应用", vm.Status);
     }

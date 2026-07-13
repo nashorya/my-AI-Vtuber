@@ -15,6 +15,17 @@ public class ConfigManagerTests : IDisposable
     private string ConfigPath => Path.Combine(_testDir, "config.json");
 
     [Fact]
+    public void Save_AtomicallyReplacesFileWithoutLeavingTemporaryFile()
+    {
+        var manager = new ConfigManager(ConfigPath);
+        manager.Save(new AppConfig { Llm = { Model = "one" } });
+        manager.Save(new AppConfig { Llm = { Model = "two" } });
+
+        Assert.Equal("two", manager.Load().Llm.Model);
+        Assert.Empty(Directory.GetFiles(_testDir, ".config.json.*.tmp"));
+    }
+
+    [Fact]
     public void Load_CreatesDefaultConfig_WhenFileNotExists()
     {
         var manager = new ConfigManager(ConfigPath);
