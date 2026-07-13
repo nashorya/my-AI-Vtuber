@@ -47,15 +47,6 @@ public sealed class ConfigManager
 
     private readonly string _configPath;
 
-    /// <summary>Creates an ownership-safe deep snapshot using the persisted JSON contract.</summary>
-    public static AppConfig Snapshot(AppConfig config)
-    {
-        ArgumentNullException.ThrowIfNull(config);
-        var json = JsonSerializer.Serialize(config, JsonOptions);
-        return JsonSerializer.Deserialize<AppConfig>(json, JsonOptions)
-               ?? throw new InvalidOperationException("Failed to snapshot AppConfig.");
-    }
-
     public ConfigManager(string configPath)
     {
         _configPath = configPath;

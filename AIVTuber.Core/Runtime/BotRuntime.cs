@@ -18,7 +18,6 @@ public sealed class BotRuntime : IAsyncDisposable
 {
     private readonly string _baseDir;
     private readonly CancellationTokenSource _cts = new();
-    private readonly SemaphoreSlim _configApplyGate = new(1, 1);
     // Mutable (not readonly) because ApplyConfigAsync replaces it at runtime; contrast with readonly _baseDir.
     private AppConfig _config;
 
@@ -87,8 +86,7 @@ public sealed class BotRuntime : IAsyncDisposable
     /// <summary>Fired with transcribed text from system audio (loopback/PC source).</summary>
     public event EventHandler<string>? LoopbackTranscript;
 
-    public AppConfig CurrentConfig => ConfigManager.Snapshot(_config);
-    public long ActiveConfigRevision { get; private set; }
+    public AppConfig CurrentConfig => _config;
     public ViewerRepository ViewerRepository => _viewerRepo;
     public FactRepository FactRepository => _factRepo;
     public DanmakuSelector? Selector => _selector;
@@ -138,7 +136,7 @@ public sealed class BotRuntime : IAsyncDisposable
 
     public BotRuntime(AppConfig config, string baseDir)
     {
-        _config = ConfigManager.Snapshot(config);
+        _config = config;
         _baseDir = baseDir;
     }
 
@@ -552,41 +550,28 @@ public sealed class BotRuntime : IAsyncDisposable
     /// </summary>
     public async Task ApplyConfigAsync(AppConfig newConfig)
     {
-        var candidate = ConfigManager.Snapshot(newConfig);
-        await _configApplyGate.WaitAsync(_cts.Token);
-        var active = _config;
-        try
-        {
-            var change = ConfigDiff.Compute(active, candidate);
-            if (change == RuntimeChange.None) return;
-            _config = candidate;
+        var change = ConfigDiff.Compute(_config, newConfig);
+        _config = newConfig;
+        if (change == RuntimeChange.None) return;
 
-            // Heavy: memory store / audio / connections.
-            if (change.HasFlag(RuntimeChange.ReopenMemory)) await RebuildMemoryAsync();
-            if (change.HasFlag(RuntimeChange.RestartAudio)) RestartAudio();
-            if (change.HasFlag(RuntimeChange.ReconnectVts)) await ReconnectVtsAsync();
-            if (change.HasFlag(RuntimeChange.ReconnectObs)) await ReconnectObsAsync();
-            if (change.HasFlag(RuntimeChange.RestartDanmaku)) await RestartDanmakuAsync();
-            else if (change.HasFlag(RuntimeChange.RebuildDanmakuSelector)) RebuildSelector();
+        // Heavy: memory store / audio / connections.
+        if (change.HasFlag(RuntimeChange.ReopenMemory)) await RebuildMemoryAsync();
+        if (change.HasFlag(RuntimeChange.RestartAudio)) RestartAudio();
+        if (change.HasFlag(RuntimeChange.ReconnectVts)) await ReconnectVtsAsync();
+        if (change.HasFlag(RuntimeChange.ReconnectObs)) await ReconnectObsAsync();
+        if (change.HasFlag(RuntimeChange.RestartDanmaku)) await RestartDanmakuAsync();
+        else if (change.HasFlag(RuntimeChange.RebuildDanmakuSelector)) RebuildSelector(); // light: in-memory only
 
-            if (change.HasFlag(RuntimeChange.UpdateMemoryParams)) BuildMemoryExtractor();
+        // Light: memory extraction cadence updated in place.
+        if (change.HasFlag(RuntimeChange.UpdateMemoryParams)) BuildMemoryExtractor();
 
-            if (change.HasFlag(RuntimeChange.RebuildLlm) || change.HasFlag(RuntimeChange.RebuildAsr) ||
-                change.HasFlag(RuntimeChange.RebuildTts) || change.HasFlag(RuntimeChange.UpdateVtsParams) ||
-                change.HasFlag(RuntimeChange.UpdateObsParams))
-            {
-                RewirePipeline();
-            }
-            ActiveConfigRevision++;
-        }
-        catch
+        // Recreating any pipeline client, or changing the VTS/OBS params the orchestrator
+        // and subtitle handlers capture, requires rebuilding + re-wiring the orchestrator.
+        if (change.HasFlag(RuntimeChange.RebuildLlm) || change.HasFlag(RuntimeChange.RebuildAsr) ||
+            change.HasFlag(RuntimeChange.RebuildTts) || change.HasFlag(RuntimeChange.UpdateVtsParams) ||
+            change.HasFlag(RuntimeChange.UpdateObsParams))
         {
-            _config = active;
-            throw;
-        }
-        finally
-        {
-            _configApplyGate.Release();
+            RewirePipeline();
         }
     }
 

@@ -33,7 +33,7 @@ public class ConfigViewModelTests
     }
 
     [Fact]
-    public async Task SaveAsync_SavesAndAppliesIndependentSnapshots()
+    public async Task SaveAsync_SavesAndAppliesWorkingCopy()
     {
         AppConfig? saved = null, applied = null;
         var vm = Make(save: c => saved = c, apply: c => { applied = c; return Task.CompletedTask; });
@@ -41,30 +41,10 @@ public class ConfigViewModelTests
 
         await vm.SaveAsync();
 
-        Assert.NotSame(vm.Working, saved);
-        Assert.NotSame(vm.Working, applied);
-        Assert.NotSame(saved, applied);
+        Assert.Same(vm.Working, saved);
+        Assert.Same(vm.Working, applied);
         Assert.Equal("new-model", saved!.Llm.Model);
         Assert.Contains("已保存并应用", vm.Status);
-    }
-
-    [Fact]
-    public async Task SaveAsync_ConsecutiveSavesCaptureEachCandidate()
-    {
-        var saved = new List<AppConfig>();
-        var applied = new List<AppConfig>();
-        var vm = Make(save: c => saved.Add(c), apply: c => { applied.Add(c); return Task.CompletedTask; });
-
-        vm.Working.Llm.Model = "first";
-        await vm.SaveAsync();
-        vm.Working.Llm.Model = "second";
-        vm.Working.Vts.ActionMap["wave"] = "motion-2";
-        await vm.SaveAsync();
-
-        Assert.Equal(["first", "second"], saved.Select(c => c.Llm.Model));
-        Assert.Equal(["first", "second"], applied.Select(c => c.Llm.Model));
-        Assert.Empty(saved[0].Vts.ActionMap);
-        Assert.Equal("motion-2", saved[1].Vts.ActionMap["wave"]);
     }
 
     [Fact]

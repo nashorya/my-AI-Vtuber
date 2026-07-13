@@ -43,13 +43,10 @@ public static class ConfigDiff
             a.Llm.MaxHistoryTokens != b.Llm.MaxHistoryTokens)
             c |= RuntimeChange.RebuildLlm;
 
-        if (a.Asr.Provider != b.Asr.Provider || a.Asr.ApiKey != b.Asr.ApiKey || a.Asr.AppId != b.Asr.AppId ||
-            a.Asr.Model != b.Asr.Model || a.Asr.LocalAsrUrl != b.Asr.LocalAsrUrl ||
-            a.Asr.PythonPath != b.Asr.PythonPath)
+        if (a.Asr.Provider != b.Asr.Provider || a.Asr.ApiKey != b.Asr.ApiKey || a.Asr.AppId != b.Asr.AppId)
             c |= RuntimeChange.RebuildAsr;
 
-        if (a.Tts.Provider != b.Tts.Provider || a.Tts.ApiKey != b.Tts.ApiKey || a.Tts.VoiceId != b.Tts.VoiceId ||
-            a.Tts.Model != b.Tts.Model || a.Tts.GroupId != b.Tts.GroupId || a.Tts.Speed != b.Tts.Speed)
+        if (a.Tts.Provider != b.Tts.Provider || a.Tts.ApiKey != b.Tts.ApiKey || a.Tts.VoiceId != b.Tts.VoiceId)
             c |= RuntimeChange.RebuildTts;
 
         if (a.Vts.MouthScale != b.Vts.MouthScale ||
