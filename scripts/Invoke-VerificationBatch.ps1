@@ -10,7 +10,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$root = (Resolve-Path (Join-Path $PSScriptRoot "..") | ForEach-Object { if ($_.ProviderPath) { $_.ProviderPath } else { $_.Path } })
 $temporaryDriveName = $null
 $executionRoot = $root
 if ($root.StartsWith("\\")) {
