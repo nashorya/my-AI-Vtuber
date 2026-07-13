@@ -29,7 +29,7 @@ public sealed class LocalAsrClient : IAsrClient
     {
         using var content = new ByteArrayContent(pcm16k);
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
-        var response = await _http.PostAsync($"{_baseUrl}/recognize?sr=16000", content, cancellationToken);
+        using var response = await _http.PostAsync($"{_baseUrl}/recognize?sr=16000", content, cancellationToken);
         await EnsureSuccessWithBodyAsync(response, cancellationToken);
         var result = await response.Content.ReadFromJsonAsync<AsrResponse>(cancellationToken: cancellationToken);
         return new AsrResult(result?.Text ?? "");

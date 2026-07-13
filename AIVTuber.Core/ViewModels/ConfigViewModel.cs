@@ -222,7 +222,7 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
 
                 // Priority: window title > file description > process name
                 string label = !string.IsNullOrWhiteSpace(windowTitle) ? windowTitle
-                             : !string.IsNullOrWhiteSpace(fileDesc)    ? fileDesc
+                             : !string.IsNullOrWhiteSpace(fileDesc) ? fileDesc
                              : proc.ProcessName;
                 string display = $"{label}  ({proc.ProcessName})";
 
