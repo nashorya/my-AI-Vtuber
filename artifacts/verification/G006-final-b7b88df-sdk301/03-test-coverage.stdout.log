@@ -1,0 +1,9 @@
+C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g006-b7b88df-archive\AIVTuber.Tests\bin\Release\net10.0\AIVTuber.Tests.dll (.NETCoreApp,Version=v10.0)的测试运�?
+总共 1 个测试文件与指定模式相匹配�?
+结果文件: C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g006-b7b88df-archive\artifacts\verification\G006-final-b7b88df-sdk301\test-results\baseline.trx
+
+已通过! - 失败:     0，通过:   240，已跳过:     0，总计:   240，持续时�? 3 s - AIVTuber.Tests.dll (net10.0)
+
+附件:
+  C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g006-b7b88df-archive\artifacts\verification\G006-final-b7b88df-sdk301\test-results\6521d533-7164-44bc-92cc-4122d7132238\coverage.cobertura.xml
+

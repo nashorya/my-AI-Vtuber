@@ -1,0 +1,8 @@
+{
+    "package":  "WebRtcVadSharp/1.1.0",
+    "package_root":  "C:\\Users\\wan.kangping\\.nuget\\packages\\webrtcvadsharp\\1.1.0",
+    "architecture":  "x64",
+    "source":  "C:\\Users\\wan.kangping\\.nuget\\packages\\webrtcvadsharp\\1.1.0\\build\\x64\\WebRtcVad.dll",
+    "destination":  "C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g006-b7b88df-archive\\AIVTuber.Tests\\bin\\Release\\net10.0\\WebRtcVad.dll",
+    "sha256":  "4413f5d1ed072152fc3d6794817ead16cffbda39d21cf3192f31d24e2b4e9b38"
+}

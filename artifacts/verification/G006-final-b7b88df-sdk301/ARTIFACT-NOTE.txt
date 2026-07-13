@@ -1,0 +1,3 @@
+The 190 MB publish directory is intentionally not committed.
+publish-manifest.json preserves the relative paths, sizes, and SHA-256 hashes from the successful Windows gate.
+The full publish output remains in the local Windows verification workspace and is reproduced by scripts/Invoke-VerificationBatch.ps1.
