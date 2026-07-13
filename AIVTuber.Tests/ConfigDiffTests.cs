@@ -110,4 +110,33 @@ public class ConfigDiffTests
         Assert.True(c.HasFlag(RuntimeChange.RestartAudio));
         Assert.True(ConfigDiff.IsHeavy(c));
     }
+
+    [Theory]
+    [InlineData("Model")]
+    [InlineData("LocalAsrUrl")]
+    [InlineData("PythonPath")]
+    public void EveryAsrRuntimeField_RebuildsAsr(string field)
+    {
+        var b = Base();
+        typeof(AsrConfig).GetProperty(field)!.SetValue(b.Asr, "changed");
+        Assert.Equal(RuntimeChange.RebuildAsr, ConfigDiff.Compute(Base(), b));
+    }
+
+    [Theory]
+    [InlineData("Model")]
+    [InlineData("GroupId")]
+    public void EveryTtsStringRuntimeField_RebuildsTts(string field)
+    {
+        var b = Base();
+        typeof(TtsConfig).GetProperty(field)!.SetValue(b.Tts, "changed");
+        Assert.Equal(RuntimeChange.RebuildTts, ConfigDiff.Compute(Base(), b));
+    }
+
+    [Fact]
+    public void TtsSpeedChange_RebuildsTts()
+    {
+        var b = Base();
+        b.Tts.Speed = 1.25;
+        Assert.Equal(RuntimeChange.RebuildTts, ConfigDiff.Compute(Base(), b));
+    }
 }

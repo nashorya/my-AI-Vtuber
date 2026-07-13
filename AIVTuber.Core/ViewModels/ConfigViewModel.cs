@@ -333,10 +333,12 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
         {
             SyncEmotionMap();
             SyncActionMap();
-            _save(Working);
+            var persistedCandidate = Clone(Working);
+            var runtimeCandidate = Clone(Working);
+            _save(persistedCandidate);
             try
             {
-                await _applyAsync(Working);
+                await _applyAsync(runtimeCandidate);
                 Status = $"已保存并应用 · {DateTime.Now:HH:mm}";
             }
             catch (Exception ex)
@@ -352,11 +354,7 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
 
     /// <summary>Deep-copy via JSON round-trip (same options as the config file).</summary>
     internal static AppConfig Clone(AppConfig c)
-    {
-        var json = JsonSerializer.Serialize(c, ConfigManager.JsonOptions);
-        return JsonSerializer.Deserialize<AppConfig>(json, ConfigManager.JsonOptions)
-               ?? throw new InvalidOperationException("Failed to clone AppConfig via JSON round-trip.");
-    }
+        => ConfigManager.Snapshot(c);
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
