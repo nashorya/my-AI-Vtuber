@@ -51,7 +51,7 @@ function ConvertTo-ProcessArgument {
         return $Argument
     }
 
-    $escaped = New-Object Text.StringBuilder
+    $escaped = New-Object System.Text.StringBuilder
     [void]$escaped.Append([char]'"')
     $backslashes = 0
     foreach ($character in $Argument.ToCharArray()) {
