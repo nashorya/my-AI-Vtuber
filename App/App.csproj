@@ -34,6 +34,11 @@
     <None Include="..\config.json.template" Link="config.json.template" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\danmaku_bridge.py" Link="danmaku_bridge.py" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\README.txt" Link="README.txt" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\asr_server.py" Link="sidecar\asr_server.py" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\sidecar\asr-sidecar.manifest.json" Link="sidecar\asr-sidecar.manifest.json" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\sidecar\requirements.lock" Link="sidecar\requirements.lock" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\scripts\Test-SidecarPackage.ps1" Link="scripts\Test-SidecarPackage.ps1" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\scripts\Test-G005PublishContract.ps1" Link="scripts\Test-G005PublishContract.ps1" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

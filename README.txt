@@ -3,7 +3,7 @@ AIVTuber - AI虚拟主播后端程序
 
 快速开始
 --------
-1. 双击 AIVTuber.App.exe 启动程序
+1. 双击 AIVTuber.exe 启动程序
 2. 首次启动会进入配置向导，按提示填写：
    - LLM API 地址和密钥（如 DeepSeek）
    - ASR API 密钥
@@ -13,6 +13,21 @@ AIVTuber - AI虚拟主播后端程序
    - B站弹幕配置（可选）
    - OBS 字幕配置（可选）
 3. 配置完成后重启程序即可使用
+
+本地 ASR Sidecar
+----------------
+本地 ASR 使用发布包内的托管 Python 运行时，不读取系统 PATH。发布布局为：
+- sidecar/python/python.exe
+- sidecar/asr_server.py
+- sidecar/requirements.lock
+- sidecar/asr-sidecar.manifest.json
+
+发布前运行：
+  powershell -File scripts/Test-SidecarPackage.ps1 -PackageRoot . -RequireRuntime
+
+若运行时未随包提供，验证固定返回 ASR-SIDECAR-001；不得将该包描述为自包含本地 ASR 版本。
+无 CUDA 的机器使用 device=auto，由 CPU 兼容的已暂存 wheels 执行；模型或设备初始化失败固定归类为
+ASR-SIDECAR-005，/health 状态为 failed，不会被误判为 ready。
 
 配置文件
 --------
@@ -53,14 +68,16 @@ B站弹幕设置
 - .NET 10 运行时（自包含发布时无需额外安装）
 - VTube Studio（嘴型和表情控制）
 - OBS Studio + WebSocket 插件（字幕显示，可选）
-- Python 3.8+（弹幕桥接，可选）
+- 本地 ASR 不依赖系统 Python；需要发布包内 sidecar/python/python.exe
+- Python 3.8+（仅 B站弹幕桥接，可选）
 
 文件说明
 --------
-AIVTuber.App.exe  - 主程序
+AIVTuber.exe      - 主程序
 config.json       - 用户配置（启动后自动生成）
 config.json.template - 配置模板
 danmaku_bridge.py - B站弹幕桥接脚本
+sidecar/          - 本地 ASR 托管运行时、服务脚本和完整性 manifest
 models/bge-small-zh/ - 向量模型目录（可选）
 memory.db         - 记忆数据库（自动生成）
 
