@@ -27,6 +27,23 @@ $stages = [Collections.Generic.List[object]]::new()
 Remove-Item $evidenceRoot -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $evidenceRoot, $publishRoot, $testResultsRoot -ItemType Directory -Force | Out-Null
 
+function Get-RelativeEvidencePath {
+    param(
+        [Parameter(Mandatory)] [string]$BasePath,
+        [Parameter(Mandatory)] [string]$TargetPath
+    )
+
+    $baseWithSeparator = $BasePath.TrimEnd([char]'\', [char]'/') + [IO.Path]::DirectorySeparatorChar
+    [Uri]$baseUri = $baseWithSeparator
+    [Uri]$targetUri = $TargetPath
+    $relativeUri = $baseUri.MakeRelativeUri($targetUri)
+    if ($relativeUri.IsAbsoluteUri) {
+        return $TargetPath
+    }
+
+    return [Uri]::UnescapeDataString($relativeUri.ToString()).Replace('/', [IO.Path]::DirectorySeparatorChar)
+}
+
 function Invoke-DotNetStage {
     param(
         [Parameter(Mandatory)] [string]$Name,
@@ -74,8 +91,8 @@ function Invoke-DotNetStage {
         started_at = $startedAt.ToString("o")
         finished_at = [DateTimeOffset]::UtcNow.ToString("o")
         exit_code = $exitCode
-        stdout = [IO.Path]::GetRelativePath($evidenceRoot, $stdoutPath)
-        stderr = [IO.Path]::GetRelativePath($evidenceRoot, $stderrPath)
+        stdout = Get-RelativeEvidencePath $evidenceRoot $stdoutPath
+        stderr = Get-RelativeEvidencePath $evidenceRoot $stderrPath
     })
 }
 
@@ -119,7 +136,7 @@ try {
     try {
         $manifest = Get-ChildItem $publishRoot -File -Recurse | Sort-Object FullName | ForEach-Object {
             [ordered]@{
-                path = [IO.Path]::GetRelativePath($publishRoot, $_.FullName).Replace("\", "/")
+                path = (Get-RelativeEvidencePath $publishRoot $_.FullName).Replace("\", "/")
                 length = $_.Length
                 sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             }
