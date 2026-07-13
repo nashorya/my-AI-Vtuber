@@ -19,6 +19,8 @@ public sealed class BotRuntime : IAsyncDisposable
     private readonly string _baseDir;
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _configApplyGate = new(1, 1);
+    private readonly object _backgroundTasksLock = new();
+    private readonly HashSet<Task> _backgroundTasks = [];
     private readonly Func<RuntimeChange, Task>? _applyChangesOverride;
     private AppConfig _config;
     private AppConfig _activeConfig;
@@ -172,7 +174,7 @@ public sealed class BotRuntime : IAsyncDisposable
         await InitDanmakuAsync();
         StartAudio();
         _stateTracker.Started();
-        _ = StartLocalAsrServerAsync();
+        SuperviseBackgroundTask(StartLocalAsrServerAsync());
     }
 
     private async Task InitMemoryAsync()
@@ -232,7 +234,67 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         if (!_config.Obs.Enable) { _obs = null; return; }
         _obs = new ObsClient(_config.Obs);
-        _ = _obs.ConnectAsync(_cts.Token);
+        SuperviseBackgroundTask(_obs.ConnectAsync(_cts.Token));
+    }
+
+    internal int BackgroundTaskCount
+    {
+        get { lock (_backgroundTasksLock) return _backgroundTasks.Count; }
+    }
+
+    internal void SuperviseBackgroundTask(Task task)
+    {
+        ArgumentNullException.ThrowIfNull(task);
+        lock (_backgroundTasksLock) _backgroundTasks.Add(task);
+        _ = ObserveBackgroundTaskAsync(task);
+    }
+
+    private async Task ObserveBackgroundTaskAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+        {
+            // Expected during runtime shutdown.
+        }
+        catch (Exception ex)
+        {
+            PipelineError?.Invoke(this, $"[Background] {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            lock (_backgroundTasksLock) _backgroundTasks.Remove(task);
+        }
+    }
+
+    private async Task DrainBackgroundTasksAsync()
+    {
+        Task[] pending;
+        lock (_backgroundTasksLock) pending = [.. _backgroundTasks];
+        if (pending.Length == 0) return;
+
+        try
+        {
+            await Task.WhenAll(pending).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+        {
+            // Observed by ObserveBackgroundTaskAsync; cancellation is normal on shutdown.
+        }
+        catch
+        {
+            // Individual failures are observed and surfaced by ObserveBackgroundTaskAsync.
+        }
+        finally
+        {
+            lock (_backgroundTasksLock)
+            {
+                foreach (var task in pending)
+                    _backgroundTasks.Remove(task);
+            }
+        }
     }
 
     private static IAsrClient CreateAsrClient(AsrConfig asr)
@@ -314,13 +376,15 @@ public sealed class BotRuntime : IAsyncDisposable
             LoopbackTranscript?.Invoke(this, t);
         };
 
-        if (_obs is not null)
-        {
-            _orchestrator.OnSentenceReady += async (_, s)
-                => await _obs.SetSubtitleTypewriterAsync(s, _config.Obs.AssistantTextComponent, _cts.Token);
-            _orchestrator.OnUserTranscript += async (_, t)
-                => await _obs.SetSubtitleAsync($"[用户] {t}", _config.Obs.UserTextComponent, _cts.Token);
-        }
+        _orchestrator.ConfigureOutputCommands(
+            _obs is null
+                ? null
+                : (text, ct) => _obs.SetSubtitleTypewriterAsync(
+                    text, _config.Obs.AssistantTextComponent, ct),
+            _obs is null
+                ? null
+                : (text, ct) => _obs.SetSubtitleAsync(
+                    $"[用户] {text}", _config.Obs.UserTextComponent, ct));
 
         _orchestrator.OnFirstSentenceToTts += (_, _) =>
             _stateTracker.LlmFirstSentenceReady(Environment.TickCount64);
@@ -731,6 +795,7 @@ public sealed class BotRuntime : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();
+        await DrainBackgroundTasksAsync();
         _mic?.Stop(); _mic?.Dispose();
         _vad?.Dispose();
         _loopback?.Stop(); _loopback?.Dispose();
