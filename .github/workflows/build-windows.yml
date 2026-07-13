@@ -1,38 +1,49 @@
-name: Build Windows (WPF)
+name: Windows quality gate
 
 on:
   push:
-    branches: [ feature/wpf-monitor ]
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: windows-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  baseline-evidence:
-    name: Windows baseline evidence (non-blocking)
+  windows-quality:
+    name: Locked restore, Release build, test, audit, and package
     runs-on: windows-latest
-    continue-on-error: true
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup pinned .NET SDK
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
 
-      - name: Capture restore/build/test/audit/publish evidence
+      - name: Run blocking verification batch
         shell: pwsh
         run: >-
           ./scripts/Invoke-VerificationBatch.ps1
-          -OutputDirectory artifacts/verification-baseline
-          -MinimumTests 1
+          -OutputDirectory artifacts/windows-quality
+          -MinimumTests 200
+          -RequireSidecarRuntime ${{ startsWith(github.ref, 'refs/tags/v') }}
 
-      - name: Upload baseline evidence
-        if: always()
+      - name: Upload quality-gate evidence
+        if: always() && hashFiles('artifacts/windows-quality/artifact-upload-approved.txt') != ''
         uses: actions/upload-artifact@v4
         with:
-          name: windows-verification-baseline-${{ github.sha }}
-          path: artifacts/verification-baseline
+          name: windows-quality-${{ github.sha }}
+          path: artifacts/windows-quality
           if-no-files-found: error
           retention-days: 30

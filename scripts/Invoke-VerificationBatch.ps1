@@ -6,7 +6,10 @@ param(
     [string]$OutputDirectory = "artifacts/verification-baseline",
     [string]$TestFilter = "",
     [ValidateRange(0, [int]::MaxValue)]
-    [int]$MinimumTests = 1
+    [int]$MinimumTests = 1,
+    [ValidateSet("true", "false")]
+    [string]$RequireSidecarRuntime = "false",
+    [switch]$EvidenceOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -104,9 +107,10 @@ function ConvertTo-ProcessArgument {
     return $escaped.ToString()
 }
 
-function Invoke-DotNetStage {
+function Invoke-ProcessStage {
     param(
         [Parameter(Mandatory)] [string]$Name,
+        [Parameter(Mandatory)] [string]$FileName,
         [Parameter(Mandatory)] [string[]]$Arguments
     )
 
@@ -116,7 +120,7 @@ function Invoke-DotNetStage {
     $exitCode = 1
     try {
         $startInfo = [Diagnostics.ProcessStartInfo]::new()
-        $startInfo.FileName = (Get-Command dotnet).Source
+        $startInfo.FileName = (Get-Command $FileName).Source
         $startInfo.WorkingDirectory = $executionRoot
         $startInfo.UseShellExecute = $false
         $startInfo.RedirectStandardOutput = $true
@@ -145,13 +149,81 @@ function Invoke-DotNetStage {
 
     $stages.Add([ordered]@{
         name = $Name
-        command = "dotnet " + ($Arguments -join " ")
+        command = $FileName + " " + ($Arguments -join " ")
         started_at = $startedAt.ToString("o")
         finished_at = [DateTimeOffset]::UtcNow.ToString("o")
         exit_code = $exitCode
         stdout = Get-RelativeEvidencePath $evidenceRoot $stdoutPath
         stderr = Get-RelativeEvidencePath $evidenceRoot $stderrPath
     })
+}
+
+function Invoke-DotNetStage {
+    param(
+        [Parameter(Mandatory)] [string]$Name,
+        [Parameter(Mandatory)] [string[]]$Arguments
+    )
+
+    Invoke-ProcessStage -Name $Name -FileName "dotnet" -Arguments $Arguments
+}
+
+function Find-JsonSeverity {
+    param($Value)
+
+    $severities = [Collections.Generic.List[string]]::new()
+    if ($null -eq $Value) { return $severities }
+    if ($Value -is [Collections.IDictionary]) {
+        foreach ($key in $Value.Keys) {
+            if ([string]$key -eq "severity") {
+                $severities.Add([string]$Value[$key])
+            }
+            else {
+                foreach ($severity in (Find-JsonSeverity $Value[$key])) { $severities.Add($severity) }
+            }
+        }
+        return $severities
+    }
+    if ($Value -is [Collections.IEnumerable] -and $Value -isnot [string]) {
+        foreach ($item in $Value) {
+            foreach ($severity in (Find-JsonSeverity $item)) { $severities.Add($severity) }
+        }
+        return $severities
+    }
+    if ($Value -is [PSCustomObject]) {
+        foreach ($property in $Value.PSObject.Properties) {
+            if ($property.Name -eq "severity") {
+                $severities.Add([string]$property.Value)
+            }
+            else {
+                foreach ($severity in (Find-JsonSeverity $property.Value)) { $severities.Add($severity) }
+            }
+        }
+    }
+    return $severities
+}
+
+function Test-FileForSecret {
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string[]]$Patterns
+    )
+
+    $stream = [IO.File]::OpenRead($Path)
+    try {
+        $buffer = [byte[]]::new(65536)
+        $tail = ""
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $text = $tail + [Text.Encoding]::ASCII.GetString($buffer, 0, $read)
+            foreach ($pattern in $Patterns) {
+                if ($text -match $pattern) { return $true }
+            }
+            $tail = if ($text.Length -gt 512) { $text.Substring($text.Length - 512) } else { $text }
+        }
+        return $false
+    }
+    finally {
+        $stream.Dispose()
+    }
 }
 
 Push-Location $root
@@ -186,8 +258,25 @@ try {
     }
     Invoke-DotNetStage "03-test-coverage" $testArguments
     Invoke-DotNetStage "04-dependency-graph" @("list", $Solution, "package", "--include-transitive", "--no-restore")
-    Invoke-DotNetStage "05-vulnerability-audit" @("list", $Solution, "package", "--vulnerable", "--include-transitive", "--no-restore")
+    Invoke-DotNetStage "05-vulnerability-audit" @(
+        "list", $Solution, "package", "--vulnerable", "--include-transitive", "--no-restore",
+        "--format", "json", "--output-version", "1"
+    )
     Invoke-DotNetStage "06-publish" @("publish", $PublishProject, "-c", "Release", "-r", "win-x64", "--no-restore", "-o", $publishRoot)
+    Invoke-ProcessStage "07-ci-contract" "pwsh" @(
+        "-NoProfile", "-File", (Join-Path $executionRoot "scripts/Test-G006CiContract.ps1"),
+        "-RepositoryRoot", $executionRoot
+    )
+    $sidecarArguments = @(
+        "-NoProfile", "-File", (Join-Path $publishRoot "scripts/Test-SidecarPackage.ps1"),
+        "-PackageRoot", $publishRoot
+    )
+    if ($RequireSidecarRuntime -eq "true") { $sidecarArguments += "-RequireRuntime" }
+    Invoke-ProcessStage "08-sidecar-package" "pwsh" $sidecarArguments
+    Invoke-ProcessStage "09-publish-contract" "pwsh" @(
+        "-NoProfile", "-File", (Join-Path $executionRoot "scripts/Test-G005PublishContract.ps1"),
+        "-RepositoryRoot", $executionRoot
+    )
 
     $manifestPath = Join-Path $evidenceRoot "publish-manifest.json"
     $manifestStartedAt = [DateTimeOffset]::UtcNow
@@ -203,11 +292,11 @@ try {
         @($manifest) | ConvertTo-Json -Depth 4 | Set-Content $manifestPath
     }
     catch {
-        $_ | Out-String | Set-Content (Join-Path $evidenceRoot "07-publish-manifest.log")
+        $_ | Out-String | Set-Content (Join-Path $evidenceRoot "10-publish-manifest.log")
         $manifestExitCode = 1
     }
     $stages.Add([ordered]@{
-        name = "07-publish-manifest"
+        name = "10-publish-manifest"
         command = "Get-ChildItem/Get-FileHash $publishRoot"
         started_at = $manifestStartedAt.ToString("o")
         finished_at = [DateTimeOffset]::UtcNow.ToString("o")
@@ -230,7 +319,8 @@ try {
 
     $requiredStageNames = @(
         "01-restore", "02-build", "03-test-coverage", "04-dependency-graph",
-        "05-vulnerability-audit", "06-publish", "07-publish-manifest"
+        "05-vulnerability-audit", "06-publish", "07-ci-contract",
+        "08-sidecar-package", "09-publish-contract", "10-publish-manifest"
     )
     $recordedStageNames = @($stages | ForEach-Object { $_.name })
     $missingStages = @($requiredStageNames | Where-Object { $_ -notin $recordedStageNames })
@@ -241,17 +331,120 @@ try {
     if ($testCounts.executed -lt $MinimumTests) {
         $integrityErrors.Add("Test filter executed $($testCounts.executed) tests; required minimum is $MinimumTests.")
     }
+    if ($null -eq $trxPath) {
+        $integrityErrors.Add("No TRX test result was produced.")
+    }
+    $coverageFiles = @(Get-ChildItem $testResultsRoot -Filter "coverage.cobertura.xml" -File -Recurse)
+    if ($coverageFiles.Count -eq 0) {
+        $integrityErrors.Add("No Cobertura coverage result was produced.")
+    }
+    foreach ($coverageFile in $coverageFiles) {
+        try {
+            [xml]$coverage = Get-Content $coverageFile.FullName -Raw
+            $coverageRoot = $coverage.SelectSingleNode("/*[local-name()='coverage']")
+            if ($null -eq $coverageRoot -or
+                [int]$coverageRoot.'lines-valid' -le 0 -or
+                [int]$coverageRoot.'lines-covered' -le 0) {
+                $integrityErrors.Add("Coverage result is empty or invalid: $($coverageFile.FullName)")
+            }
+        }
+        catch {
+            $integrityErrors.Add("Coverage XML could not be validated: $($coverageFile.FullName): $($_.Exception.Message)")
+        }
+    }
+
+    $publishFiles = @(Get-ChildItem $publishRoot -File -Recurse)
+    if ($publishFiles.Count -eq 0) {
+        $integrityErrors.Add("Publish output is empty.")
+    }
+    $requiredPublishFiles = @(
+        "AIVTuber.exe", "config.json.template", "sidecar/asr_server.py",
+        "sidecar/asr-sidecar.manifest.json", "sidecar/requirements.lock",
+        "scripts/Test-SidecarPackage.ps1", "scripts/Test-G005PublishContract.ps1"
+    )
+    $publishedRelativePaths = @(
+        $publishFiles | ForEach-Object {
+            (Get-RelativeEvidencePath $publishRoot $_.FullName).Replace("\", "/")
+        }
+    )
+    $missingPublishFiles = @($requiredPublishFiles | Where-Object { $_ -notin $publishedRelativePaths })
+    if ($missingPublishFiles.Count -gt 0) {
+        $integrityErrors.Add("Publish output is missing required files: $($missingPublishFiles -join ', ')")
+    }
+    if (@($publishedRelativePaths | Where-Object { $_ -eq "config.json" -or $_ -like "*/config.json" }).Count -gt 0) {
+        $integrityErrors.Add("Publish output contains forbidden real configuration file config.json.")
+    }
+
+    $failedStages = @($stages | Where-Object { $_.exit_code -ne 0 } | ForEach-Object { $_.name })
+    if (-not $EvidenceOnly -and $failedStages.Count -gt 0) {
+        $integrityErrors.Add("Blocking stages failed: $($failedStages -join ', ')")
+    }
+
+    $auditStage = $stages | Where-Object { $_.name -eq "05-vulnerability-audit" } | Select-Object -First 1
+    $blockingVulnerabilities = @()
+    if ($null -ne $auditStage -and $auditStage.exit_code -eq 0) {
+        try {
+            $auditJson = Get-Content (Join-Path $evidenceRoot $auditStage.stdout) -Raw | ConvertFrom-Json
+            $blockingVulnerabilities = @(
+                Find-JsonSeverity $auditJson |
+                    Where-Object { $_ -in @("High", "Critical") }
+            )
+            if ($blockingVulnerabilities.Count -gt 0) {
+                $integrityErrors.Add("Dependency audit found $($blockingVulnerabilities.Count) High/Critical vulnerabilities.")
+            }
+        }
+        catch {
+            $integrityErrors.Add("Dependency audit JSON could not be validated: $($_.Exception.Message)")
+        }
+    }
+
+    $secretPatterns = @(
+        'github_pat_[A-Za-z0-9_]{20,}',
+        'gh[pousr]_[A-Za-z0-9]{36,}',
+        'AKIA[0-9A-Z]{16}',
+        'sk-[A-Za-z0-9]{20,}',
+        '-----BEGIN [A-Z ]*PRIVATE KEY-----',
+        'Bearer\s+[A-Za-z0-9._~+/=-]{20,}'
+    )
+    $secretFindings = [Collections.Generic.List[string]]::new()
+    foreach ($file in (Get-ChildItem $evidenceRoot -File -Recurse)) {
+        if (Test-FileForSecret -Path $file.FullName -Patterns $secretPatterns) {
+            $secretFindings.Add((Get-RelativeEvidencePath $evidenceRoot $file.FullName))
+        }
+    }
+    if ($secretFindings.Count -gt 0) {
+        $integrityErrors.Add("Potential credential material detected in evidence files: $(@($secretFindings) -join ', ')")
+        foreach ($relativePath in $secretFindings) {
+            Remove-Item -LiteralPath (Join-Path $evidenceRoot $relativePath) -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $unsafeFiles = @(
+        Get-ChildItem $evidenceRoot -File -Recurse |
+            Where-Object { Test-FileForSecret -Path $_.FullName -Patterns $secretPatterns }
+    )
+    if ($unsafeFiles.Count -eq 0) {
+        "Secret scan completed after sanitization." | Set-Content (Join-Path $evidenceRoot "artifact-upload-approved.txt")
+    }
+    else {
+        $integrityErrors.Add("Evidence sanitization failed; artifact upload approval was withheld.")
+    }
 
     $summary = [ordered]@{
         schema_version = 1
-        evidence_only = $true
+        evidence_only = [bool]$EvidenceOnly
         head = $head
         generated_at = [DateTimeOffset]::UtcNow.ToString("o")
         test_results = $testCounts
         minimum_tests = $MinimumTests
         test_filter = $TestFilter
+        require_sidecar_runtime = ($RequireSidecarRuntime -eq "true")
         integrity_passed = ($integrityErrors.Count -eq 0)
         integrity_errors = @($integrityErrors)
+        failed_stages = $failedStages
+        high_critical_vulnerabilities = $blockingVulnerabilities.Count
+        coverage_files = @($coverageFiles | ForEach-Object { Get-RelativeEvidencePath $evidenceRoot $_.FullName })
+        secret_scan_passed = ($secretFindings.Count -eq 0)
         stages = @($stages)
     }
     $summary | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $evidenceRoot "summary.json")
@@ -261,7 +454,7 @@ try {
         exit 2
     }
 
-    Write-Host "Evidence batch complete. Product-stage failures are recorded, not hidden: $evidenceRoot"
+    Write-Host "Verification batch complete: $evidenceRoot"
     exit 0
 }
 finally {
