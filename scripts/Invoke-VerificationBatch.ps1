@@ -167,6 +167,112 @@ function Invoke-DotNetStage {
     Invoke-ProcessStage -Name $Name -FileName "dotnet" -Arguments $Arguments
 }
 
+function Invoke-NativeTestDependencyStage {
+    param(
+        [Parameter(Mandatory)] [string]$ProjectPath
+    )
+
+    $name = "02-native-test-dependency"
+    $stdoutPath = Join-Path $evidenceRoot "$name.stdout.log"
+    $stderrPath = Join-Path $evidenceRoot "$name.stderr.log"
+    $startedAt = [DateTimeOffset]::UtcNow
+    $exitCode = 1
+    try {
+        $resolvedProjectPath = if ([IO.Path]::IsPathRooted($ProjectPath)) {
+            $ProjectPath
+        }
+        else {
+            Join-Path $executionRoot $ProjectPath
+        }
+        $projectDirectory = Split-Path -Parent $resolvedProjectPath
+        $assetsPath = Join-Path $projectDirectory "obj/project.assets.json"
+        if (-not (Test-Path -LiteralPath $assetsPath -PathType Leaf)) {
+            throw "NuGet assets file was not produced for the test project: $assetsPath"
+        }
+
+        $assets = Get-Content -LiteralPath $assetsPath -Raw | ConvertFrom-Json
+        $library = $assets.libraries.PSObject.Properties |
+            Where-Object { $_.Name -match '^WebRtcVadSharp/[^/]+$' } |
+            Select-Object -First 1
+        if ($null -eq $library) {
+            throw "WebRtcVadSharp was not resolved in $assetsPath."
+        }
+
+        $packageRelativePath = [string]$library.Value.path
+        if ([string]::IsNullOrWhiteSpace($packageRelativePath)) {
+            $packageRelativePath = $library.Name.ToLowerInvariant()
+        }
+        $packageRoot = $null
+        foreach ($packageFolder in $assets.packageFolders.PSObject.Properties.Name) {
+            $candidate = Join-Path $packageFolder $packageRelativePath
+            if (Test-Path -LiteralPath $candidate -PathType Container) {
+                $packageRoot = $candidate
+                break
+            }
+        }
+        if ($null -eq $packageRoot) {
+            throw "WebRtcVadSharp package root '$packageRelativePath' was not found in any project.assets.json package folder."
+        }
+
+        $nativeArchitecture = if ([Environment]::Is64BitProcess) { "x64" } else { "x86" }
+
+        $targetFramework = $assets.project.frameworks.PSObject.Properties.Name | Select-Object -First 1
+        if ([string]::IsNullOrWhiteSpace($targetFramework)) {
+            throw "The test target framework could not be resolved from $assetsPath."
+        }
+        $sourcePath = Join-Path $packageRoot "build/$nativeArchitecture/WebRtcVad.dll"
+        $testOutputPath = Join-Path $projectDirectory "bin/Release/$targetFramework"
+        $destinationPath = Join-Path $testOutputPath "WebRtcVad.dll"
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            throw "WebRtcVadSharp native dependency was not found for $nativeArchitecture at $sourcePath."
+        }
+        if (-not (Test-Path -LiteralPath $testOutputPath -PathType Container)) {
+            throw "Release test output was not produced before native dependency preparation: $testOutputPath"
+        }
+
+        Copy-Item -LiteralPath $sourcePath -Destination $destinationPath -Force
+        $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
+        $destinationHash = (Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256).Hash
+        if ($sourceHash -ne $destinationHash) {
+            throw "WebRtcVad.dll SHA256 validation failed after copying to $destinationPath."
+        }
+
+        [ordered]@{
+            package = $library.Name
+            package_root = $packageRoot
+            architecture = $nativeArchitecture
+            source = $sourcePath
+            destination = $destinationPath
+            sha256 = $destinationHash.ToLowerInvariant()
+        } | ConvertTo-Json | Set-Content -LiteralPath $stdoutPath
+        "" | Set-Content -LiteralPath $stderrPath
+        $exitCode = 0
+    }
+    catch {
+        $_ | Out-String | Set-Content -LiteralPath $stderrPath
+        if (-not (Test-Path -LiteralPath $stdoutPath)) { "" | Set-Content -LiteralPath $stdoutPath }
+    }
+
+    $stages.Add([ordered]@{
+        name = $name
+        command = "Resolve WebRtcVadSharp from project.assets.json, copy WebRtcVad.dll, validate SHA256"
+        started_at = $startedAt.ToString("o")
+        finished_at = [DateTimeOffset]::UtcNow.ToString("o")
+        exit_code = $exitCode
+        stdout = Get-RelativeEvidencePath $evidenceRoot $stdoutPath
+        stderr = Get-RelativeEvidencePath $evidenceRoot $stderrPath
+    })
+}
+
+function Get-PowerShellHost {
+    $pwsh = Get-Command "pwsh" -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -ne $pwsh) {
+        return $pwsh.Source
+    }
+
+    return [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+}
+
 function Find-JsonSeverity {
     param($Value)
 
@@ -246,6 +352,7 @@ try {
 
     Invoke-DotNetStage "01-restore" @("restore", $Solution, "--locked-mode")
     Invoke-DotNetStage "02-build" @("build", $Solution, "-c", "Release", "--no-restore")
+    Invoke-NativeTestDependencyStage -ProjectPath $TestProject
 
     $testArguments = @(
         "test", $TestProject, "-c", "Release", "--no-build",
@@ -263,7 +370,8 @@ try {
         "--format", "json", "--output-version", "1"
     )
     Invoke-DotNetStage "06-publish" @("publish", $PublishProject, "-c", "Release", "-r", "win-x64", "--no-restore", "-o", $publishRoot)
-    Invoke-ProcessStage "07-ci-contract" "pwsh" @(
+    $powerShellHost = Get-PowerShellHost
+    Invoke-ProcessStage "07-ci-contract" $powerShellHost @(
         "-NoProfile", "-File", (Join-Path $executionRoot "scripts/Test-G006CiContract.ps1"),
         "-RepositoryRoot", $executionRoot
     )
@@ -272,8 +380,8 @@ try {
         "-PackageRoot", $publishRoot
     )
     if ($RequireSidecarRuntime -eq "true") { $sidecarArguments += "-RequireRuntime" }
-    Invoke-ProcessStage "08-sidecar-package" "pwsh" $sidecarArguments
-    Invoke-ProcessStage "09-publish-contract" "pwsh" @(
+    Invoke-ProcessStage "08-sidecar-package" $powerShellHost $sidecarArguments
+    Invoke-ProcessStage "09-publish-contract" $powerShellHost @(
         "-NoProfile", "-File", (Join-Path $executionRoot "scripts/Test-G005PublishContract.ps1"),
         "-RepositoryRoot", $executionRoot
     )
@@ -318,7 +426,7 @@ try {
     }
 
     $requiredStageNames = @(
-        "01-restore", "02-build", "03-test-coverage", "04-dependency-graph",
+        "01-restore", "02-build", "02-native-test-dependency", "03-test-coverage", "04-dependency-graph",
         "05-vulnerability-audit", "06-publish", "07-ci-contract",
         "08-sidecar-package", "09-publish-contract", "10-publish-manifest"
     )
