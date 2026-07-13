@@ -52,6 +52,11 @@ try {
         Assert-Contains $project $path "App publish graph"
     }
 
+    $attributes = Get-Content (Join-Path $RepositoryRoot ".gitattributes") -Raw
+    foreach ($path in @("asr_server.py", "sidecar/asr-sidecar.manifest.json", "sidecar/requirements.lock")) {
+        Assert-Contains $attributes "$path text eol=lf" "Sidecar checkout normalization"
+    }
+
     $config = Get-Content (Join-Path $RepositoryRoot "config.json.template") -Raw
     Assert-Contains $config '"python_path": "sidecar/python/python.exe"' "Config template"
     $readme = Get-Content (Join-Path $RepositoryRoot "README.txt") -Raw

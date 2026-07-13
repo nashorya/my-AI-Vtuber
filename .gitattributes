@@ -1,0 +1,3 @@
+asr_server.py text eol=lf
+sidecar/asr-sidecar.manifest.json text eol=lf
+sidecar/requirements.lock text eol=lf
