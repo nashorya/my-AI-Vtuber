@@ -1,0 +1,67 @@
+[
+    {
+        "path":  "AIVTuber.Core.pdb",
+        "length":  84996,
+        "sha256":  "a28bb59f8762f0d26b96dbf1625619687a038dab2f9f9c25bf78f9c9667bdde7"
+    },
+    {
+        "path":  "AIVTuber.exe",
+        "length":  196429772,
+        "sha256":  "79dadfc4fb373cdf440ea7aa9ffbcfa91f921bd79413e43f1b41c0f621481d3b"
+    },
+    {
+        "path":  "AIVTuber.pdb",
+        "length":  39372,
+        "sha256":  "177d2cd9c57f9f6d2d7b171043a04e2142bd94ee21ed4360dcfebd44f53666bf"
+    },
+    {
+        "path":  "config.json.template",
+        "length":  2141,
+        "sha256":  "89d20fcde8377d5c4b74af48cb1876e231fdba694282bec1c96f8b05aaeca683"
+    },
+    {
+        "path":  "danmaku_bridge.py",
+        "length":  1551,
+        "sha256":  "b4b39fc459ff6c3fb6e148e4ad17be962329cbec0c0eadfa7f050d7375fc6155"
+    },
+    {
+        "path":  "onnxruntime.lib",
+        "length":  2124,
+        "sha256":  "63b987e2c3e37fe852a291d012931c0aadda2c9978eb259bc441a0023cd1920c"
+    },
+    {
+        "path":  "onnxruntime_providers_shared.lib",
+        "length":  2314,
+        "sha256":  "e3de923bee2994db06e0d01ce8c0b62ce9b05c25501b3efc837a039d3eef88f1"
+    },
+    {
+        "path":  "README.txt",
+        "length":  3235,
+        "sha256":  "33e88a429ad807dc3b76e4f6a7a887890631805518ca419bb8f05dee52051adb"
+    },
+    {
+        "path":  "scripts/Test-G005PublishContract.ps1",
+        "length":  3172,
+        "sha256":  "898da6782a2fdb5e7a50a59c60a387c2fa29c14beec04a604d86fe536883ef79"
+    },
+    {
+        "path":  "scripts/Test-SidecarPackage.ps1",
+        "length":  1765,
+        "sha256":  "31544ccda8ea610c3e95a0c41e57b275a948ed017470b30a2e5e77a0a0e007f7"
+    },
+    {
+        "path":  "sidecar/asr_server.py",
+        "length":  2978,
+        "sha256":  "e7b211b01ee041857042ec47f945385f999371647d7ebbd15706b751084447b0"
+    },
+    {
+        "path":  "sidecar/asr-sidecar.manifest.json",
+        "length":  906,
+        "sha256":  "52dc05d2403065f0747c8a9c41cce097d0f91da99929b5b68b60d5cb4656ddaf"
+    },
+    {
+        "path":  "sidecar/requirements.lock",
+        "length":  49,
+        "sha256":  "8b02e665b6a5fb1c93601241eb809247909f494464fb7596537688a730a00b58"
+    }
+]

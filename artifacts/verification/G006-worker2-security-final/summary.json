@@ -1,0 +1,120 @@
+{
+    "schema_version":  1,
+    "evidence_only":  false,
+    "head":  "e2c0393cdeda0349b9318166a416bcdbc8eecb26",
+    "generated_at":  "2026-07-13T06:31:40.5738634+00:00",
+    "test_results":  {
+                         "total":  240,
+                         "executed":  240,
+                         "passed":  240,
+                         "failed":  0,
+                         "skipped":  0
+                     },
+    "minimum_tests":  200,
+    "test_filter":  "",
+    "require_sidecar_runtime":  false,
+    "integrity_passed":  true,
+    "integrity_errors":  [
+
+                         ],
+    "failed_stages":  [
+
+                      ],
+    "high_critical_vulnerabilities":  0,
+    "coverage_files":  [
+                           "test-results\\9c5edc03-0e5c-466c-b4f2-492483fa4544\\coverage.cobertura.xml",
+                           "test-results\\wan.kangping_ZWSZ-130823_2026-07-13_14_31_19\\In\\ZWSZ-130823\\coverage.cobertura.xml"
+                       ],
+    "secret_scan_passed":  true,
+    "stages":  [
+                   {
+                       "name":  "01-restore",
+                       "command":  "dotnet restore AIVTuber.slnx --locked-mode",
+                       "started_at":  "2026-07-13T06:31:03.4379607+00:00",
+                       "finished_at":  "2026-07-13T06:31:05.1061032+00:00",
+                       "exit_code":  0,
+                       "stdout":  "01-restore.stdout.log",
+                       "stderr":  "01-restore.stderr.log"
+                   },
+                   {
+                       "name":  "02-build",
+                       "command":  "dotnet build AIVTuber.slnx -c Release --no-restore",
+                       "started_at":  "2026-07-13T06:31:05.1869782+00:00",
+                       "finished_at":  "2026-07-13T06:31:12.6218189+00:00",
+                       "exit_code":  0,
+                       "stdout":  "02-build.stdout.log",
+                       "stderr":  "02-build.stderr.log"
+                   },
+                   {
+                       "name":  "03-test-coverage",
+                       "command":  "dotnet test AIVTuber.Tests/AIVTuber.Tests.csproj -c Release --no-build --logger trx;LogFileName=baseline.trx --results-directory C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g006-e2c0393-worker2\\artifacts\\verification\\G006-worker2-security-final\\test-results --collect XPlat Code Coverage",
+                       "started_at":  "2026-07-13T06:31:12.6260832+00:00",
+                       "finished_at":  "2026-07-13T06:31:23.1925656+00:00",
+                       "exit_code":  0,
+                       "stdout":  "03-test-coverage.stdout.log",
+                       "stderr":  "03-test-coverage.stderr.log"
+                   },
+                   {
+                       "name":  "04-dependency-graph",
+                       "command":  "dotnet list AIVTuber.slnx package --include-transitive --no-restore",
+                       "started_at":  "2026-07-13T06:31:23.1925656+00:00",
+                       "finished_at":  "2026-07-13T06:31:24.7881593+00:00",
+                       "exit_code":  0,
+                       "stdout":  "04-dependency-graph.stdout.log",
+                       "stderr":  "04-dependency-graph.stderr.log"
+                   },
+                   {
+                       "name":  "05-vulnerability-audit",
+                       "command":  "dotnet list AIVTuber.slnx package --vulnerable --include-transitive --no-restore --format json --output-version 1",
+                       "started_at":  "2026-07-13T06:31:24.7881593+00:00",
+                       "finished_at":  "2026-07-13T06:31:26.9868292+00:00",
+                       "exit_code":  0,
+                       "stdout":  "05-vulnerability-audit.stdout.log",
+                       "stderr":  "05-vulnerability-audit.stderr.log"
+                   },
+                   {
+                       "name":  "06-publish",
+                       "command":  "dotnet publish App/App.csproj -c Release -r win-x64 --no-restore -o C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g006-e2c0393-worker2\\artifacts\\verification\\G006-worker2-security-final\\publish",
+                       "started_at":  "2026-07-13T06:31:26.9868292+00:00",
+                       "finished_at":  "2026-07-13T06:31:30.3770416+00:00",
+                       "exit_code":  0,
+                       "stdout":  "06-publish.stdout.log",
+                       "stderr":  "06-publish.stderr.log"
+                   },
+                   {
+                       "name":  "07-ci-contract",
+                       "command":  "pwsh -NoProfile -File C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g006-e2c0393-worker2\\scripts\\Test-G006CiContract.ps1 -RepositoryRoot C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g006-e2c0393-worker2",
+                       "started_at":  "2026-07-13T06:31:30.3770416+00:00",
+                       "finished_at":  "2026-07-13T06:31:30.9966907+00:00",
+                       "exit_code":  0,
+                       "stdout":  "07-ci-contract.stdout.log",
+                       "stderr":  "07-ci-contract.stderr.log"
+                   },
+                   {
+                       "name":  "08-sidecar-package",
+                       "command":  "pwsh -NoProfile -File C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g006-e2c0393-worker2\\artifacts\\verification\\G006-worker2-security-final\\publish\\scripts\\Test-SidecarPackage.ps1 -PackageRoot C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g006-e2c0393-worker2\\artifacts\\verification\\G006-worker2-security-final\\publish",
+                       "started_at":  "2026-07-13T06:31:31.0125597+00:00",
+                       "finished_at":  "2026-07-13T06:31:31.6627174+00:00",
+                       "exit_code":  0,
+                       "stdout":  "08-sidecar-package.stdout.log",
+                       "stderr":  "08-sidecar-package.stderr.log"
+                   },
+                   {
+                       "name":  "09-publish-contract",
+                       "command":  "pwsh -NoProfile -File C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g006-e2c0393-worker2\\scripts\\Test-G005PublishContract.ps1 -RepositoryRoot C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g006-e2c0393-worker2",
+                       "started_at":  "2026-07-13T06:31:31.6647240+00:00",
+                       "finished_at":  "2026-07-13T06:31:34.6220601+00:00",
+                       "exit_code":  0,
+                       "stdout":  "09-publish-contract.stdout.log",
+                       "stderr":  "09-publish-contract.stderr.log"
+                   },
+                   {
+                       "name":  "10-publish-manifest",
+                       "command":  "Get-ChildItem/Get-FileHash C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g006-e2c0393-worker2\\artifacts\\verification\\G006-worker2-security-final\\publish",
+                       "started_at":  "2026-07-13T06:31:34.6220601+00:00",
+                       "finished_at":  "2026-07-13T06:31:34.9592665+00:00",
+                       "exit_code":  0,
+                       "log":  "publish-manifest.json"
+                   }
+               ]
+}
