@@ -76,6 +76,9 @@ public sealed class LlmClient : ILlmClient, IDisposable
         using var reader = new StreamReader(stream);
 
         var buffer = new StringBuilder();
+        var controlTags = new StreamingControlTagParser(
+            action => OnActionDetected?.Invoke(this, action),
+            emotion => OnEmotionDetected?.Invoke(this, emotion));
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -101,27 +104,13 @@ public sealed class LlmClient : ILlmClient, IDisposable
             var delta = chunk.Choices[0].Delta;
             if (delta?.Content is null) continue;
 
-            var token = delta.Content;
+            var token = controlTags.Consume(delta.Content);
+            if (token.Length == 0) continue;
             buffer.Append(token);
             yield return token;
 
             // Check for sentence boundaries and emit complete sentences
             var currentText = buffer.ToString();
-            var emotionMatch = EmotionTagRegex.Match(currentText);
-            while (emotionMatch.Success)
-            {
-                OnEmotionDetected?.Invoke(this, emotionMatch.Groups[1].Value);
-                currentText = currentText.Remove(emotionMatch.Index, emotionMatch.Length);
-                buffer.Clear();
-                buffer.Append(currentText);
-                emotionMatch = EmotionTagRegex.Match(currentText);
-            }
-
-            currentText = ExtractActionTags(currentText,
-                action => OnActionDetected?.Invoke(this, action));
-            buffer.Clear();
-            buffer.Append(currentText);
-
             if (ContainsSentenceBoundary(currentText, out var sentence, out var remainder))
             {
                 var trimmed = StripActionText(StripControlTags(sentence)).Trim();
@@ -132,6 +121,13 @@ public sealed class LlmClient : ILlmClient, IDisposable
                 buffer.Clear();
                 buffer.Append(remainder);
             }
+        }
+
+        var parserRemainder = controlTags.Complete();
+        if (parserRemainder.Length > 0)
+        {
+            buffer.Append(parserRemainder);
+            yield return parserRemainder;
         }
 
         // Emit any remaining text as a sentence

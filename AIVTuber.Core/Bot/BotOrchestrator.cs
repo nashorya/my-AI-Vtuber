@@ -152,7 +152,11 @@ public sealed class BotOrchestrator : IDisposable
         string kind)
     {
         if (_triggerHotkeyAsync is null) return;
-        if (!TryGetHotkeyId(map, name, out var hotkeyId)) return;
+        if (!TryGetHotkeyId(map, name, out var hotkeyId))
+        {
+            ReportCurrentError(context.Generation, $"[VTS] unknown {kind}: {name}");
+            return;
+        }
         QueueCommand(context, $"[VTS] {kind} hotkey", ct => _triggerHotkeyAsync(hotkeyId, ct));
     }
 
