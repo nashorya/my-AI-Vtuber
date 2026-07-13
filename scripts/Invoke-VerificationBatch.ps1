@@ -11,7 +11,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$evidenceRoot = [IO.Path]::GetFullPath((Join-Path $root $OutputDirectory))
+$outputPath = if ([IO.Path]::IsPathRooted($OutputDirectory)) {
+    $OutputDirectory
+}
+else {
+    Join-Path $root $OutputDirectory
+}
+# PowerShell's provider resolver preserves UNC roots (including \\wsl.localhost\...)
+# that System.IO.Path.GetFullPath can reject or reinterpret.
+$evidenceRoot = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($outputPath)
 $publishRoot = Join-Path $evidenceRoot "publish"
 $testResultsRoot = Join-Path $evidenceRoot "test-results"
 $stages = [Collections.Generic.List[object]]::new()
