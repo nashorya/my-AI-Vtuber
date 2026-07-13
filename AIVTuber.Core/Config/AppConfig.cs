@@ -55,8 +55,8 @@ public sealed class AsrConfig
     public string Model { get; set; } = string.Empty;
     /// <summary>Base URL of the local ASR HTTP service. Only used when Provider = "local".</summary>
     public string LocalAsrUrl { get; set; } = "http://localhost:8765";
-    /// <summary>Python executable used to launch asr_server.py. Defaults to "python".</summary>
-    public string PythonPath { get; set; } = "python";
+    /// <summary>Managed Python executable used to launch the packaged local ASR sidecar.</summary>
+    public string PythonPath { get; set; } = "sidecar/python/python.exe";
 }
 
 public sealed class LlmConfig

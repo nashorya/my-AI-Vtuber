@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using AIVTuber.Core.Audio;
 using AIVTuber.Core.Bot;
 using AIVTuber.Core.Config;
@@ -22,6 +21,7 @@ public sealed class BotRuntime : IAsyncDisposable
     private readonly object _backgroundTasksLock = new();
     private readonly HashSet<Task> _backgroundTasks = [];
     private readonly Func<RuntimeChange, Task>? _applyChangesOverride;
+    private readonly AsrSidecarProcess _asrSidecar;
     private AppConfig _config;
     private AppConfig _activeConfig;
     private AppConfig _lastKnownGoodConfig;
@@ -76,8 +76,6 @@ public sealed class BotRuntime : IAsyncDisposable
     private volatile bool _localAsrReachable;
     public bool LocalAsrReachable => _localAsrReachable;
     public event EventHandler<bool>? LocalAsrReachableChanged;
-
-    private Process? _asrServerProcess;
 
     /// <summary>Returns hotkeys in the currently loaded VTS model, or empty if not connected.</summary>
     public Task<List<VtsHotkeyInfo>> GetVtsHotkeysAsync(CancellationToken ct = default)
@@ -162,6 +160,14 @@ public sealed class BotRuntime : IAsyncDisposable
         _candidateConfig = ConfigManager.Clone(_config);
         _baseDir = baseDir;
         _applyChangesOverride = applyChangesOverride;
+        _asrSidecar = new AsrSidecarProcess(baseDir);
+        _asrSidecar.Diagnostic += (_, line) =>
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[Local ASR] {line}");
+        _asrSidecar.UnexpectedExit += (_, _) =>
+        {
+            SetLocalAsrReachable(false);
+            PipelineError?.Invoke(this, "[Local ASR] 服务进程意外退出");
+        };
     }
 
     /// <summary>Initializes all modules. Equivalent to the old Program startup sequence.</summary>
@@ -391,7 +397,7 @@ public sealed class BotRuntime : IAsyncDisposable
 
         // Mute loopback VAD while AI is playing so it doesn't hear its own TTS output.
         _orchestrator.OnAiStartSpeaking += (_, _) => _loopbackVadMuted = true;
-        _orchestrator.OnAiStopSpeaking  += (_, _) => { _loopbackVadMuted = false; _loopbackVad?.Reset(); };
+        _orchestrator.OnAiStopSpeaking += (_, _) => { _loopbackVadMuted = false; _loopbackVad?.Reset(); };
 
         // Stable speaking->selector bridge, added once per orchestrator. Null-safe so it works
         // whether or not danmaku is active, and reads the current _selector field after rebuilds —
@@ -412,67 +418,38 @@ public sealed class BotRuntime : IAsyncDisposable
     }
 
     /// <summary>
-    /// Starts asr_server.py as a hidden background process, then polls /health until ready.
-    /// Fires LocalAsrReachableChanged when the server comes online or fails to start.
+    /// Starts the managed local ASR sidecar and waits for an explicit ready health state.
     /// </summary>
     public async Task StartLocalAsrServerAsync()
     {
         if (_asr is not LocalAsrClient localAsr) return;
-
-        // Kill any previously owned process first
-        StopLocalAsrServer();
-
-        var scriptPath = Path.Combine(_baseDir, "asr_server.py");
-        var si = new ProcessStartInfo
+        SetLocalAsrReachable(false);
+        try
         {
-            FileName = _config.Asr.PythonPath,
-            Arguments = $"\"{scriptPath}\"",
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-
-        _asrServerProcess = new Process { StartInfo = si, EnableRaisingEvents = true };
-        _asrServerProcess.Exited += (_, _) =>
+            var health = await _asrSidecar.StartAsync(
+                _config.Asr,
+                localAsr,
+                TimeSpan.FromSeconds(60),
+                _cts.Token).ConfigureAwait(false);
+            SetLocalAsrReachable(health.Status == LocalAsrHealthStatus.Ready);
+        }
+        catch (OperationCanceledException)
         {
-            _localAsrReachable = false;
-            LocalAsrReachableChanged?.Invoke(this, false);
-            PipelineError?.Invoke(this, "[Local ASR] 服务进程已退出");
-        };
-
-        try { _asrServerProcess.Start(); }
+            SetLocalAsrReachable(false);
+        }
         catch (Exception ex)
         {
+            SetLocalAsrReachable(false);
             PipelineError?.Invoke(this, $"[Local ASR] 启动失败: {ex.Message}");
-            return;
+            throw;
         }
-
-        // Poll /health until the model finishes loading (can take a few seconds)
-        var deadline = DateTime.UtcNow.AddSeconds(60);
-        while (DateTime.UtcNow < deadline && !_cts.Token.IsCancellationRequested)
-        {
-            if (await localAsr.PingAsync(_cts.Token))
-            {
-                _localAsrReachable = true;
-                LocalAsrReachableChanged?.Invoke(this, true);
-                return;
-            }
-            await Task.Delay(500, _cts.Token).ConfigureAwait(false);
-        }
-
-        _localAsrReachable = false;
-        LocalAsrReachableChanged?.Invoke(this, false);
-        PipelineError?.Invoke(this, "[Local ASR] 服务启动超时（60s），请检查 Python 环境");
     }
 
-    public void StopLocalAsrServer()
+    private void SetLocalAsrReachable(bool reachable)
     {
-        try { _asrServerProcess?.Kill(entireProcessTree: true); }
-        catch { /* already dead */ }
-        _asrServerProcess?.Dispose();
-        _asrServerProcess = null;
-        _localAsrReachable = false;
+        if (_localAsrReachable == reachable) return;
+        _localAsrReachable = reachable;
+        LocalAsrReachableChanged?.Invoke(this, reachable);
     }
 
     private void StartAudio()
@@ -555,7 +532,9 @@ public sealed class BotRuntime : IAsyncDisposable
                     }
                     var tagged = new AIVTuber.Core.Audio.SpeechSegment
                     {
-                        AudioData = seg.AudioData, StartTime = seg.StartTime, EndTime = seg.EndTime,
+                        AudioData = seg.AudioData,
+                        StartTime = seg.StartTime,
+                        EndTime = seg.EndTime,
                         Source = AIVTuber.Core.Audio.AudioSource.Loopback,
                     };
                     await _orchestrator.ProcessLoopbackSpeechAsync(tagged, _conversation.BuildMessages(), _config.Input.LoopbackTemplate);
@@ -731,7 +710,6 @@ public sealed class BotRuntime : IAsyncDisposable
 
         if (change.HasFlag(RuntimeChange.RebuildAsr))
         {
-            StopLocalAsrServer();
             if (_asr is LocalAsrClient)
             {
                 await StartLocalAsrServerAsync();
@@ -805,7 +783,7 @@ public sealed class BotRuntime : IAsyncDisposable
         if (_danmaku is not null) { await _danmaku.StopAsync(); _danmaku.Dispose(); }
         if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); }
         if (_obs is not null) { await _obs.DisconnectAsync(); _obs.Dispose(); }
-        StopLocalAsrServer();
+        await _asrSidecar.DisposeAsync();
         _orchestrator?.Dispose();
         (_tts as IDisposable)?.Dispose();
         _llm?.Dispose();

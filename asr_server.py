@@ -1,39 +1,75 @@
-"""
-Local ASR HTTP server (Qwen3-ASR-0.6B).
-POST /recognize  Content-Type: application/octet-stream  body=raw int16 PCM
-                 query: sr=16000 (sample rate, default 16000)
-GET  /health     returns {"status": "ok"}
-"""
-import io
-import wave
-import tempfile
+"""Managed local ASR sidecar with a structured readiness contract."""
 import os
+import tempfile
+import threading
+import traceback
+import wave
+
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-MODEL_DIR = r"C:\Users\nashorya\.cache\modelscope\hub\models\Qwen\Qwen3-ASR-0___6B"
+MODEL_SOURCE = os.environ.get("ASR_MODEL", "Qwen/Qwen3-ASR-0.6B")
+MODEL_DEVICE = os.environ.get("ASR_DEVICE", "auto")
+SERVER_VERSION = "1"
 
 app = FastAPI()
 model = None
+health_state = "loading"
+health_detail = f"Loading model {MODEL_SOURCE}"
+health_lock = threading.Lock()
 
 
 @app.on_event("startup")
+def start_model_load():
+    threading.Thread(target=load_model, name="asr-model-loader", daemon=True).start()
+
+
 def load_model():
-    global model
-    from qwen_asr import Qwen3ASRModel
-    print("[ASR] Loading model...")
-    model = Qwen3ASRModel.from_pretrained(MODEL_DIR, device_map="cuda")
-    print("[ASR] Model ready.")
+    global model, health_state, health_detail
+    try:
+        from qwen_asr import Qwen3ASRModel
+
+        print(f"[ASR] Loading model: {MODEL_SOURCE} (device={MODEL_DEVICE})", flush=True)
+        loaded_model = Qwen3ASRModel.from_pretrained(
+            MODEL_SOURCE,
+            device_map=MODEL_DEVICE,
+        )
+        with health_lock:
+            model = loaded_model
+            health_state = "ready"
+            health_detail = f"Model {MODEL_SOURCE} is ready"
+        print("[ASR] Model ready.", flush=True)
+    except Exception as exc:
+        with health_lock:
+            health_state = "failed"
+            health_detail = f"ASR-SIDECAR-005 {type(exc).__name__}: {exc}"
+        print("[ASR] Model load failed:\n" + traceback.format_exc(), flush=True)
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok" if model is not None else "loading"}
+    with health_lock:
+        payload = {
+            "status": health_state,
+            "detail": health_detail,
+            "version": SERVER_VERSION,
+        }
+    return JSONResponse(payload, status_code=200 if payload["status"] == "ready" else 503)
 
 
 @app.post("/recognize")
 async def recognize(request: Request):
+    with health_lock:
+        current_state = health_state
+        current_detail = health_detail
+        current_model = model
+    if current_state != "ready" or current_model is None:
+        return JSONResponse(
+            {"status": current_state, "detail": current_detail},
+            status_code=503,
+        )
+
     sr = int(request.query_params.get("sr", 16000))
     pcm = await request.body()
     if not pcm:
@@ -49,7 +85,7 @@ async def recognize(request: Request):
             wf.setframerate(sr)
             wf.writeframes(pcm)
 
-        results = model.transcribe(tmp_path)
+        results = current_model.transcribe(tmp_path)
         text = "".join(r.text for r in results) if results else ""
     finally:
         os.unlink(tmp_path)
@@ -58,4 +94,8 @@ async def recognize(request: Request):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8765)
+    uvicorn.run(
+        app,
+        host=os.environ.get("ASR_HOST", "127.0.0.1"),
+        port=int(os.environ.get("ASR_PORT", "8765")),
+    )

@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 
 namespace AIVTuber.Core.Pipeline;
 
@@ -9,10 +10,20 @@ namespace AIVTuber.Core.Pipeline;
 /// </summary>
 public sealed class LocalAsrClient : IAsrClient
 {
-    private static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private static readonly HttpClient SharedHttp = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private readonly HttpClient _http;
     private readonly string _baseUrl;
 
-    public LocalAsrClient(string baseUrl) => _baseUrl = baseUrl.TrimEnd('/');
+    public LocalAsrClient(string baseUrl)
+        : this(baseUrl, SharedHttp)
+    {
+    }
+
+    internal LocalAsrClient(string baseUrl, HttpClient http)
+    {
+        _baseUrl = baseUrl.TrimEnd('/');
+        _http = http;
+    }
 
     public async Task<AsrResult> RecognizeAsync(byte[] pcm16k, CancellationToken cancellationToken = default)
     {
@@ -40,15 +51,53 @@ public sealed class LocalAsrClient : IAsrClient
         }
     }
 
-    /// <summary>Returns true if the local ASR server is reachable and ready.</summary>
-    public async Task<bool> PingAsync(CancellationToken cancellationToken = default)
+    /// <summary>Returns the sidecar's structured loading/ready/failed health state.</summary>
+    public async Task<LocalAsrHealth> GetHealthAsync(CancellationToken cancellationToken = default)
     {
         try
         {
-            var resp = await _http.GetAsync($"{_baseUrl}/health", cancellationToken);
-            return resp.IsSuccessStatusCode;
+            using var response = await _http.GetAsync($"{_baseUrl}/health", cancellationToken);
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            LocalAsrHealthResponse? payload = null;
+            try
+            {
+                payload = JsonSerializer.Deserialize<LocalAsrHealthResponse>(body, JsonOptions);
+            }
+            catch (JsonException)
+            {
+                // The raw body is returned below so malformed sidecars remain diagnosable.
+            }
+
+            var status = ParseStatus(payload?.Status);
+            var detail = payload?.Detail ?? payload?.Message;
+            if (!response.IsSuccessStatusCode)
+            {
+                var bodyDetail = string.IsNullOrWhiteSpace(detail) ? body : detail;
+                detail = $"HTTP {(int)response.StatusCode} {response.ReasonPhrase}: {bodyDetail}".TrimEnd();
+                if (status == LocalAsrHealthStatus.Unknown)
+                    status = LocalAsrHealthStatus.Failed;
+            }
+
+            if (status == LocalAsrHealthStatus.Unknown && string.IsNullOrWhiteSpace(detail))
+                detail = string.IsNullOrWhiteSpace(body) ? "Health response did not contain a status." : body;
+
+            return new LocalAsrHealth(status, detail, payload?.Version);
         }
-        catch { return false; }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return new LocalAsrHealth(LocalAsrHealthStatus.Unknown, ex.Message);
+        }
+    }
+
+    /// <summary>Returns true only when the local ASR explicitly reports ready.</summary>
+    public async Task<bool> PingAsync(CancellationToken cancellationToken = default)
+    {
+        var health = await GetHealthAsync(cancellationToken);
+        return health.Status == LocalAsrHealthStatus.Ready;
     }
 
     private static async Task EnsureSuccessWithBodyAsync(HttpResponseMessage response, CancellationToken cancellationToken)
@@ -64,4 +113,31 @@ public sealed class LocalAsrClient : IAsrClient
     }
 
     private sealed record AsrResponse(string Text);
+    private sealed record LocalAsrHealthResponse(string? Status, string? Detail, string? Message, string? Version);
+
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true,
+    };
+
+    private static LocalAsrHealthStatus ParseStatus(string? value) => value?.ToLowerInvariant() switch
+    {
+        "loading" => LocalAsrHealthStatus.Loading,
+        "ready" => LocalAsrHealthStatus.Ready,
+        "failed" => LocalAsrHealthStatus.Failed,
+        _ => LocalAsrHealthStatus.Unknown,
+    };
 }
+
+public enum LocalAsrHealthStatus
+{
+    Unknown,
+    Loading,
+    Ready,
+    Failed,
+}
+
+public sealed record LocalAsrHealth(
+    LocalAsrHealthStatus Status,
+    string? Detail = null,
+    string? Version = null);
