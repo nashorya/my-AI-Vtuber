@@ -1,0 +1,9 @@
+  AIVTuber.Core -> \\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Core\bin\Release\net10.0\AIVTuber.Core.dll
+  App -> \\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\App\bin\Release\net10.0-windows\win-x64\AIVTuber.dll
+  AIVTuber.Tests -> \\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Tests\bin\Release\net10.0\AIVTuber.Tests.dll
+
+已成功生成。
+    0 个警告
+    0 个错误
+
+已用时间 00:00:02.11

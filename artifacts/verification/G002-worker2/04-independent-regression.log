@@ -1,0 +1,4 @@
+  正在确定要还原的项目…
+  所有项目均是最新的，无法还原。
+  AIVTuber.Core -> \\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Core\bin\Debug\net10.0\AIVTuber.Core.dll
+C:\Users\wan.kangping\.dotnet10\sdk\10.0.301\Microsoft.Common.CurrentVersion.targets(5397,5): error MSB3030: 无法复制文件“\\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Tests\Fixtures\Memory\legacy-memory-v9.db”，原因是找不到该文件。 [\\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Tests\AIVTuber.Tests.csproj]

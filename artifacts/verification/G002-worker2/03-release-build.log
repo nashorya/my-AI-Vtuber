@@ -1,0 +1,11 @@
+  AIVTuber.Core -> \\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Core\bin\Release\net10.0\AIVTuber.Core.dll
+C:\Users\wan.kangping\.dotnet10\sdk\10.0.301\Microsoft.Common.CurrentVersion.targets(5397,5): error MSB3030: 无法复制文件“\\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Tests\Fixtures\Memory\legacy-memory-v9.db”，原因是找不到该文件。 [\\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Tests\AIVTuber.Tests.csproj]
+  App -> \\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\App\bin\Release\net10.0-windows\win-x64\AIVTuber.dll
+
+生成失败。
+
+C:\Users\wan.kangping\.dotnet10\sdk\10.0.301\Microsoft.Common.CurrentVersion.targets(5397,5): error MSB3030: 无法复制文件“\\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Tests\Fixtures\Memory\legacy-memory-v9.db”，原因是找不到该文件。 [\\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Tests\AIVTuber.Tests.csproj]
+    0 个警告
+    1 个错误
+
+已用时间 00:00:12.71

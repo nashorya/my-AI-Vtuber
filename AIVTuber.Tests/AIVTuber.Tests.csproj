@@ -24,4 +24,8 @@
     <ProjectReference Include="..\AIVTuber.Core\AIVTuber.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="Fixtures\Memory\legacy-memory-v9.db" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

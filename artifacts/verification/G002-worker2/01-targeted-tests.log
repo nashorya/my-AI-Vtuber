@@ -1,0 +1,5 @@
+  正在确定要还原的项目…
+  已还原 \\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Tests\AIVTuber.Tests.csproj (用时 9.39 秒)。
+  已还原 \\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Core\AIVTuber.Core.csproj (用时 9.39 秒)。
+  AIVTuber.Core -> \\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Core\bin\Debug\net10.0\AIVTuber.Core.dll
+C:\Users\wan.kangping\.dotnet10\sdk\10.0.301\Microsoft.Common.CurrentVersion.targets(5397,5): error MSB3030: 无法复制文件“\\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Tests\Fixtures\Memory\legacy-memory-v9.db”，原因是找不到该文件。 [\\wsl.localhost\Ubuntu-24.04\home\wankangping\my-AI-Vtuber\.omx\team\g002-sqlite-security-54e05111\worktrees\worker-2\AIVTuber.Tests\AIVTuber.Tests.csproj]
