@@ -2,7 +2,6 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Text.Json;
 using AIVTuber.Core.Audio;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Vts;
@@ -55,7 +54,7 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
                            Action<AppConfig> save, Func<AppConfig, Task> applyAsync,
                            Func<Task<List<VtsHotkeyInfo>>>? getVtsHotkeys = null)
     {
-        Working = Clone(current);
+        Working = ConfigManager.Clone(current);
         InputDevices = inputDevices;
         _save = save;
         _applyAsync = applyAsync;
@@ -333,10 +332,12 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
         {
             SyncEmotionMap();
             SyncActionMap();
-            _save(Working);
+            var persistedCandidate = ConfigManager.Clone(Working);
+            var runtimeCandidate = ConfigManager.Clone(Working);
+            _save(persistedCandidate);
             try
             {
-                await _applyAsync(Working);
+                await _applyAsync(runtimeCandidate);
                 Status = $"已保存并应用 · {DateTime.Now:HH:mm}";
             }
             catch (Exception ex)
@@ -348,14 +349,6 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
         {
             IsSaving = false;
         }
-    }
-
-    /// <summary>Deep-copy via JSON round-trip (same options as the config file).</summary>
-    internal static AppConfig Clone(AppConfig c)
-    {
-        var json = JsonSerializer.Serialize(c, ConfigManager.JsonOptions);
-        return JsonSerializer.Deserialize<AppConfig>(json, ConfigManager.JsonOptions)
-               ?? throw new InvalidOperationException("Failed to clone AppConfig via JSON round-trip.");
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

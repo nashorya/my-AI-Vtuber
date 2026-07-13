@@ -18,8 +18,16 @@ public sealed class BotRuntime : IAsyncDisposable
 {
     private readonly string _baseDir;
     private readonly CancellationTokenSource _cts = new();
-    // Mutable (not readonly) because ApplyConfigAsync replaces it at runtime; contrast with readonly _baseDir.
+    private readonly SemaphoreSlim _configApplyGate = new(1, 1);
+    private readonly Func<RuntimeChange, Task>? _applyChangesOverride;
     private AppConfig _config;
+    private AppConfig _activeConfig;
+    private AppConfig _lastKnownGoodConfig;
+    private AppConfig? _candidateConfig;
+    private long _activeRevision = 1;
+    private long _candidateRevision = 1;
+    private long _lastKnownGoodRevision = 1;
+    private long _nextRevision = 1;
 
     private MemoryDb _memoryDb = null!;
     private EmbeddingEngine? _embedding;
@@ -86,7 +94,12 @@ public sealed class BotRuntime : IAsyncDisposable
     /// <summary>Fired with transcribed text from system audio (loopback/PC source).</summary>
     public event EventHandler<string>? LoopbackTranscript;
 
-    public AppConfig CurrentConfig => _config;
+    public AppConfig CurrentConfig => ConfigManager.Clone(_activeConfig);
+    public AppConfig? CandidateConfig => _candidateConfig is null ? null : ConfigManager.Clone(_candidateConfig);
+    public long ActiveConfigRevision => Interlocked.Read(ref _activeRevision);
+    public long CandidateConfigRevision => Interlocked.Read(ref _candidateRevision);
+    public long LastKnownGoodConfigRevision => Interlocked.Read(ref _lastKnownGoodRevision);
+    public bool CandidateConfigIsActive => CandidateConfigRevision == ActiveConfigRevision;
     public ViewerRepository ViewerRepository => _viewerRepo;
     public FactRepository FactRepository => _factRepo;
     public DanmakuSelector? Selector => _selector;
@@ -135,9 +148,18 @@ public sealed class BotRuntime : IAsyncDisposable
     }
 
     public BotRuntime(AppConfig config, string baseDir)
+        : this(config, baseDir, null)
     {
-        _config = config;
+    }
+
+    internal BotRuntime(AppConfig config, string baseDir, Func<RuntimeChange, Task>? applyChangesOverride)
+    {
+        _config = ConfigManager.Clone(config);
+        _activeConfig = ConfigManager.Clone(_config);
+        _lastKnownGoodConfig = ConfigManager.Clone(_config);
+        _candidateConfig = ConfigManager.Clone(_config);
         _baseDir = baseDir;
+        _applyChangesOverride = applyChangesOverride;
     }
 
     /// <summary>Initializes all modules. Equivalent to the old Program startup sequence.</summary>
@@ -239,16 +261,27 @@ public sealed class BotRuntime : IAsyncDisposable
             _ => new TtsClient(tts),
         };
 
-    private void InitPipeline()
+    private void InitPipeline(RuntimeChange rebuild =
+        RuntimeChange.RebuildAsr | RuntimeChange.RebuildLlm | RuntimeChange.RebuildTts)
     {
         _orchestrator?.Dispose();
-        (_asr as IDisposable)?.Dispose();
-        _llm?.Dispose();
-        (_tts as IDisposable)?.Dispose();
 
-        _asr = CreateAsrClient(_config.Asr);
-        _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Vts.BuildSystemPrompt(_config.Llm.SystemPrompt));
-        _tts = CreateTtsClient(_config.Tts);
+        if (_asr is null || rebuild.HasFlag(RuntimeChange.RebuildAsr))
+        {
+            (_asr as IDisposable)?.Dispose();
+            _asr = CreateAsrClient(_config.Asr);
+        }
+        if (_llm is null || rebuild.HasFlag(RuntimeChange.RebuildLlm))
+        {
+            _llm?.Dispose();
+            _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model,
+                _config.Vts.BuildSystemPrompt(_config.Llm.SystemPrompt));
+        }
+        if (_tts is null || rebuild.HasFlag(RuntimeChange.RebuildTts))
+        {
+            (_tts as IDisposable)?.Dispose();
+            _tts = CreateTtsClient(_config.Tts);
+        }
         if (_player is null)
         {
             _player = new AudioPlayer(deviceIndex: _config.Audio.OutputDeviceIndex);
@@ -550,9 +583,66 @@ public sealed class BotRuntime : IAsyncDisposable
     /// </summary>
     public async Task ApplyConfigAsync(AppConfig newConfig)
     {
-        var change = ConfigDiff.Compute(_config, newConfig);
-        _config = newConfig;
+        ArgumentNullException.ThrowIfNull(newConfig);
+        var candidate = ConfigManager.Clone(newConfig);
+
+        await _configApplyGate.WaitAsync();
+        try
+        {
+            var candidateRevision = Interlocked.Increment(ref _nextRevision);
+            _candidateConfig = ConfigManager.Clone(candidate);
+            Interlocked.Exchange(ref _candidateRevision, candidateRevision);
+
+            var previousConfig = _config;
+            var previousActive = _activeConfig;
+            var previousRevision = ActiveConfigRevision;
+            var change = ConfigDiff.Compute(previousActive, candidate);
+
+            _config = candidate;
+            try
+            {
+                await ApplyChangesAsync(change);
+            }
+            catch (Exception applyError)
+            {
+                _config = previousConfig;
+                try
+                {
+                    await ApplyChangesAsync(change);
+                }
+                catch (Exception rollbackError)
+                {
+                    throw new AggregateException("Configuration apply and rollback both failed.", applyError, rollbackError);
+                }
+
+                throw;
+            }
+
+            _lastKnownGoodConfig = ConfigManager.Clone(previousActive);
+            Interlocked.Exchange(ref _lastKnownGoodRevision, previousRevision);
+            _activeConfig = ConfigManager.Clone(candidate);
+            _config = candidate;
+            Interlocked.Exchange(ref _activeRevision, candidateRevision);
+        }
+        finally
+        {
+            _configApplyGate.Release();
+        }
+    }
+
+    /// <summary>Applies the last successfully replaced snapshot as a new revision.</summary>
+    public Task RollbackConfigAsync()
+        => ApplyConfigAsync(ConfigManager.Clone(_lastKnownGoodConfig));
+
+    private async Task ApplyChangesAsync(RuntimeChange change)
+    {
         if (change == RuntimeChange.None) return;
+
+        if (_applyChangesOverride is not null)
+        {
+            await _applyChangesOverride(change);
+            return;
+        }
 
         // Heavy: memory store / audio / connections.
         if (change.HasFlag(RuntimeChange.ReopenMemory)) await RebuildMemoryAsync();
@@ -569,9 +659,21 @@ public sealed class BotRuntime : IAsyncDisposable
         // and subtitle handlers capture, requires rebuilding + re-wiring the orchestrator.
         if (change.HasFlag(RuntimeChange.RebuildLlm) || change.HasFlag(RuntimeChange.RebuildAsr) ||
             change.HasFlag(RuntimeChange.RebuildTts) || change.HasFlag(RuntimeChange.UpdateVtsParams) ||
-            change.HasFlag(RuntimeChange.UpdateObsParams))
+            change.HasFlag(RuntimeChange.UpdateObsParams) || change.HasFlag(RuntimeChange.ReconnectVts) ||
+            change.HasFlag(RuntimeChange.ReconnectObs))
         {
-            RewirePipeline();
+            RewirePipeline(change);
+        }
+
+        if (change.HasFlag(RuntimeChange.RebuildAsr))
+        {
+            StopLocalAsrServer();
+            if (_asr is LocalAsrClient)
+            {
+                await StartLocalAsrServerAsync();
+                if (!LocalAsrReachable)
+                    throw new InvalidOperationException("Local ASR sidecar failed to become ready.");
+            }
         }
     }
 
@@ -597,14 +699,12 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); }
         await InitVtsAsync();
-        RewirePipeline();
     }
 
     private async Task ReconnectObsAsync()
     {
         if (_obs is not null) { await _obs.DisconnectAsync(); _obs.Dispose(); }
         InitObs();
-        RewirePipeline();
     }
 
     private async Task RestartDanmakuAsync()
@@ -626,7 +726,7 @@ public sealed class BotRuntime : IAsyncDisposable
 
     /// <summary>Rebuilds the orchestrator + pipeline clients. InitPipeline disposes the old ones,
     /// reuses the AudioPlayer, and re-adds the stable speaking bridge — so nothing else is needed here.</summary>
-    private void RewirePipeline() => InitPipeline();
+    private void RewirePipeline(RuntimeChange change) => InitPipeline(change);
 
     public async ValueTask DisposeAsync()
     {
@@ -649,6 +749,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _memoryLlm?.Dispose();
         _embedding?.Dispose();
         _memoryDb?.Dispose();
+        _configApplyGate.Dispose();
         _cts.Dispose();
     }
 }

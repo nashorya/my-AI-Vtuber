@@ -76,7 +76,27 @@ public sealed class ConfigManager
     public void Save(AppConfig config)
     {
         var json = JsonSerializer.Serialize(config, JsonOptions);
-        File.WriteAllText(_configPath, json);
+        var directory = Path.GetDirectoryName(Path.GetFullPath(_configPath))!;
+        Directory.CreateDirectory(directory);
+        var tempPath = Path.Combine(directory, $".{Path.GetFileName(_configPath)}.{Guid.NewGuid():N}.tmp");
+
+        try
+        {
+            File.WriteAllText(tempPath, json);
+            File.Move(tempPath, _configPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempPath)) File.Delete(tempPath);
+        }
+    }
+
+    /// <summary>Creates an independent configuration instance, including nested collections.</summary>
+    public static AppConfig Clone(AppConfig config)
+    {
+        var json = JsonSerializer.Serialize(config, JsonOptions);
+        return JsonSerializer.Deserialize<AppConfig>(json, JsonOptions)
+               ?? throw new InvalidOperationException("Failed to clone AppConfig.");
     }
 
     private static void ApplyLegacyCompatibility(string json, AppConfig config)
