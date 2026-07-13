@@ -1,6 +1,6 @@
 # AIVTuber 工程 TODO
 
-> 审查基线：`main@b83adf4`，2026-07-10。该提交包含当前保留的 Action POC；优先处理 P0，再扩展动作系统和 UI。
+> 审查基线：`main@7cd4908`，2026-07-13。P0 发布门禁已完成；后续按 P1/P2/UX/Avatar 依赖顺序推进。
 > 项目背景、架构现状和 Agent 交接边界见 [`AGENT_CONTEXT.md`](AGENT_CONTEXT.md)。
 > 每项完成时必须同时提交自动化测试或可复现的验收记录，不能只以“本机能运行”作为完成标准。
 
@@ -39,15 +39,15 @@
 
 ## 当前质量基线
 
-- [ ] 更新此节的数据，直到它可以作为发布门禁自动生成。
-- `dotnet build AIVTuber.slnx -c Release`：成功，但有 4 个 `NU1903` 高危漏洞警告。
-- `dotnet publish App/App.csproj -c Release -r win-x64`：成功，但产物并不包含完整本地 ASR 运行环境。
-- 当前测试：151 个测试中通过 134 个；补入 `WebRtcVad.dll` 后通过 137 个，剩余 14 个失败为 SQLite teardown 文件锁。
-- 覆盖率：行 32.44%，分支 20.08%；`BotOrchestrator` 为 0%。
+- [x] Windows 发布门禁已自动生成并设为 `main` required status check。
+- `dotnet restore --locked-mode` 与 Release build：成功，0 warnings / 0 errors。
+- 全量测试：240/240 通过，WebRtcVad 原生依赖由门禁自动解析、复制并校验 SHA-256。
+- 依赖审计：High/Critical 为 0；win-x64 publish、sidecar、manifest、secret scan 全部通过。
+- GitHub Actions：`Windows quality gate` run `29240287741` 对 `7cd4908` 成功；ruleset `18867292` 已启用。
 
 ## P0：发布阻塞
 
-### [ ] P0-01 修复 SQLite 高危依赖漏洞
+### [x] P0-01 修复 SQLite 高危依赖漏洞
 
 **证据**
 
@@ -66,7 +66,7 @@
 - `dotnet package list --vulnerable --include-transitive` 不再报告高危漏洞。
 - 旧数据库可直接打开，事实和观众数据不丢失。
 
-### [ ] P0-02 修复配置对象引用别名和二次保存失效
+### [x] P0-02 修复配置对象引用别名和二次保存失效
 
 **证据**
 
@@ -86,7 +86,7 @@
 - Action 专项回归：连续两次修改 `ActionMap` 后，运行时映射与自动生成的 LLM system prompt 都使用第二次保存的值。
 - 新增回归测试：应用失败不会让运行时快照与实际模块状态不一致。
 
-### [ ] P0-03 补齐 ASR/TTS 热更新差异检测
+### [x] P0-03 补齐 ASR/TTS 热更新差异检测
 
 **证据**
 
@@ -104,7 +104,7 @@
 - 参数化测试覆盖 `AppConfig` 的每个属性，断言期望的 diff 标志。
 - UI 保存后下一轮请求使用新参数，无需重启应用。
 
-### [ ] P0-04 修复请求取消的代际竞争
+### [x] P0-04 修复请求取消的代际竞争
 
 **证据**
 
@@ -126,7 +126,7 @@
 - 被取消的旧请求不能清除新请求状态，也不能继续播放、写字幕或触发动作。
 - 断线或新回复开始前排队的旧动作全部丢弃；VTS 失败能关联到对应回复和动作，而不是成为未观察异常。
 
-### [ ] P0-05 修复热更新后的事件订阅累积
+### [x] P0-05 修复热更新后的事件订阅累积
 
 **证据**
 
@@ -145,7 +145,7 @@
 - 连续 Rewire 20 次后，单个 `[action:...]` 标签也只产生一次 VTS hotkey 请求。
 - 已释放的 orchestrator 可被 GC，不再被 `AudioPlayer` 或 LLM 事件引用。
 
-### [ ] P0-06 让本地 ASR 成为可发布、可诊断的 sidecar
+### [x] P0-06 让本地 ASR 成为可发布、可诊断的 sidecar
 
 **证据**
 
@@ -166,7 +166,7 @@
 - 发布包包含启动本地 ASR 所需的脚本/可执行文件和依赖清单。
 - 模型加载中不会显示“本地 ASR 在线”，加载失败不会只等待 60 秒后给笼统错误。
 
-### [ ] P0-07 建立当前 Action POC 的正确性门禁
+### [x] P0-07 建立当前 Action POC 的正确性门禁
 
 **证据**
 
@@ -775,7 +775,7 @@
 - 优先补 `ConfigDiff`、配置快照、coordinator 代际取消、热更新生命周期、OBS 状态机和 sidecar readiness 测试。
 - **验收：**151/151 当前测试通过；新增关键路径测试稳定通过，无跳过的发布阻塞测试。
 
-### [ ] P2-03 将 CI 变成 main/PR 发布门禁
+### [x] P2-03 将 CI 变成 main/PR 发布门禁
 
 **证据**
 
