@@ -44,6 +44,43 @@ function Get-RelativeEvidencePath {
     return [Uri]::UnescapeDataString($relativeUri.ToString()).Replace('/', [IO.Path]::DirectorySeparatorChar)
 }
 
+function ConvertTo-ProcessArgument {
+    param([AllowEmptyString()] [Parameter(Mandatory)] [string]$Argument)
+
+    if ($Argument.Length -gt 0 -and -not [Regex]::IsMatch($Argument, '[\s"]')) {
+        return $Argument
+    }
+
+    $escaped = New-Object Text.StringBuilder
+    [void]$escaped.Append([char]'"')
+    $backslashes = 0
+    foreach ($character in $Argument.ToCharArray()) {
+        if ($character -eq [char]'\') {
+            $backslashes++
+            continue
+        }
+
+        if ($character -eq [char]'"') {
+            [void]$escaped.Append([char]'\', (2 * $backslashes) + 1)
+            [void]$escaped.Append($character)
+            $backslashes = 0
+            continue
+        }
+
+        if ($backslashes -gt 0) {
+            [void]$escaped.Append([char]'\', $backslashes)
+            $backslashes = 0
+        }
+        [void]$escaped.Append($character)
+    }
+
+    if ($backslashes -gt 0) {
+        [void]$escaped.Append([char]'\', 2 * $backslashes)
+    }
+    [void]$escaped.Append([char]'"')
+    return $escaped.ToString()
+}
+
 function Invoke-DotNetStage {
     param(
         [Parameter(Mandatory)] [string]$Name,
@@ -61,9 +98,7 @@ function Invoke-DotNetStage {
         $startInfo.UseShellExecute = $false
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
-        foreach ($argument in $Arguments) {
-            $startInfo.ArgumentList.Add($argument)
-        }
+        $startInfo.Arguments = (($Arguments | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' ')
 
         $process = [Diagnostics.Process]::new()
         $process.StartInfo = $startInfo
