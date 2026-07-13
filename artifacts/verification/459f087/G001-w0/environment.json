@@ -1,0 +1,12 @@
+{
+    "captured_at":  "2026-07-13T03:39:10.5922011+00:00",
+    "repository_root":  "C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g001-459f087",
+    "execution_root":  "C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g001-459f087",
+    "head":  "459f087878a4f5488c530cb9a073b2b94ae6d584",
+    "branch":  "main",
+    "runner_os":  null,
+    "runner_arch":  null,
+    "dotnet_info":  ".NET SDK:\r\n Version:           10.0.301\r\n Commit:            96856fd726\r\n Workload version:  10.0.300-manifests.b0c14421\r\n MSBuild version:   18.6.4+96856fd72\r\n\r\n运行时环�?\r\n OS Name:     Windows\r\n OS Version:  10.0.26200\r\n OS Platform: Windows\r\n RID:         win-x64\r\n Base Path:   C:\\Users\\wan.kangping\\anything\\.dotnet\\sdk\\10.0.301\\\r\n\r\n已安�?.NET 工作负载:\r\n没有要显示的已安装工作负载�?\r\n已配置为在安装新清单时使�?workload sets�?\r\n未安装任�?workload sets。运�?“dotnet workload restore�?以安装工作负载集�?\r\n\r\nHost:\r\n  Version:      10.0.9\r\n  Architecture: x64\r\n  Commit:       901ca94124\r\n\r\n.NET SDKs installed:\r\n  10.0.301 [C:\\Users\\wan.kangping\\anything\\.dotnet\\sdk]\r\n\r\n.NET runtimes installed:\r\n  Microsoft.AspNetCore.App 10.0.9 [C:\\Users\\wan.kangping\\anything\\.dotnet\\shared\\Microsoft.AspNetCore.App]\r\n  Microsoft.NETCore.App 10.0.9 [C:\\Users\\wan.kangping\\anything\\.dotnet\\shared\\Microsoft.NETCore.App]\r\n  Microsoft.WindowsDesktop.App 10.0.9 [C:\\Users\\wan.kangping\\anything\\.dotnet\\shared\\Microsoft.WindowsDesktop.App]\r\n\r\nOther architectures found:\r\n  None\r\n\r\nEnvironment variables:\r\n  Not set\r\n\r\nglobal.json file:\r\n  C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g001-459f087\\global.json\r\n\r\nLearn more:\r\n  https://aka.ms/dotnet/info\r\n\r\nDownload .NET:\r\n  https://aka.ms/dotnet/download\r\n",
+    "test_filter":  "",
+    "minimum_tests":  1
+}

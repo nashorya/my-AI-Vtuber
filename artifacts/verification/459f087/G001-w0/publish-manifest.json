@@ -1,0 +1,42 @@
+[
+    {
+        "path":  "AIVTuber.Core.pdb",
+        "length":  76592,
+        "sha256":  "15dce8390ba74fa6ae5c00496cda17131ae08a3092c215668728587d9cc3313b"
+    },
+    {
+        "path":  "AIVTuber.exe",
+        "length":  196233695,
+        "sha256":  "c1991cc920dde2998e75ac267e3a145914312f7e9fa409da7388e178a5093b63"
+    },
+    {
+        "path":  "AIVTuber.pdb",
+        "length":  39368,
+        "sha256":  "c379f006d99c1cdce44098d9d317a59ced2e3b8c595c0e978f8a286204d2eb71"
+    },
+    {
+        "path":  "config.json.template",
+        "length":  2122,
+        "sha256":  "d5ebbde63a1db6930720aa832e405a4d470215eca7b949d1500b3bcd7676d44b"
+    },
+    {
+        "path":  "danmaku_bridge.py",
+        "length":  1551,
+        "sha256":  "b4b39fc459ff6c3fb6e148e4ad17be962329cbec0c0eadfa7f050d7375fc6155"
+    },
+    {
+        "path":  "onnxruntime.lib",
+        "length":  2124,
+        "sha256":  "63b987e2c3e37fe852a291d012931c0aadda2c9978eb259bc441a0023cd1920c"
+    },
+    {
+        "path":  "onnxruntime_providers_shared.lib",
+        "length":  2314,
+        "sha256":  "e3de923bee2994db06e0d01ce8c0b62ce9b05c25501b3efc837a039d3eef88f1"
+    },
+    {
+        "path":  "README.txt",
+        "length":  2386,
+        "sha256":  "aacc6aa31e2e22eea87348a00552958b44def8f729e591d547b9414a6406628e"
+    }
+]

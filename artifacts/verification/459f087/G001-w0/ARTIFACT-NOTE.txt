@@ -1,0 +1,2 @@
+Full generated artifact backup: /tmp/aivtuber-g001-artifacts-1783914261
+Published binaries remain in Windows source: C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\artifacts\verification\459f087\G001-w0\publish

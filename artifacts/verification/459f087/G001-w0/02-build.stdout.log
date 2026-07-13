@@ -1,0 +1,19 @@
+C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\AIVTuber.Tests\AIVTuber.Tests.csproj : warning NU1903: �?"SQLitePCLRaw.lib.e_sqlite3" 2.1.10 具有已知�?�?严重性漏洞，https://github.com/advisories/GHSA-2m69-gcr7-jv3q
+C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\App\App.csproj : warning NU1903: �?"SQLitePCLRaw.lib.e_sqlite3" 2.1.10 具有已知�?�?严重性漏洞，https://github.com/advisories/GHSA-2m69-gcr7-jv3q
+C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\AIVTuber.Core\AIVTuber.Core.csproj : warning NU1903: �?"SQLitePCLRaw.lib.e_sqlite3" 2.1.10 具有已知�?�?严重性漏洞，https://github.com/advisories/GHSA-2m69-gcr7-jv3q
+  AIVTuber.Core -> C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\AIVTuber.Core\bin\Release\net10.0\AIVTuber.Core.dll
+C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\App\App_t1n1ik55_wpftmp.csproj : warning NU1903: �?"SQLitePCLRaw.lib.e_sqlite3" 2.1.10 具有已知�?�?严重性漏洞，https://github.com/advisories/GHSA-2m69-gcr7-jv3q
+  AIVTuber.Tests -> C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\AIVTuber.Tests\bin\Release\net10.0\AIVTuber.Tests.dll
+  App -> C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\App\bin\Release\net10.0-windows\win-x64\AIVTuber.dll
+
+已成功生成�?
+
+C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\AIVTuber.Tests\AIVTuber.Tests.csproj : warning NU1903: �?"SQLitePCLRaw.lib.e_sqlite3" 2.1.10 具有已知�?�?严重性漏洞，https://github.com/advisories/GHSA-2m69-gcr7-jv3q
+C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\App\App.csproj : warning NU1903: �?"SQLitePCLRaw.lib.e_sqlite3" 2.1.10 具有已知�?�?严重性漏洞，https://github.com/advisories/GHSA-2m69-gcr7-jv3q
+C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\AIVTuber.Core\AIVTuber.Core.csproj : warning NU1903: �?"SQLitePCLRaw.lib.e_sqlite3" 2.1.10 具有已知�?�?严重性漏洞，https://github.com/advisories/GHSA-2m69-gcr7-jv3q
+C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\App\App_t1n1ik55_wpftmp.csproj : warning NU1903: �?"SQLitePCLRaw.lib.e_sqlite3" 2.1.10 具有已知�?�?严重性漏洞，https://github.com/advisories/GHSA-2m69-gcr7-jv3q
+    4 个警�?
+    0 个错�?
+
+已用时间 00:00:09.13
+

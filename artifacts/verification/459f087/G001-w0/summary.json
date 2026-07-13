@@ -1,0 +1,83 @@
+{
+    "schema_version":  1,
+    "evidence_only":  true,
+    "head":  "459f087878a4f5488c530cb9a073b2b94ae6d584",
+    "generated_at":  "2026-07-13T03:39:51.6288431+00:00",
+    "test_results":  {
+                         "total":  151,
+                         "executed":  151,
+                         "passed":  134,
+                         "failed":  17,
+                         "skipped":  0
+                     },
+    "minimum_tests":  1,
+    "test_filter":  "",
+    "integrity_passed":  true,
+    "integrity_errors":  [
+
+                         ],
+    "stages":  [
+                   {
+                       "name":  "01-restore",
+                       "command":  "dotnet restore AIVTuber.slnx --locked-mode",
+                       "started_at":  "2026-07-13T03:39:10.6561039+00:00",
+                       "finished_at":  "2026-07-13T03:39:14.8042570+00:00",
+                       "exit_code":  0,
+                       "stdout":  "01-restore.stdout.log",
+                       "stderr":  "01-restore.stderr.log"
+                   },
+                   {
+                       "name":  "02-build",
+                       "command":  "dotnet build AIVTuber.slnx -c Release --no-restore",
+                       "started_at":  "2026-07-13T03:39:14.8407144+00:00",
+                       "finished_at":  "2026-07-13T03:39:24.3575515+00:00",
+                       "exit_code":  0,
+                       "stdout":  "02-build.stdout.log",
+                       "stderr":  "02-build.stderr.log"
+                   },
+                   {
+                       "name":  "03-test-coverage",
+                       "command":  "dotnet test AIVTuber.Tests/AIVTuber.Tests.csproj -c Release --no-build --logger trx;LogFileName=baseline.trx --results-directory C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g001-459f087\\artifacts\\verification\\459f087\\G001-w0\\test-results --collect XPlat Code Coverage",
+                       "started_at":  "2026-07-13T03:39:24.3770488+00:00",
+                       "finished_at":  "2026-07-13T03:39:37.6661728+00:00",
+                       "exit_code":  1,
+                       "stdout":  "03-test-coverage.stdout.log",
+                       "stderr":  "03-test-coverage.stderr.log"
+                   },
+                   {
+                       "name":  "04-dependency-graph",
+                       "command":  "dotnet list AIVTuber.slnx package --include-transitive --no-restore",
+                       "started_at":  "2026-07-13T03:39:37.6661728+00:00",
+                       "finished_at":  "2026-07-13T03:39:39.1763647+00:00",
+                       "exit_code":  0,
+                       "stdout":  "04-dependency-graph.stdout.log",
+                       "stderr":  "04-dependency-graph.stderr.log"
+                   },
+                   {
+                       "name":  "05-vulnerability-audit",
+                       "command":  "dotnet list AIVTuber.slnx package --vulnerable --include-transitive --no-restore",
+                       "started_at":  "2026-07-13T03:39:39.1763647+00:00",
+                       "finished_at":  "2026-07-13T03:39:47.2740384+00:00",
+                       "exit_code":  0,
+                       "stdout":  "05-vulnerability-audit.stdout.log",
+                       "stderr":  "05-vulnerability-audit.stderr.log"
+                   },
+                   {
+                       "name":  "06-publish",
+                       "command":  "dotnet publish App/App.csproj -c Release -r win-x64 --no-restore -o C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g001-459f087\\artifacts\\verification\\459f087\\G001-w0\\publish",
+                       "started_at":  "2026-07-13T03:39:47.2740384+00:00",
+                       "finished_at":  "2026-07-13T03:39:50.8202909+00:00",
+                       "exit_code":  0,
+                       "stdout":  "06-publish.stdout.log",
+                       "stderr":  "06-publish.stderr.log"
+                   },
+                   {
+                       "name":  "07-publish-manifest",
+                       "command":  "Get-ChildItem/Get-FileHash C:\\Users\\wan.kangping\\AppData\\Local\\Temp\\aivtuber-g001-459f087\\artifacts\\verification\\459f087\\G001-w0\\publish",
+                       "started_at":  "2026-07-13T03:39:50.8202909+00:00",
+                       "finished_at":  "2026-07-13T03:39:51.5307329+00:00",
+                       "exit_code":  0,
+                       "log":  "publish-manifest.json"
+                   }
+               ]
+}

@@ -1,0 +1,8 @@
+  正在确定要还原的项目�?
+C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\AIVTuber.Core\AIVTuber.Core.csproj : warning NU1903: �?"SQLitePCLRaw.lib.e_sqlite3" 2.1.10 具有已知�?�?严重性漏洞，https://github.com/advisories/GHSA-2m69-gcr7-jv3q [C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\AIVTuber.slnx]
+C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\App\App.csproj : warning NU1903: �?"SQLitePCLRaw.lib.e_sqlite3" 2.1.10 具有已知�?�?严重性漏洞，https://github.com/advisories/GHSA-2m69-gcr7-jv3q [C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\AIVTuber.slnx]
+C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\AIVTuber.Tests\AIVTuber.Tests.csproj : warning NU1903: �?"SQLitePCLRaw.lib.e_sqlite3" 2.1.10 具有已知�?�?严重性漏洞，https://github.com/advisories/GHSA-2m69-gcr7-jv3q [C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\AIVTuber.slnx]
+  已还�?C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\AIVTuber.Core\AIVTuber.Core.csproj (用时 2.19 �?�?
+  已还�?C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\App\App.csproj (用时 2.19 �?�?
+  已还�?C:\Users\wan.kangping\AppData\Local\Temp\aivtuber-g001-459f087\AIVTuber.Tests\AIVTuber.Tests.csproj (用时 2.24 �?�?
+
