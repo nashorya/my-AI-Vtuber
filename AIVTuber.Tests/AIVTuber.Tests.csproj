@@ -28,4 +28,11 @@
     <None Include="Fixtures\Memory\legacy-memory-v9.db" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!-- WebRtcVadSharp's native DLL is not propagated transitively to test output. -->
+  <Target Name="CopyWebRtcVadNative" AfterTargets="Build">
+    <Copy SourceFiles="$(NuGetPackageRoot)webrtcvadsharp\1.1.0\build\x64\WebRtcVad.dll"
+          DestinationFolder="$(OutDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>

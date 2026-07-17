@@ -143,4 +143,67 @@ public class ConfigViewModelTests
         await vm.SaveAsync();
         Assert.True(statusNotified);
     }
+
+    [Fact]
+    public void DraftState_TracksRowEdits_AndDiscardRestoresOriginalMappings()
+    {
+        var current = new AppConfig();
+        current.Vts.ActionMap["wave"] = "hotkey-1";
+        var vm = Make(current);
+
+        vm.ActionRows[0].Action = "dance";
+
+        Assert.True(vm.IsDirty);
+        vm.DiscardChanges();
+        var restored = Assert.Single(vm.ActionRows);
+        Assert.Equal("wave", restored.Action);
+        Assert.Equal("hotkey-1", restored.HotkeyId);
+        Assert.False(vm.IsDirty);
+    }
+
+    [Fact]
+    public async Task SaveAsync_RejectsEmptyAndDuplicateMappingAliases_BeforePersisting()
+    {
+        var saved = false;
+        var vm = Make(save: _ => saved = true);
+        vm.EmotionRows.Add(new EmotionMapRow { Emotion = "happy", HotkeyId = "one" });
+        vm.EmotionRows.Add(new EmotionMapRow { Emotion = "HAPPY", HotkeyId = "two" });
+        vm.ActionRows.Add(new ActionMapRow { Action = "", HotkeyId = "animation" });
+
+        await vm.SaveAsync();
+
+        Assert.False(saved);
+        Assert.True(vm.HasValidationErrors);
+        Assert.Contains("重复", vm.ValidationMessage);
+        Assert.Contains("不能为空", vm.ValidationMessage);
+    }
+
+    [Fact]
+    public async Task SaveAsync_ApplyFailure_ReportsSavedButApplyFailedState()
+    {
+        var vm = Make(apply: _ => throw new InvalidOperationException("offline"));
+
+        await vm.SaveAsync();
+
+        Assert.Equal(ConfigSaveState.SavedButApplyFailed, vm.SaveState);
+    }
+
+    [Fact]
+    public void RemovedMappingRow_NoLongerRaisesDraftNotifications()
+    {
+        var vm = Make();
+        var row = new ActionMapRow { Action = "wave", HotkeyId = "hotkey-1" };
+        vm.ActionRows.Add(row);
+        vm.ActionRows.Remove(row);
+
+        var draftNotifications = 0;
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ConfigViewModel.IsDirty)) draftNotifications++;
+        };
+
+        row.Action = "dance";
+
+        Assert.Equal(0, draftNotifications);
+    }
 }

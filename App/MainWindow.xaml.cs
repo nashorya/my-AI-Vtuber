@@ -11,7 +11,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 {
     private readonly MonitorView _monitorView;
     private readonly ConfigView _configView;
-    private readonly MemoryPlaceholderView _memoryView;
+    private readonly MemoryView _memoryView;
+    private readonly FirstRunView _firstRunView;
+    private bool _navigationReady;
+    private bool _showFirstRun;
 
     public MainWindow(BotRuntime runtime, ConfigManager configManager)
     {
@@ -29,9 +32,13 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             runtime.ApplyConfigAsync,
             () => runtime.GetVtsHotkeysAsync());
 
-        _memoryView = new MemoryPlaceholderView();
+        _memoryView = new MemoryView();
         _memoryView.DataContext = new MemoryViewModel(
             runtime, action => Dispatcher.Invoke(action));
+
+        _firstRunView = new FirstRunView();
+        _firstRunView.ConfigureSectionRequested += (_, section) => ShowConfigPage(section);
+        _firstRunView.SkipRequested += (_, _) => ShowMonitorPage();
     }
 
     private void OnNavigationLoaded(object sender, RoutedEventArgs e)
@@ -39,10 +46,32 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         var svc = new PageService();
         svc.Register(typeof(MonitorView), _monitorView);
         svc.Register(typeof(ConfigView), _configView);
-        svc.Register(typeof(MemoryPlaceholderView), _memoryView);
+        svc.Register(typeof(MemoryView), _memoryView);
+        svc.Register(typeof(FirstRunView), _firstRunView);
         RootNavigation.SetPageService(svc);
-        RootNavigation.Navigate(typeof(MonitorView));
+        _navigationReady = true;
+        RootNavigation.Navigate(_showFirstRun ? typeof(FirstRunView) : typeof(MonitorView));
     }
 
-    public void ShowConfigPage() => RootNavigation.Navigate(typeof(ConfigView));
+    public void ShowFirstRunPage()
+    {
+        _showFirstRun = true;
+        if (_navigationReady) RootNavigation.Navigate(typeof(FirstRunView));
+    }
+
+    public void ShowConfigPage(ConfigSection section = ConfigSection.QuickSetup)
+    {
+        _showFirstRun = false;
+        _configView.ShowSection(section);
+        if (_navigationReady) RootNavigation.Navigate(typeof(ConfigView));
+    }
+
+    private void ShowMonitorPage()
+    {
+        _showFirstRun = false;
+        if (_navigationReady) RootNavigation.Navigate(typeof(MonitorView));
+    }
+
+    private void OnThemeToggle(object sender, RoutedEventArgs e)
+        => ((App)Application.Current).ToggleTheme();
 }

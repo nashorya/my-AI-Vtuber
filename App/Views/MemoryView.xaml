@@ -1,0 +1,131 @@
+<UserControl x:Class="AIVTuber.App.Views.MemoryView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             xmlns:local="clr-namespace:AIVTuber.App"
+             Loaded="OnLoaded">
+    <UserControl.Resources>
+        <local:InverseBoolConverter x:Key="InverseBool" />
+        <local:StringNotEmptyToVisibilityConverter x:Key="StringNotEmptyToVisibility" />
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+        <Style x:Key="MemoryDeckTab" TargetType="ui:TabViewItem">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{DynamicResource AppTextSecondaryBrush}" />
+            <Setter Property="Padding" Value="14,6" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{DynamicResource DeckHeaderBrush}" />
+                    <Setter Property="Foreground" Value="{DynamicResource DeckAccentBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="MemoryDeckDataGrid" TargetType="DataGrid">
+            <Setter Property="Background" Value="{DynamicResource DeckPanelBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource AppTextPrimaryBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource DeckPanelBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="GridLinesVisibility" Value="Horizontal" />
+            <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource DeckPanelBorderBrush}" />
+            <Setter Property="RowBackground" Value="{DynamicResource DeckPanelBrush}" />
+            <Setter Property="AlternatingRowBackground" Value="{DynamicResource AppSurfaceRaisedBrush}" />
+            <Setter Property="AlternationCount" Value="2" />
+        </Style>
+        <Style x:Key="MemoryDeckColumnHeader" TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="{DynamicResource DeckHeaderBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource AppTextSecondaryBrush}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource DeckPanelBorderBrush}" />
+            <Setter Property="BorderThickness" Value="0,0,0,1" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Padding" Value="8,6" />
+        </Style>
+    </UserControl.Resources>
+    <Grid Margin="12" Background="{DynamicResource AppSurfaceBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Padding="12,8" Margin="0,0,0,8"
+                Background="{DynamicResource DeckPanelBrush}" BorderBrush="{DynamicResource DeckPanelBorderBrush}"
+                BorderThickness="3,1,1,1" CornerRadius="{StaticResource CornerRadiusDeck}">
+            <Grid MinHeight="{StaticResource CommandBarHeight}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock Text="MEMORY STORE" FontSize="{StaticResource FontSizeBody}" FontWeight="Bold" Foreground="{DynamicResource DeckAccentBrush}" />
+                    <TextBlock Text="事实与观众数据 · 删除需要确认" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                </StackPanel>
+                <ui:Button Grid.Column="1" Content="刷新" Appearance="Transparent" Width="64" Margin="8,0,0,0" Click="OnRefreshClicked" ToolTip="刷新记忆数据" AutomationProperties.Name="刷新记忆数据" />
+                <ui:Button Grid.Column="2" Content="提取" Appearance="Success" Width="64" Margin="8,0,0,0" IsEnabled="{Binding Extracting, Converter={StaticResource InverseBool}}" Click="OnExtractClicked" ToolTip="立即提取事实记忆" AutomationProperties.Name="立即提取事实记忆" />
+            </Grid>
+        </Border>
+
+        <Border Grid.Row="1" Padding="12" Background="{DynamicResource DeckPanelBrush}"
+                BorderBrush="{DynamicResource DeckPanelBorderBrush}" BorderThickness="{StaticResource DeckPanelBorderThickness}"
+                CornerRadius="{StaticResource CornerRadiusPanel}">
+            <ui:TabView SelectionChanged="OnTabSelectionChanged">
+                <ui:TabViewItem Header="FACTS" Style="{StaticResource MemoryDeckTab}" Tag="Facts">
+                    <Grid Margin="0,12,0,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <ui:TextBox Grid.Row="0" PlaceholderText="搜索事实内容或 UID" Text="{Binding FactSearch, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12" ToolTip="搜索事实内容或 UID" AutomationProperties.Name="搜索事实内容或 UID" />
+                        <Grid Grid.Row="1">
+                            <DataGrid Style="{StaticResource MemoryDeckDataGrid}" ColumnHeaderStyle="{StaticResource MemoryDeckColumnHeader}" ItemsSource="{Binding Facts}" SelectedItem="{Binding SelectedFact, Mode=TwoWay}" IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" HeadersVisibility="Column" Visibility="{Binding FactsLoading, Converter={StaticResource InverseBool}}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="事实内容" Binding="{Binding Content}" Width="*" />
+                                    <DataGridTextColumn Header="重要度" Binding="{Binding ImportanceStars}" Width="90" />
+                                    <DataGridTextColumn Header="UID" Binding="{Binding SubjectUid}" Width="120" />
+                                    <DataGridTextColumn Header="访问时间" Binding="{Binding LastAccessed}" Width="120" />
+                                    <DataGridTextColumn Header="有效期" Binding="{Binding Expires}" Width="80" />
+                                    <DataGridTemplateColumn Header="操作" Width="42">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <ui:Button Icon="{ui:SymbolIcon Symbol=Delete24}" Appearance="Danger" Tag="{Binding}" Click="OnDeleteFactClicked" ToolTip="删除此事实" AutomationProperties.Name="删除此事实" />
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <TextBlock Text="正在加载事实..." Visibility="{Binding FactsLoading, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding FactsError}" Visibility="{Binding FactsError, Converter={StaticResource StringNotEmptyToVisibility}}" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource AppDangerBrush}" TextWrapping="Wrap" />
+                            <TextBlock Text="没有匹配的事实" Visibility="{Binding FactsEmpty, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                        </Grid>
+                    </Grid>
+                </ui:TabViewItem>
+                <ui:TabViewItem Header="VIEWERS" Style="{StaticResource MemoryDeckTab}" Tag="Viewers">
+                    <Grid Margin="0,12,0,0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <ui:TextBox Grid.Row="0" PlaceholderText="搜索昵称、UID 或平台" Text="{Binding ViewerSearch, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,12" ToolTip="搜索昵称、UID 或平台" AutomationProperties.Name="搜索昵称、UID 或平台" />
+                        <Grid Grid.Row="1">
+                            <DataGrid Style="{StaticResource MemoryDeckDataGrid}" ColumnHeaderStyle="{StaticResource MemoryDeckColumnHeader}" ItemsSource="{Binding Viewers}" SelectedItem="{Binding SelectedViewer, Mode=TwoWay}" IsReadOnly="True" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False" HeadersVisibility="Column" Visibility="{Binding ViewersLoading, Converter={StaticResource InverseBool}}">
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="昵称" Binding="{Binding Nickname}" Width="180" />
+                                    <DataGridTextColumn Header="UID" Binding="{Binding Uid}" Width="*" />
+                                    <DataGridTextColumn Header="互动" Binding="{Binding InteractionCount}" Width="70" />
+                                    <DataGridTextColumn Header="平台" Binding="{Binding Platform}" Width="100" />
+                                    <DataGridTextColumn Header="最后来访" Binding="{Binding LastSeen}" Width="120" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            <TextBlock Text="正在加载观众..." Visibility="{Binding ViewersLoading, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <TextBlock Text="{Binding ViewersError}" Visibility="{Binding ViewersError, Converter={StaticResource StringNotEmptyToVisibility}}" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource AppDangerBrush}" TextWrapping="Wrap" />
+                            <TextBlock Text="没有匹配的观众" Visibility="{Binding ViewersEmpty, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                        </Grid>
+                    </Grid>
+                </ui:TabViewItem>
+            </ui:TabView>
+        </Border>
+
+        <TextBlock Grid.Row="2" Text="{Binding StatusMessage}" Margin="0,8,0,0" Foreground="{DynamicResource AppTextSecondaryBrush}" FontSize="{StaticResource FontSizeCaption}" />
+        <ContentPresenter x:Name="DialogPresenter" Grid.RowSpan="3" />
+    </Grid>
+</UserControl>
