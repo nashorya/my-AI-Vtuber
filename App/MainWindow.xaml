@@ -12,12 +12,28 @@
     <Grid>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
         <ui:TitleBar Title="AIVTuber 控制台" Grid.Row="0" />
 
-        <ui:NavigationView x:Name="RootNavigation" Grid.Row="1"
+        <Border Grid.Row="1"
+                MinHeight="{StaticResource CommandBarHeight}"
+                Padding="8,4"
+                Background="{DynamicResource DeckPanelBrush}"
+                BorderBrush="{DynamicResource DeckPanelBorderBrush}"
+                BorderThickness="0,0,0,1">
+            <ui:Button Content="主题"
+                       HorizontalAlignment="Left"
+                       Width="64"
+                       Appearance="Transparent"
+                       ToolTip="切换亮色或深色主题"
+                       AutomationProperties.Name="切换亮色或深色主题"
+                       Click="OnThemeToggle" />
+        </Border>
+
+        <ui:NavigationView x:Name="RootNavigation" Grid.Row="2"
                            PaneDisplayMode="Left"
                            IsPaneOpen="True"
                            Loaded="OnNavigationLoaded">
@@ -27,14 +43,16 @@
                     Icon="{ui:SymbolIcon Symbol=Desktop24}"
                     TargetPageType="{x:Type views:MonitorView}" />
                 <ui:NavigationViewItem
+                    Content="记忆"
+                    Icon="{ui:SymbolIcon Symbol=Brain24}"
+                    TargetPageType="{x:Type views:MemoryView}" />
+            </ui:NavigationView.MenuItems>
+            <ui:NavigationView.FooterMenuItems>
+                <ui:NavigationViewItem
                     Content="配置"
                     Icon="{ui:SymbolIcon Symbol=Settings24}"
                     TargetPageType="{x:Type views:ConfigView}" />
-                <ui:NavigationViewItem
-                    Content="记忆"
-                    Icon="{ui:SymbolIcon Symbol=Brain24}"
-                    TargetPageType="{x:Type views:MemoryPlaceholderView}" />
-            </ui:NavigationView.MenuItems>
+            </ui:NavigationView.FooterMenuItems>
         </ui:NavigationView>
     </Grid>
 </ui:FluentWindow>

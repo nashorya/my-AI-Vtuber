@@ -1,0 +1,52 @@
+<UserControl x:Class="AIVTuber.App.Views.FirstRunView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+    <ScrollViewer VerticalScrollBarVisibility="Auto" Background="{DynamicResource AppSurfaceBrush}">
+        <StackPanel Margin="{StaticResource Space16}" MaxWidth="900">
+            <ui:Card Padding="20">
+                <StackPanel>
+                    <TextBlock Text="欢迎使用 AIVTuber" FontSize="{StaticResource FontSizeTitle}" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+                    <TextBlock Text="按自己的节奏完成下面的分类设置。你可以随时跳过，并从左下角的“配置”返回继续。" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                    <TextBlock Text="此向导只检查本地填写内容；外部服务连接不会在此测试。" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{DynamicResource AppDangerBrush}" />
+                </StackPanel>
+            </ui:Card>
+
+            <WrapPanel Margin="0,12,0,0">
+                <ui:Card Width="280" Padding="16" Margin="0,0,12,12">
+                    <StackPanel>
+                        <TextBlock Text="1. AI 引擎" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+                        <TextBlock Text="填写 LLM、语音识别与人设提示词。" Margin="0,6,0,12" TextWrapping="Wrap" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                        <ui:Button Content="配置 AI 引擎" Tag="AiEngine" Click="OnConfigureSection" ToolTip="打开 AI 引擎配置" AutomationProperties.Name="打开 AI 引擎配置" />
+                    </StackPanel>
+                </ui:Card>
+                <ui:Card Width="280" Padding="16" Margin="0,0,12,12">
+                    <StackPanel>
+                        <TextBlock Text="2. 语音与音频" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+                        <TextBlock Text="选择 TTS 声音、麦克风与可选的系统音频输入。" Margin="0,6,0,12" TextWrapping="Wrap" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                        <StackPanel Orientation="Horizontal"><ui:Button Content="配置语音" Tag="Voice" Click="OnConfigureSection" ToolTip="打开语音配置" AutomationProperties.Name="打开语音配置" /><ui:Button Content="配置音频" Tag="QuickSetup" Appearance="Secondary" Margin="8,0,0,0" Click="OnConfigureSection" ToolTip="打开音频配置" AutomationProperties.Name="打开音频配置" /></StackPanel>
+                    </StackPanel>
+                </ui:Card>
+                <ui:Card Width="280" Padding="16" Margin="0,0,12,12">
+                    <StackPanel>
+                        <TextBlock Text="3. 角色与动作" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+                        <TextBlock Text="只编辑现有的 VTS 情绪和动作热键映射。" Margin="0,6,0,12" TextWrapping="Wrap" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                        <ui:Button Content="配置角色与动作" Tag="CharacterAndActions" Click="OnConfigureSection" ToolTip="打开角色与动作配置" AutomationProperties.Name="打开角色与动作配置" />
+                    </StackPanel>
+                </ui:Card>
+                <ui:Card Width="280" Padding="16" Margin="0,0,12,12">
+                    <StackPanel>
+                        <TextBlock Text="4. 直播集成" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+                        <TextBlock Text="按需配置 OBS 字幕与弹幕输入。" Margin="0,6,0,12" TextWrapping="Wrap" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                        <ui:Button Content="配置直播集成" Tag="LiveIntegrations" Click="OnConfigureSection" ToolTip="打开直播集成配置" AutomationProperties.Name="打开直播集成配置" />
+                    </StackPanel>
+                </ui:Card>
+            </WrapPanel>
+
+            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                <ui:Button Content="稍后配置" Appearance="Secondary" Click="OnSkip" ToolTip="跳过向导并打开监控页" AutomationProperties.Name="跳过向导并打开监控页" />
+                <TextBlock Text="保存设置后，下次启动将不再显示此引导。" Margin="12,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

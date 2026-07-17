@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using AIVTuber.Core.LiveStream;
@@ -13,6 +14,8 @@ namespace AIVTuber.Core.ViewModels;
 /// </summary>
 public sealed class MonitorViewModel : INotifyPropertyChanged
 {
+    public const int OperationalEventCapacity = 500;
+
     private readonly BotRuntime _runtime;
     private readonly Action<Action> _dispatch;
 
@@ -25,16 +28,33 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
         // (one window). If the VM ever becomes shorter-lived than the runtime, make this
         // IDisposable and detach these handlers.
         _runtime.StateTracker.Changed += (_, _) => _dispatch(OnStateChanged);
-        _runtime.UserTranscript += (_, t) => _dispatch(() => { UserText = t; LastError = ""; });
-        _runtime.SentenceReady += (_, s) => _dispatch(() => AssistantText = s);
+        _runtime.UserTranscript += (_, t) => _dispatch(() =>
+        {
+            UserText = t;
+            LastError = "";
+            AddOperationalEvent("输入", t);
+        });
+        _runtime.SentenceReady += (_, s) => _dispatch(() =>
+        {
+            AssistantText = s;
+            AddOperationalEvent("回复", s);
+        });
         _runtime.EmotionDetected += (_, e) => _dispatch(() => Emotion = e);
         _runtime.UserEmotionDetected += (_, e) => _dispatch(() => UserEmotion = EmotionToLabel(e));
-        _runtime.LoopbackTranscript += (_, t) => _dispatch(() => OpponentText = t);
+        _runtime.LoopbackTranscript += (_, t) => _dispatch(() =>
+        {
+            OpponentText = t;
+            AddOperationalEvent("内录", t);
+        });
         _runtime.AiStartSpeaking += (_, _) => _dispatch(RefreshConnections);
         _runtime.AiStopSpeaking += (_, _) => _dispatch(RefreshDanmaku);
         _runtime.MicLevelUpdated += (_, level) => _dispatch(() => MicLevel = level);
         _runtime.LoopbackLevelUpdated += (_, level) => _dispatch(() => LoopbackLevel = level);
-        _runtime.PipelineError += (_, msg) => _dispatch(() => LastError = msg);
+        _runtime.PipelineError += (_, msg) => _dispatch(() =>
+        {
+            LastError = msg;
+            AddOperationalEvent("错误", msg, isError: true);
+        });
         _runtime.LocalAsrReachableChanged += (_, reachable) => _dispatch(() =>
         {
             LocalAsrActive = _runtime.LocalAsrActive;
@@ -50,7 +70,42 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
         TtsLatencyMs = _runtime.StateTracker.LastTtsLatencyMs;
         RefreshConnections();
         RefreshDanmaku();
+        AddOperationalEvent("状态", StateToLabel(_state));
     }
+
+    private static string StateToLabel(PipelineState state) => state switch
+    {
+        PipelineState.Listening => "正在监听",
+        PipelineState.Thinking => "正在思考",
+        PipelineState.Speaking => "正在说话",
+        _ => "空闲",
+    };
+
+    /// <summary>
+    /// Most recent operational records, newest first. Entries are kept deliberately
+    /// small so an unattended live session cannot grow its UI memory indefinitely.
+    /// </summary>
+    public ObservableCollection<OperationalEvent> OperationalEvents { get; } = [];
+
+    private bool _followLatest = true;
+    public bool FollowLatest { get => _followLatest; private set => SetField(ref _followLatest, value); }
+
+    public void PauseFollowLatest() => FollowLatest = false;
+
+    public void ReturnToLatest() => FollowLatest = true;
+
+    private void AddOperationalEvent(string source, string message, bool isError = false)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return;
+
+        OperationalEvents.Insert(0, new OperationalEvent(DateTimeOffset.Now, source, message, isError));
+        if (OperationalEvents.Count > OperationalEventCapacity)
+            OperationalEvents.RemoveAt(OperationalEvents.Count - 1);
+    }
+
+    // Internal only to prove bounded-collection behavior without adding runtime test hooks.
+    internal void RecordOperationalEventForTest(string source, string message, bool isError = false) =>
+        AddOperationalEvent(source, message, isError);
 
     private void RefreshConnections()
     {

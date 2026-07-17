@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Windows;
 using System.Windows.Data;
 using System.Windows.Media;
 using AIVTuber.Core.Runtime;
@@ -54,6 +55,16 @@ internal sealed class InverseBoolConverter : IValueConverter
         => value is false;
 }
 
+[ValueConversion(typeof(string), typeof(Visibility))]
+internal sealed class StringNotEmptyToVisibilityConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is string text && !string.IsNullOrWhiteSpace(text) ? Visibility.Visible : Visibility.Collapsed;
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
 /// <summary>Maps mic RMS [0,1] to pixel width [0,60] for the level bar.</summary>
 [ValueConversion(typeof(float), typeof(double))]
 internal sealed class MicLevelToWidthConverter : IValueConverter
@@ -80,6 +91,27 @@ internal sealed class BoolToGreenGrayBrushConverter : IValueConverter
 
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         => value is true ? Green : Gray;
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+[ValueConversion(typeof(bool), typeof(string))]
+internal sealed class BoolToAvailabilityTextConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is true ? "在线" : "离线";
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        => throw new NotSupportedException();
+}
+
+[ValueConversion(typeof(bool), typeof(Brush))]
+internal sealed class OperationalEventForegroundConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => Application.Current?.TryFindResource(value is true ? "AppDangerBrush" : "AppTextPrimaryBrush") as Brush
+           ?? Brushes.Black;
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => throw new NotSupportedException();

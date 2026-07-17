@@ -6,328 +6,147 @@
     <UserControl.Resources>
         <local:PipelineStateToLabelConverter x:Key="StateLabel" />
         <local:BoolToGreenGrayBrushConverter x:Key="ConnBrush" />
-        <local:MicLevelToWidthConverter x:Key="MicLevelWidth" />
+        <local:BoolToAvailabilityTextConverter x:Key="AvailabilityText" />
+        <local:OperationalEventForegroundConverter x:Key="OperationalEventForeground" />
     </UserControl.Resources>
 
-    <Grid Margin="16,12,16,16">
+    <Grid Margin="12" Background="{DynamicResource AppSurfaceBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- ── Status bar ── -->
-        <ui:Card Grid.Row="0" Margin="0,0,0,12" Padding="12,8">
-            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-
-                <!-- Pipeline state badge -->
-                <Border CornerRadius="10" Padding="10,4" Margin="0,0,20,0">
-                    <Border.Style>
-                        <Style TargetType="Border">
-                            <Setter Property="Background" Value="#44444488" />
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding State}" Value="Listening">
-                                    <Setter Property="Background" Value="#221A6AB4" />
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding State}" Value="Thinking">
-                                    <Setter Property="Background" Value="#22C97600" />
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding State}" Value="Speaking">
-                                    <Setter Property="Background" Value="#224CAF50" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </Border.Style>
-                    <StackPanel Orientation="Horizontal">
-                        <Ellipse Width="7" Height="7" Margin="0,0,6,0" VerticalAlignment="Center">
-                            <Ellipse.Style>
-                                <Style TargetType="Ellipse">
-                                    <Setter Property="Fill" Value="#666" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding State}" Value="Listening">
-                                            <Setter Property="Fill" Value="#4A90D9" />
-                                        </DataTrigger>
-                                        <DataTrigger Binding="{Binding State}" Value="Thinking">
-                                            <Setter Property="Fill" Value="#E8A000" />
-                                        </DataTrigger>
-                                        <DataTrigger Binding="{Binding State}" Value="Speaking">
-                                            <Setter Property="Fill" Value="#4CAF50" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </Ellipse.Style>
-                        </Ellipse>
-                        <TextBlock Text="{Binding State, Converter={StaticResource StateLabel}}"
-                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}"
-                                   FontWeight="SemiBold" FontSize="13" />
-                    </StackPanel>
-                </Border>
-
-                <!-- Connection indicators -->
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Ellipse Width="7" Height="7" Margin="0,0,5,0" VerticalAlignment="Center"
-                             Fill="{Binding VtsConnected, Converter={StaticResource ConnBrush}}" />
-                    <TextBlock Text="VTS" FontSize="12" Margin="0,0,16,0"
-                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <Ellipse Width="7" Height="7" Margin="0,0,5,0" VerticalAlignment="Center"
-                             Fill="{Binding ObsConnected, Converter={StaticResource ConnBrush}}" />
-                    <TextBlock Text="OBS" FontSize="12" Margin="0,0,16,0"
-                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <Ellipse Width="7" Height="7" Margin="0,0,5,0" VerticalAlignment="Center"
-                             Fill="{Binding DanmakuActive, Converter={StaticResource ConnBrush}}" />
-                    <TextBlock Text="弹幕" FontSize="12" Margin="0,0,16,0"
-                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-
-                    <!-- Local ASR indicator + restart button: only shown when provider=local -->
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,8,0">
-                        <StackPanel.Style>
-                            <Style TargetType="StackPanel">
-                                <Setter Property="Visibility" Value="Collapsed" />
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding LocalAsrActive}" Value="True">
-                                        <Setter Property="Visibility" Value="Visible" />
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </StackPanel.Style>
-                        <Ellipse Width="7" Height="7" Margin="0,0,5,0" VerticalAlignment="Center"
-                                 Fill="{Binding LocalAsrReachable, Converter={StaticResource ConnBrush}}" />
-                        <TextBlock Text="本地ASR" FontSize="12" Margin="0,0,6,0"
-                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                        <ui:Button x:Name="RestartAsrButton"
-                                   Icon="{ui:SymbolIcon Symbol=ArrowSync24}"
-                                   Appearance="Secondary"
-                                   Height="22" Padding="6,0"
-                                   FontSize="11"
-                                   Click="OnRestartLocalAsr"
-                                   ToolTip="重启本地ASR服务" />
-                    </StackPanel>
-
-                    <!-- Loopback level bar -->
-                    <TextBlock Text="内录" FontSize="12" Margin="0,0,5,0" VerticalAlignment="Center"
-                               Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                    <Border Width="60" Height="6" CornerRadius="3"
-                            Background="#33FFFFFF" VerticalAlignment="Center">
-                        <Border CornerRadius="3" HorizontalAlignment="Left" Background="#9C27B0"
-                                Width="{Binding LoopbackLevel, Converter={StaticResource MicLevelWidth}}" />
-                    </Border>
-                </StackPanel>
-
-                <!-- Mic level bar -->
-                <Border Margin="16,0,6,0" Width="60" Height="6" CornerRadius="3"
-                        Background="#33FFFFFF" VerticalAlignment="Center">
-                    <Border x:Name="MicLevelFill" CornerRadius="3" HorizontalAlignment="Left"
-                            Width="{Binding MicLevel, Converter={StaticResource MicLevelWidth}}"
-                            Background="#4CAF50">
-                        <Border.Style>
-                            <Style TargetType="Border">
-                                <Setter Property="Background" Value="#4CAF50"/>
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding MicMuted}" Value="True">
-                                        <Setter Property="Background" Value="#555"/>
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </Border.Style>
-                    </Border>
-                </Border>
-
-                <!-- Stop speaking (interrupt) — only shown while the AI is thinking/speaking,
-                     so it never pushes the mic-mute button off the toolbar when idle. -->
-                <ui:Button x:Name="StopSpeakingButton"
-                           Content="截停说话"
-                           Margin="0,0,8,0" Padding="10,4"
-                           FontSize="12"
-                           Click="OnStopSpeakingClicked">
+        <!-- Fixed command strip: controls remain in reserved slots in every state. -->
+        <Border Grid.Row="0" Padding="12,8" Margin="0,0,0,8"
+                Background="{DynamicResource DeckPanelBrush}" BorderBrush="{DynamicResource DeckPanelBorderBrush}"
+                BorderThickness="3,1,1,1" CornerRadius="{StaticResource CornerRadiusDeck}">
+            <Grid MinHeight="{StaticResource CommandBarHeight}">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <WrapPanel Grid.Column="0" VerticalAlignment="Center">
+                    <TextBlock Text="LIVE CONTROL" FontSize="{StaticResource FontSizeBody}" FontWeight="Bold"
+                               Foreground="{DynamicResource DeckAccentBrush}" Margin="0,0,16,0" />
+                    <TextBlock Text="{Binding State, Converter={StaticResource StateLabel}}" FontWeight="SemiBold"
+                               Foreground="{DynamicResource AppTextSecondaryBrush}" VerticalAlignment="Center" />
+                    <TextBlock Text="  |  " Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                    <TextBlock Text="VTS " Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                    <TextBlock Text="{Binding VtsConnected, Converter={StaticResource AvailabilityText}}" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                    <TextBlock Text="  OBS " Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                    <TextBlock Text="{Binding ObsConnected, Converter={StaticResource AvailabilityText}}" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                    <TextBlock Text="  弹幕 " Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                    <TextBlock Text="{Binding DanmakuActive, Converter={StaticResource AvailabilityText}}" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                </WrapPanel>
+                <ui:Button Grid.Column="1" x:Name="StopSpeakingButton" Content="截停"
+                           Icon="{ui:SymbolIcon Symbol=Dismiss24}" Width="88" Height="{StaticResource DeckToolHeight}" Margin="8,0,0,0"
+                           Appearance="Danger" IsEnabled="{Binding CanStop}" Click="OnStopSpeakingClicked"
+                           ToolTip="停止当前生成或语音" AutomationProperties.Name="截停说话" />
+                <ui:Button Grid.Column="2" x:Name="MicMuteButton" Width="96" Height="{StaticResource DeckToolHeight}"
+                           Margin="8,0,0,0" Click="OnMicMuteClicked" ToolTip="切换麦克风静音"
+                           AutomationProperties.Name="切换麦克风静音">
                     <ui:Button.Style>
                         <Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}">
-                            <Setter Property="Visibility" Value="Collapsed" />
-                            <Setter Property="Appearance" Value="Danger" />
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding CanStop}" Value="True">
-                                    <Setter Property="Visibility" Value="Visible" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </ui:Button.Style>
-                </ui:Button>
-
-                <!-- Mic mute toggle -->
-                <ui:Button x:Name="MicMuteButton"
-                           Margin="0,0,0,0" Padding="10,4"
-                           FontSize="12" Click="OnMicMuteClicked">
-                    <ui:Button.Style>
-                        <Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}">
-                            <Setter Property="Content" Value="麦克风 开" />
-                            <Setter Property="Appearance" Value="Secondary" />
+                            <Setter Property="Content" Value="麦克风" />
+                            <Setter Property="Appearance" Value="Dark" />
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding MicMuted}" Value="True">
-                                    <Setter Property="Content" Value="麦克风 关" />
+                                    <Setter Property="Content" Value="静音中" />
                                     <Setter Property="Appearance" Value="Danger" />
                                 </DataTrigger>
                             </Style.Triggers>
                         </Style>
                     </ui:Button.Style>
                 </ui:Button>
-            </StackPanel>
-        </ui:Card>
+            </Grid>
+        </Border>
 
-        <!-- ── Main content ── -->
-        <Grid Grid.Row="1">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="2*" />
-                <ColumnDefinition Width="*" MinWidth="200" />
-            </Grid.ColumnDefinitions>
-
-            <!-- Chat card -->
-            <ui:Card Grid.Column="0" Margin="0,0,12,0" Padding="16">
-                <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="实时对话"
-                               FontSize="11" FontWeight="SemiBold" Margin="0,0,0,14"
-                               Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
-                    <StackPanel>
-                        <!-- Error banner — only visible when LastError is non-empty -->
-                        <Border CornerRadius="6" Padding="10,7" Margin="0,0,0,14"
-                                Background="#22E53935">
-                            <Border.Style>
-                                <Style TargetType="Border">
-                                    <Setter Property="Visibility" Value="Visible" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding LastError}" Value="">
-                                            <Setter Property="Visibility" Value="Collapsed" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </Border.Style>
-                            <TextBlock Text="{Binding LastError}"
-                                       TextWrapping="Wrap" FontSize="12" FontFamily="Consolas"
-                                       Foreground="#E53935" />
-                        </Border>
-
-                        <TextBlock Text="用户" FontSize="11" Margin="0,0,0,5"
-                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
-                        <TextBlock Text="{Binding UserText, TargetNullValue='（等待输入）'}"
-                                   TextWrapping="Wrap" FontSize="14" Margin="0,0,0,20"
-                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-                        <TextBlock Text="AI" FontSize="11" FontWeight="SemiBold" Margin="0,0,0,5"
-                                   Foreground="#4CAF50" />
-                        <TextBlock Text="{Binding AssistantText, TargetNullValue='（等待回复）'}"
-                                   TextWrapping="Wrap" FontSize="14"
-                                   Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-
-                        <!-- Opponent (loopback) transcript — hidden when empty -->
-                        <Border Margin="0,16,0,0">
-                            <Border.Style>
-                                <Style TargetType="Border">
-                                    <Setter Property="Visibility" Value="Visible" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding OpponentText}" Value="">
-                                            <Setter Property="Visibility" Value="Collapsed" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </Border.Style>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                      SizeChanged="OnContentViewportSizeChanged">
+            <WrapPanel x:Name="MonitorPanels">
+                <Border Width="620" MinHeight="360" Padding="12" Margin="0,0,8,8"
+                        Background="{DynamicResource DeckPanelBrush}" BorderBrush="{DynamicResource DeckPanelBorderBrush}"
+                        BorderThickness="{StaticResource DeckPanelBorderThickness}" CornerRadius="{StaticResource CornerRadiusPanel}">
+                    <DockPanel>
+                        <Grid DockPanel.Dock="Top" Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                             <StackPanel>
-                                <TextBlock Text="对面" FontSize="11" FontWeight="SemiBold" Margin="0,0,0,5"
-                                           Foreground="#9C27B0" />
-                                <TextBlock Text="{Binding OpponentText}"
-                                           TextWrapping="Wrap" FontSize="14"
-                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="EVENT LOG" FontWeight="Bold" FontSize="{StaticResource FontSizeCaption}"
+                                           Foreground="{DynamicResource DeckAccentBrush}" />
+                                <TextBlock Text="最多保留 500 条 · 最新在顶部" FontSize="{StaticResource FontSizeCaption}"
+                                           Foreground="{DynamicResource AppTextSecondaryBrush}" />
                             </StackPanel>
-                        </Border>
-                    </StackPanel>
-                </DockPanel>
-            </ui:Card>
-
-            <!-- Right panel -->
-            <StackPanel Grid.Column="1">
-
-                <!-- Emotion card -->
-                <ui:Card Padding="16" Margin="0,0,0,10">
-                    <StackPanel>
-                        <TextBlock Text="情绪" FontSize="11" FontWeight="SemiBold" Margin="0,0,0,10"
-                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <StackPanel Grid.Column="0">
-                                <TextBlock Text="AI" FontSize="10" Margin="0,0,0,4"
-                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
-                                <TextBlock Text="{Binding Emotion, TargetNullValue='—'}"
-                                           FontSize="18" FontWeight="Light"
-                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
-                            </StackPanel>
-                            <StackPanel Grid.Column="1">
-                                <TextBlock Text="用户" FontSize="10" Margin="0,0,0,4"
-                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
-                                <TextBlock Text="{Binding UserEmotion, TargetNullValue='—'}"
-                                           FontSize="18" FontWeight="Light"
-                                           Foreground="#5B9BD5" />
-                            </StackPanel>
+                            <ui:Button Grid.Column="1" Content="最新" Appearance="Transparent" Height="{StaticResource DeckToolHeight}"
+                                       Click="OnReturnToLatest" ToolTip="恢复跟随最新事件" AutomationProperties.Name="回到最新事件" />
                         </Grid>
-                    </StackPanel>
-                </ui:Card>
+                        <ScrollViewer x:Name="OperationalEventScrollViewer" MaxHeight="360" VerticalScrollBarVisibility="Auto"
+                                      ScrollChanged="OnOperationalEventScrollChanged">
+                            <ItemsControl ItemsSource="{Binding OperationalEvents}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border BorderBrush="{DynamicResource AppSurfaceRaisedBrush}" BorderThickness="0,0,0,1" Padding="0,8">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="72" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Timestamp, StringFormat={}{0:HH:mm:ss}}" FontSize="{StaticResource FontSizeCaption}"
+                                                           Foreground="{DynamicResource AppTextSecondaryBrush}" Margin="0,0,12,0" />
+                                                <TextBlock Grid.Column="1" Text="{Binding Source}" FontWeight="SemiBold"
+                                                           Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                                                <TextBlock Grid.Column="2" Text="{Binding Message}" TextWrapping="Wrap"
+                                                           Foreground="{Binding IsError, Converter={StaticResource OperationalEventForeground}}" />
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
 
-                <!-- Danmaku queue card -->
-                <ui:Card Padding="16">
-                    <StackPanel>
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                            <TextBlock Text="弹幕队列" FontSize="11" FontWeight="SemiBold"
-                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
-                            <TextBlock Text=" · " FontSize="11"
-                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
-                            <TextBlock Text="{Binding DanmakuQueueCount}" FontSize="11"
-                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+                <StackPanel Width="300">
+                    <Border Padding="12" Margin="0,0,0,8" Background="{DynamicResource DeckPanelBrush}"
+                            BorderBrush="{DynamicResource DeckPanelBorderBrush}" BorderThickness="{StaticResource DeckPanelBorderThickness}"
+                            CornerRadius="{StaticResource CornerRadiusPanel}">
+                        <StackPanel>
+                            <TextBlock Text="CURRENT INPUT" FontWeight="Bold" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource DeckAccentBrush}" />
+                            <TextBlock Text="用户输入" Margin="0,12,0,2" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                            <ScrollViewer MaxHeight="220" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                <StackPanel>
+                                    <TextBlock Text="{Binding UserText, TargetNullValue=（等待输入）}" TextWrapping="Wrap" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+                                    <TextBlock Text="AI 回复" Margin="0,12,0,2" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                                    <TextBlock Text="{Binding AssistantText, TargetNullValue=（等待回复）}" TextWrapping="Wrap" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+                                    <TextBlock Text="内录" Margin="0,12,0,2" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                                    <TextBlock Text="{Binding OpponentText, TargetNullValue=（无）}" TextWrapping="Wrap" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+                                </StackPanel>
+                            </ScrollViewer>
                         </StackPanel>
-                        <ItemsControl ItemsSource="{Binding DanmakuQueue}">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Grid Margin="0,3">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto" />
-                                            <ColumnDefinition />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="{Binding Username}"
-                                                   FontSize="11" Margin="0,0,7,0"
-                                                   Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
-                                        <TextBlock Grid.Column="1" Text="{Binding Content}"
-                                                   FontSize="12" TextWrapping="Wrap"
-                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
-                                    </Grid>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
-                        </ItemsControl>
-                    </StackPanel>
-                </ui:Card>
-            </StackPanel>
-        </Grid>
+                    </Border>
+                    <Border Padding="12" Background="{DynamicResource DeckPanelBrush}"
+                            BorderBrush="{DynamicResource DeckPanelBorderBrush}" BorderThickness="{StaticResource DeckPanelBorderThickness}"
+                            CornerRadius="{StaticResource CornerRadiusPanel}">
+                        <StackPanel>
+                            <TextBlock Text="CHAT QUEUE" FontWeight="Bold" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource DeckAccentBrush}" />
+                            <TextBlock Text="{Binding DanmakuQueueCount, StringFormat=当前 {0} 条}" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource AppTextSecondaryBrush}" Margin="0,4,0,8" />
+                            <ScrollViewer MaxHeight="180" VerticalScrollBarVisibility="Auto">
+                                <ItemsControl ItemsSource="{Binding DanmakuQueue}">
+                                    <ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding Content}" TextWrapping="Wrap" Margin="0,3" Foreground="{DynamicResource AppTextPrimaryBrush}" /></DataTemplate></ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </ScrollViewer>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </WrapPanel>
+        </ScrollViewer>
 
-        <!-- ── Latency footer ── -->
-        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,10,0,0">
-            <ui:SymbolIcon Symbol="Timer24" FontSize="13" Margin="0,0,5,0"
-                           Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
-            <TextBlock FontSize="12" Foreground="{DynamicResource TextFillColorTertiaryBrush}">
-                <Run Text="ASR" />
-                <Run Text=" " />
-                <Run Text="{Binding AsrLatencyMs, TargetNullValue='—', Mode=OneWay}" />
-                <Run Text=" ms" />
-            </TextBlock>
-            <TextBlock Margin="20,0,0,0" FontSize="12"
-                       Foreground="{DynamicResource TextFillColorTertiaryBrush}">
-                <Run Text="LLM" />
-                <Run Text=" " />
-                <Run Text="{Binding LlmLatencyMs, TargetNullValue='—', Mode=OneWay}" />
-                <Run Text=" ms" />
-            </TextBlock>
-            <TextBlock Margin="20,0,0,0" FontSize="12"
-                       Foreground="{DynamicResource TextFillColorTertiaryBrush}">
-                <Run Text="TTS" />
-                <Run Text=" " />
-                <Run Text="{Binding TtsLatencyMs, TargetNullValue='—', Mode=OneWay}" />
-                <Run Text=" ms" />
-            </TextBlock>
-        </StackPanel>
+        <WrapPanel Grid.Row="2" Margin="0,8,0,0">
+            <TextBlock Text="ASR " Foreground="{DynamicResource AppTextSecondaryBrush}" />
+            <TextBlock Text="{Binding AsrLatencyMs, TargetNullValue=—}" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+            <TextBlock Text=" ms    LLM " Margin="12,0,0,0" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+            <TextBlock Text="{Binding LlmLatencyMs, TargetNullValue=—}" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+            <TextBlock Text=" ms    TTS " Margin="12,0,0,0" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+            <TextBlock Text="{Binding TtsLatencyMs, TargetNullValue=—}" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+            <TextBlock Text=" ms" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+        </WrapPanel>
     </Grid>
 </UserControl>

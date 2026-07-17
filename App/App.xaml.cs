@@ -1,6 +1,7 @@
 using System.Windows;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Runtime;
+using AIVTuber.Core.Ui;
 using Wpf.Ui.Appearance;
 
 namespace AIVTuber.App;
@@ -9,12 +10,15 @@ public partial class App : Application
 {
     private BotRuntime? _runtime;
     private MainWindow? _window;
+    private readonly ThemeService _themeService = new();
+    private ResourceDictionary? _themeResources;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
-        ApplicationThemeManager.Apply(ApplicationTheme.Dark);
+        _themeService.ThemeChanged += ApplyTheme;
+        ApplyTheme(_themeService.CurrentTheme);
 
         // Global exception handlers so the process never dies silently.
         DispatcherUnhandledException += (_, args) =>
@@ -41,7 +45,7 @@ public partial class App : Application
             return;
         }
 
-        var firstRun = IsFirstRun(config);
+        var firstRun = FirstRunGuidance.NeedsGuidance(config);
 
         _runtime = new BotRuntime(config, AppContext.BaseDirectory);
 
@@ -49,7 +53,7 @@ public partial class App : Application
         // Then init in the background.
         _window = new MainWindow(_runtime, configManager);
         _window.Show();
-        if (firstRun) _window.ShowConfigPage(); // land on the config tab to enter keys in the UI
+        if (firstRun) _window.ShowFirstRunPage();
 
         _ = InitializeAsync(); // fire-and-forget; errors caught by global handlers
     }
@@ -95,6 +99,20 @@ public partial class App : Application
             "AIVTuber", MessageBoxButton.OK, MessageBoxImage.Error);
     }
 
-    private static bool IsFirstRun(AppConfig config)
-        => string.IsNullOrEmpty(config.Llm.ApiKey) && string.IsNullOrEmpty(config.Tts.ApiKey);
+    internal void ToggleTheme() => _themeService.Toggle();
+
+    private void ApplyTheme(AppTheme theme)
+    {
+        if (_themeResources is not null)
+            Resources.MergedDictionaries.Remove(_themeResources);
+
+        _themeResources = new ResourceDictionary
+        {
+            Source = new Uri(
+                theme == AppTheme.Light ? "Resources/Themes/Light.xaml" : "Resources/Themes/Dark.xaml",
+                UriKind.Relative)
+        };
+        Resources.MergedDictionaries.Add(_themeResources);
+        ApplicationThemeManager.Apply(theme == AppTheme.Light ? ApplicationTheme.Light : ApplicationTheme.Dark);
+    }
 }
