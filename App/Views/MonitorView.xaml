@@ -122,7 +122,7 @@
                             </ScrollViewer>
                         </StackPanel>
                     </Border>
-                    <Border Padding="12" Background="{DynamicResource DeckPanelBrush}"
+                    <Border Padding="12" Margin="0,0,0,8" Background="{DynamicResource DeckPanelBrush}"
                             BorderBrush="{DynamicResource DeckPanelBorderBrush}" BorderThickness="{StaticResource DeckPanelBorderThickness}"
                             CornerRadius="{StaticResource CornerRadiusPanel}">
                         <StackPanel>
@@ -133,6 +133,68 @@
                                     <ItemsControl.ItemTemplate><DataTemplate><TextBlock Text="{Binding Content}" TextWrapping="Wrap" Margin="0,3" Foreground="{DynamicResource AppTextPrimaryBrush}" /></DataTemplate></ItemsControl.ItemTemplate>
                                 </ItemsControl>
                             </ScrollViewer>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Manual PNG-avatar probes (backend=pixel|both). Safe no-ops when off. -->
+                    <Border Padding="12" Background="{DynamicResource DeckPanelBrush}"
+                            BorderBrush="{DynamicResource DeckPanelBorderBrush}" BorderThickness="{StaticResource DeckPanelBorderThickness}"
+                            CornerRadius="{StaticResource CornerRadiusPanel}">
+                        <StackPanel>
+                            <TextBlock Text="AVATAR TEST" FontWeight="Bold" FontSize="{StaticResource FontSizeCaption}"
+                                       Foreground="{DynamicResource DeckAccentBrush}" />
+                            <TextBlock Text="表情 / 贴纸 / 口型 · 需 avatar.backend=pixel|both"
+                                       FontSize="{StaticResource FontSizeCaption}"
+                                       Foreground="{DynamicResource AppTextSecondaryBrush}"
+                                       TextWrapping="Wrap" Margin="0,4,0,8" />
+                            <TextBlock Text="表情" FontSize="{StaticResource FontSizeCaption}"
+                                       Foreground="{DynamicResource AppTextSecondaryBrush}" Margin="0,0,0,4" />
+                            <WrapPanel>
+                                <ui:Button Content="开心" Appearance="Secondary" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarEmotion" Tag="happy"
+                                           ToolTip="SetEmotion(happy)" AutomationProperties.Name="测表情开心" />
+                                <ui:Button Content="害羞" Appearance="Secondary" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarEmotion" Tag="shy"
+                                           ToolTip="SetEmotion(shy)" AutomationProperties.Name="测表情害羞" />
+                                <ui:Button Content="生气" Appearance="Secondary" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarEmotion" Tag="angry"
+                                           ToolTip="SetEmotion(angry) + shake" AutomationProperties.Name="测表情生气" />
+                                <ui:Button Content="无语" Appearance="Secondary" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarEmotion" Tag="upset"
+                                           ToolTip="SetEmotion(upset)" AutomationProperties.Name="测表情无语" />
+                                <ui:Button Content="惊讶" Appearance="Secondary" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarEmotion" Tag="surprised"
+                                           ToolTip="SetEmotion(surprised) + jump" AutomationProperties.Name="测表情惊讶" />
+                                <ui:Button Content="难过" Appearance="Secondary" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarEmotion" Tag="sad"
+                                           ToolTip="SetEmotion(sad) + sink" AutomationProperties.Name="测表情难过" />
+                            </WrapPanel>
+                            <TextBlock Text="挂机 / 贴纸" FontSize="{StaticResource FontSizeCaption}"
+                                       Foreground="{DynamicResource AppTextSecondaryBrush}" Margin="0,4,0,4" />
+                            <WrapPanel>
+                                <ui:Button Content="睡觉" Appearance="Secondary" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarIdle" Tag="sleep"
+                                           ToolTip="SetIdleState(sleep)" AutomationProperties.Name="测挂机睡觉" />
+                                <ui:Button Content="醒着" Appearance="Secondary" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarIdle" Tag="neutral"
+                                           ToolTip="清除挂机状态" AutomationProperties.Name="清除挂机" />
+                                <ui:Button Content="流汗黄豆" Appearance="Primary" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarSticker" Tag="sweat_laugh"
+                                           ToolTip="ShowSticker(sweat_laugh)" AutomationProperties.Name="测贴纸流汗" />
+                            </WrapPanel>
+                            <TextBlock Text="口型 (合成 RMS)" FontSize="{StaticResource FontSizeCaption}"
+                                       Foreground="{DynamicResource AppTextSecondaryBrush}" Margin="0,4,0,4" />
+                            <WrapPanel>
+                                <ui:Button Content="闭嘴" Appearance="Transparent" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarRms" Tag="0"
+                                           ToolTip="OnRms(0)" AutomationProperties.Name="测口型闭嘴" />
+                                <ui:Button Content="半开" Appearance="Transparent" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarRms" Tag="0.2"
+                                           ToolTip="OnRms(0.2) → mouth_half" AutomationProperties.Name="测口型半开" />
+                                <ui:Button Content="大开" Appearance="Transparent" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarRms" Tag="0.6"
+                                           ToolTip="OnRms(0.6) → mouth_open" AutomationProperties.Name="测口型大开" />
+                            </WrapPanel>
                         </StackPanel>
                     </Border>
                 </StackPanel>

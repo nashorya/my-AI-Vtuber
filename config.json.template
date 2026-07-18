@@ -78,5 +78,32 @@
     "mic_template": "（你的创造者对你说：{text}）",
     "loopback_template": "（你听到对面说：{text}）",
     "danmaku_template": "（弹幕 {username}：{content}）"
+  },
+  "avatar": {
+    "backend": "vts",
+    "assets_path": "assets/avatar",
+    "topmost": true,
+    "background_color": "#00FF00",
+    "allows_transparency": false,
+    "window_width": 480,
+    "window_height": 480,
+    "scaling_mode": "auto",
+    "snap_motion_to_pixels": false,
+    "emotion_map": {
+      "happy": "happy",
+      "开心": "happy",
+      "shy": "shy",
+      "害羞": "shy",
+      "angry": "angry",
+      "生气": "angry",
+      "upset": "upset",
+      "无语": "upset",
+      "surprised": "surprised",
+      "惊讶": "surprised",
+      "sad": "sad",
+      "难过": "sad",
+      "sleep": "sleep",
+      "困": "sleep"
+    }
   }
 }

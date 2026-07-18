@@ -220,6 +220,75 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
     /// <summary>Interrupts the AI immediately — stops current speech/generation and playback.</summary>
     public void StopSpeaking() => _runtime.StopSpeaking();
 
+    /// <summary>
+    /// Manual test: drive the in-process PNG avatar to an emotion face.
+    /// No-ops with a log line when backend is not pixel/both.
+    /// </summary>
+    public void TriggerAvatarEmotion(string emotion)
+    {
+        if (string.IsNullOrWhiteSpace(emotion)) return;
+        var driver = _runtime.PixelAvatar;
+        if (driver is null)
+        {
+            _dispatch(() => AddOperationalEvent(
+                "形象", $"未启用（backend 需 pixel/both）: {emotion}", isError: true));
+            return;
+        }
+
+        driver.SetEmotion(emotion);
+        _dispatch(() =>
+        {
+            Emotion = emotion;
+            AddOperationalEvent("形象", $"表情 → {emotion}");
+        });
+    }
+
+    /// <summary>Manual test: pop a sticker overlay on the PNG avatar.</summary>
+    public void TriggerAvatarSticker(string stickerId = "sweat_laugh")
+    {
+        if (string.IsNullOrWhiteSpace(stickerId)) return;
+        if (_runtime.PixelAvatar is null)
+        {
+            _dispatch(() => AddOperationalEvent(
+                "形象", $"未启用（backend 需 pixel/both）: sticker {stickerId}", isError: true));
+            return;
+        }
+
+        _runtime.ShowAvatarSticker(stickerId);
+        _dispatch(() => AddOperationalEvent("形象", $"贴纸 → {stickerId}"));
+    }
+
+    /// <summary>Manual test: special/idle body state (e.g. sleep) or clear with neutral.</summary>
+    public void TriggerAvatarIdle(string state)
+    {
+        if (string.IsNullOrWhiteSpace(state)) return;
+        var driver = _runtime.PixelAvatar;
+        if (driver is null)
+        {
+            _dispatch(() => AddOperationalEvent(
+                "形象", $"未启用（backend 需 pixel/both）: idle {state}", isError: true));
+            return;
+        }
+
+        driver.SetIdleState(state);
+        _dispatch(() => AddOperationalEvent("形象", $"挂机 → {state}"));
+    }
+
+    /// <summary>Manual test: feed a synthetic RMS sample for mouth/bounce without TTS.</summary>
+    public void TriggerAvatarRms(float rms)
+    {
+        var driver = _runtime.PixelAvatar;
+        if (driver is null)
+        {
+            _dispatch(() => AddOperationalEvent(
+                "形象", "未启用（backend 需 pixel/both）: RMS", isError: true));
+            return;
+        }
+
+        driver.OnRms(rms);
+        _dispatch(() => AddOperationalEvent("形象", $"RMS → {rms:0.00}"));
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)

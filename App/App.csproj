@@ -39,6 +39,11 @@
     <None Include="..\sidecar\requirements.lock" Link="sidecar\requirements.lock" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\scripts\Test-SidecarPackage.ps1" Link="scripts\Test-SidecarPackage.ps1" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\scripts\Test-G005PublishContract.ps1" Link="scripts\Test-G005PublishContract.ps1" CopyToPublishDirectory="PreserveNewest" />
+    <!-- PNG avatar pack: sprites, stickers, placeholder sheets, avatar.json -->
+    <None Include="..\assets\avatar\**\*"
+          Link="assets\avatar\%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

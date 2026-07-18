@@ -1,4 +1,5 @@
 using System.Windows;
+using AIVTuber.App.Views;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Runtime;
 using AIVTuber.Core.Ui;
@@ -10,6 +11,7 @@ public partial class App : Application
 {
     private BotRuntime? _runtime;
     private MainWindow? _window;
+    private AvatarWindow? _avatarWindow;
     private readonly ThemeService _themeService = new();
     private ResourceDictionary? _themeResources;
 
@@ -60,6 +62,8 @@ public partial class App : Application
 
     protected override async void OnExit(ExitEventArgs e)
     {
+        try { _avatarWindow?.Close(); } catch { /* ignore */ }
+        _avatarWindow = null;
         if (_runtime is not null) await _runtime.DisposeAsync();
         base.OnExit(e);
     }
@@ -69,11 +73,29 @@ public partial class App : Application
         try
         {
             await _runtime!.StartAsync();
+            Dispatcher.Invoke(OpenAvatarWindowIfNeeded);
         }
         catch (Exception ex)
         {
             // Keep the window open (the user can fix config in the UI) — don't kill the app.
             ShowFatalError("启动失败（窗口保留，可在配置页修改后重启）", ex);
+        }
+    }
+
+    private void OpenAvatarWindowIfNeeded()
+    {
+        if (_runtime?.PixelAvatar is null) return;
+        if (_avatarWindow is not null) return;
+
+        try
+        {
+            _avatarWindow = new AvatarWindow(_runtime.PixelAvatar, _runtime.CurrentConfig.Avatar);
+            _avatarWindow.Closed += (_, _) => _avatarWindow = null;
+            _avatarWindow.Show();
+        }
+        catch (Exception ex)
+        {
+            ShowFatalError("形象窗口打开失败", ex);
         }
     }
 

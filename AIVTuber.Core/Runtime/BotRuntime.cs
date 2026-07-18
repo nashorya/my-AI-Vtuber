@@ -1,4 +1,5 @@
 using AIVTuber.Core.Audio;
+using AIVTuber.Core.Avatar;
 using AIVTuber.Core.Bot;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.LiveStream;
@@ -39,6 +40,9 @@ public sealed class BotRuntime : IAsyncDisposable
     private MemoryExtractor _memoryExtractor = null!;
     private LlmClient _memoryLlm = null!; // owned by BotRuntime so it can be disposed (MemoryExtractor is not IDisposable)
     private VtsClient? _vts;
+    private PixelAvatarDriver? _pixelAvatar;
+    private EventHandler<float>? _avatarRmsHandler;
+    private EventHandler<string>? _avatarEmotionHandler;
     private ObsClient? _obs;
     private IAsrClient _asr = null!;   // provider-specific (whisper-HTTP or DashScope-WebSocket)
     private LlmClient _llm = null!;
@@ -67,6 +71,8 @@ public sealed class BotRuntime : IAsyncDisposable
     public event EventHandler<float>? LoopbackLevelUpdated;
 
     public bool VtsConnected => _vts?.IsConnected == true;
+    /// <summary>In-process PNG avatar driver when backend is pixel/both; null otherwise.</summary>
+    public PixelAvatarDriver? PixelAvatar => _pixelAvatar;
     public bool ObsConnected => _obs is not null;
     /// <summary>True only when the danmaku bridge subprocess is actually alive — not merely
     /// when the client object exists.</summary>
@@ -174,14 +180,24 @@ public sealed class BotRuntime : IAsyncDisposable
     public async Task StartAsync()
     {
         await InitMemoryAsync();
-        await InitVtsAsync();
+        if (_config.Avatar.UsesVts)
+            await InitVtsAsync();
+        else
+            Console.WriteLine($"[Avatar] backend={_config.Avatar.Backend} — skip VTS connect");
         InitObs();
         InitPipeline();
+        InitPixelAvatar();
         await InitDanmakuAsync();
         StartAudio();
         _stateTracker.Started();
         SuperviseBackgroundTask(StartLocalAsrServerAsync());
     }
+
+    /// <summary>Show a sticker on the pixel avatar if active (no-op for VTS-only).</summary>
+    public void ShowAvatarSticker(string stickerId) => _pixelAvatar?.ShowSticker(stickerId);
+
+    /// <summary>Set idle/special state on the pixel avatar if active.</summary>
+    public void SetAvatarIdleState(string state) => _pixelAvatar?.SetIdleState(state);
 
     private async Task InitMemoryAsync()
     {
@@ -234,6 +250,75 @@ public sealed class BotRuntime : IAsyncDisposable
             PipelineError?.Invoke(this, msg);
             _vts = null;
         }
+    }
+
+    private void InitPixelAvatar()
+    {
+        UnwirePixelAvatar();
+        _pixelAvatar = null;
+
+        if (!_config.Avatar.UsesPixel)
+        {
+            Console.WriteLine($"[Avatar] backend={_config.Avatar.Backend} — pixel renderer off");
+            return;
+        }
+
+        try
+        {
+            var assetsDir = Path.IsPathRooted(_config.Avatar.AssetsPath)
+                ? _config.Avatar.AssetsPath
+                : Path.Combine(_baseDir, _config.Avatar.AssetsPath);
+
+            if (!Directory.Exists(assetsDir))
+            {
+                var msg = $"[Avatar] assets directory missing: {assetsDir}";
+                Console.WriteLine(msg);
+                PipelineError?.Invoke(this, msg);
+                // Still create a driver with placeholder pack so the window can show something.
+                assetsDir = Path.Combine(_baseDir, "assets", "avatar");
+            }
+
+            var pack = AvatarConfigLoader.Load(assetsDir);
+            var available = AvatarConfigLoader.ResolveAvailableStates(pack, assetsDir);
+            if (available.Count == 0 && AvatarConfigLoader.ResolveDevPlaceholderIdle(assetsDir) is not null)
+            {
+                pack = AvatarConfigLoader.CreatePlaceholderPack();
+                available = AvatarConfigLoader.ResolveAvailableStates(pack, assetsDir);
+                Console.WriteLine("[Avatar] falling back to dev_placeholder pack");
+            }
+
+            _pixelAvatar = new PixelAvatarDriver(pack, assetsDir, available, _config.Avatar.EmotionMap);
+            WirePixelAvatar();
+            Console.WriteLine($"[Avatar] pixel driver ready ({pack.Meta.Name}) @ {assetsDir}");
+        }
+        catch (Exception ex)
+        {
+            var msg = $"[Avatar] pixel init failed: {ex.Message}";
+            Console.WriteLine(msg);
+            PipelineError?.Invoke(this, msg);
+            _pixelAvatar = null;
+        }
+    }
+
+    private void WirePixelAvatar()
+    {
+        if (_pixelAvatar is null || _player is null) return;
+
+        _avatarRmsHandler = (_, rms) => _pixelAvatar?.OnRms(rms);
+        _player.RmsUpdated += _avatarRmsHandler;
+
+        _avatarEmotionHandler = (_, emotion) => _pixelAvatar?.SetEmotion(emotion);
+        _orchestrator.OnEmotionDetected += _avatarEmotionHandler;
+    }
+
+    private void UnwirePixelAvatar()
+    {
+        if (_avatarRmsHandler is not null && _player is not null)
+            _player.RmsUpdated -= _avatarRmsHandler;
+        if (_avatarEmotionHandler is not null && _orchestrator is not null)
+            _orchestrator.OnEmotionDetected -= _avatarEmotionHandler;
+        _avatarRmsHandler = null;
+        _avatarEmotionHandler = null;
     }
 
     private void InitObs()
@@ -415,6 +500,15 @@ public sealed class BotRuntime : IAsyncDisposable
             _stateTracker.SpeakingStopped();
             AiStopSpeaking?.Invoke(this, EventArgs.Empty);
         };
+
+        // Orchestrator is recreated here — re-attach pixel avatar emotion hook if active.
+        if (_pixelAvatar is not null)
+        {
+            if (_avatarEmotionHandler is not null)
+                _orchestrator.OnEmotionDetected -= _avatarEmotionHandler;
+            _avatarEmotionHandler = (_, emotion) => _pixelAvatar?.SetEmotion(emotion);
+            _orchestrator.OnEmotionDetected += _avatarEmotionHandler;
+        }
     }
 
     /// <summary>
@@ -739,6 +833,11 @@ public sealed class BotRuntime : IAsyncDisposable
 
     private async Task ReconnectVtsAsync()
     {
+        if (!_config.Avatar.UsesVts)
+        {
+            if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); _vts = null; }
+            return;
+        }
         if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); }
         await InitVtsAsync();
     }
@@ -774,6 +873,12 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         _cts.Cancel();
         await DrainBackgroundTasksAsync();
+        UnwirePixelAvatar();
+        if (_pixelAvatar is not null)
+        {
+            await _pixelAvatar.DisposeAsync();
+            _pixelAvatar = null;
+        }
         _mic?.Stop(); _mic?.Dispose();
         _vad?.Dispose();
         _loopback?.Stop(); _loopback?.Dispose();

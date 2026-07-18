@@ -79,6 +79,26 @@ public class MonitorViewModelTests
     }
 
     [Fact]
+    public void TriggerAvatarEmotion_WithoutPixelBackend_LogsErrorEvent()
+    {
+        var (_, vm) = Make(); // default backend=vts, no PixelAvatar
+        vm.TriggerAvatarEmotion("happy");
+        Assert.NotEmpty(vm.OperationalEvents);
+        Assert.Equal("形象", vm.OperationalEvents[0].Source);
+        Assert.True(vm.OperationalEvents[0].IsError);
+        Assert.Contains("happy", vm.OperationalEvents[0].Message);
+    }
+
+    [Fact]
+    public void TriggerAvatarSticker_WithoutPixelBackend_LogsErrorEvent()
+    {
+        var (_, vm) = Make();
+        vm.TriggerAvatarSticker("sweat_laugh");
+        Assert.True(vm.OperationalEvents[0].IsError);
+        Assert.Contains("sweat_laugh", vm.OperationalEvents[0].Message);
+    }
+
+    [Fact]
     public void OperationalEvents_RenderErrorsWithErrorSource()
     {
         var (_, vm) = Make();
