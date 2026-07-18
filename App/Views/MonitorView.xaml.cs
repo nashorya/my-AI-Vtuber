@@ -58,6 +58,36 @@ public partial class MonitorView : UserControl
             vm.RestartLocalAsrServer();
     }
 
+    private void OnAvatarEmotion(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MonitorViewModel vm) return;
+        if (sender is FrameworkElement { Tag: string emotion })
+            vm.TriggerAvatarEmotion(emotion);
+    }
+
+    private void OnAvatarIdle(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MonitorViewModel vm) return;
+        if (sender is FrameworkElement { Tag: string state })
+            vm.TriggerAvatarIdle(state);
+    }
+
+    private void OnAvatarSticker(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MonitorViewModel vm) return;
+        var id = (sender as FrameworkElement)?.Tag as string ?? "sweat_laugh";
+        vm.TriggerAvatarSticker(id);
+    }
+
+    private void OnAvatarRms(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MonitorViewModel vm) return;
+        if (sender is FrameworkElement { Tag: string tag } &&
+            float.TryParse(tag, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out var rms))
+            vm.TriggerAvatarRms(rms);
+    }
+
     private void OnOperationalEventScrollChanged(object sender, ScrollChangedEventArgs e)
     {
         if (_followLatestScrollPolicy.ShouldPauseFollowing(e.VerticalChange) &&

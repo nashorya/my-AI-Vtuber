@@ -14,6 +14,78 @@ public sealed class AppConfig
     public MemoryConfig Memory { get; set; } = new();
     public BilibiliConfig Bilibili { get; set; } = new();
     public InputTemplateConfig Input { get; set; } = new();
+    /// <summary>In-process PNG avatar + backend selection (vts / pixel / both).</summary>
+    public AvatarRuntimeConfig Avatar { get; set; } = new();
+}
+
+/// <summary>
+/// Runtime avatar settings (config.json <c>avatar</c> section).
+/// Distinct from <c>assets/avatar/avatar.json</c> pack config.
+/// </summary>
+public sealed class AvatarRuntimeConfig
+{
+    /// <summary>"vts" | "pixel" | "both". Default keeps existing VTS-only behaviour.</summary>
+    public string Backend { get; set; } = "vts";
+
+    /// <summary>Directory containing avatar.json, sprites/, stickers/, dev_placeholder/.</summary>
+    public string AssetsPath { get; set; } = "assets/avatar";
+
+    /// <summary>Keep the avatar window above other windows.</summary>
+    public bool Topmost { get; set; } = true;
+
+    /// <summary>Solid chroma-key colour (e.g. #00FF00). Used when <see cref="AllowsTransparency"/> is false.</summary>
+    public string BackgroundColor { get; set; } = "#00FF00";
+
+    /// <summary>
+    /// When true, use a fully transparent WPF window (AllowsTransparency).
+    /// Default false — solid chroma key is the safer OBS path and keeps hardware acceleration.
+    /// </summary>
+    public bool AllowsTransparency { get; set; } = false;
+
+    /// <summary>Window width in DIPs. 0 = derive from pack canvas (clamped).</summary>
+    public double WindowWidth { get; set; } = 480;
+
+    /// <summary>Window height in DIPs. 0 = derive from pack canvas (clamped).</summary>
+    public double WindowHeight { get; set; } = 480;
+
+    /// <summary>
+    /// LLM emotion word → avatar.json state name.
+    /// Unknown emotions fall back to direct state match, then neutral.
+    /// </summary>
+    public Dictionary<string, string> EmotionMap { get; set; } = new()
+    {
+        ["happy"] = "happy",
+        ["开心"] = "happy",
+        ["shy"] = "shy",
+        ["害羞"] = "shy",
+        ["angry"] = "angry",
+        ["生气"] = "angry",
+        ["upset"] = "upset",
+        ["无语"] = "upset",
+        ["surprised"] = "surprised",
+        ["惊讶"] = "surprised",
+        ["sad"] = "sad",
+        ["难过"] = "sad",
+        ["sleep"] = "sleep",
+        ["困"] = "sleep",
+    };
+
+    /// <summary>
+    /// Bitmap scaling: "auto" (nearest for placeholder sheet, linear for HD sprites),
+    /// "nearest", or "linear".
+    /// </summary>
+    public string ScalingMode { get; set; } = "auto";
+
+    /// <summary>When true, snap motion offsets to whole pixels (helps chunky pixel art).</summary>
+    public bool SnapMotionToPixels { get; set; } = false;
+
+    public bool UsesVts =>
+        string.Equals(Backend, "vts", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(Backend, "both", StringComparison.OrdinalIgnoreCase);
+
+    public bool UsesPixel =>
+        string.Equals(Backend, "pixel", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(Backend, "both", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class AudioConfig
