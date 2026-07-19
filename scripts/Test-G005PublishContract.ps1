@@ -51,6 +51,8 @@ try {
     foreach ($path in @("asr_server.py", "asr-sidecar.manifest.json", "requirements.lock", "Test-SidecarPackage.ps1")) {
         Assert-Contains $project $path "App publish graph"
     }
+    Assert-Contains $project 'ExcludeFromSingleFile="true"' "Avatar publish graph"
+    Assert-Contains $project 'assets\avatar\**\*' "Avatar publish graph"
 
     $attributes = Get-Content (Join-Path $RepositoryRoot ".gitattributes") -Raw
     foreach ($path in @("asr_server.py", "sidecar/asr-sidecar.manifest.json", "sidecar/requirements.lock")) {
