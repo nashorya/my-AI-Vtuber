@@ -89,18 +89,17 @@ public sealed class MotionEngine
         var breathY = (float)(Math.Sin(breathPhase) * _cfg.Breath.AmpPx);
         var breathScaleY = 1f + (float)(Math.Sin(breathPhase) * _cfg.Breath.ScaleAmp);
 
-        // Drift: stacked incommensurate sines ≈ Perlin
+        // Drift: stacked incommensurate sines ≈ Perlin.
+        // Horizontal (X) is intentionally unused — whole-body left/right motion reads as
+        // "swaying"; only vertical micro-drift is applied when amp_px > 0.
         var t = _timeSec * _cfg.Drift.Speed;
-        var driftX = (float)(
-            Math.Sin(t * 1.0) * 0.5 +
-            Math.Sin(t * 2.17) * 0.3 +
-            Math.Sin(t * 3.93) * 0.2) * _cfg.Drift.AmpPx;
         var driftY = (float)(
             Math.Sin(t * 1.31 + 1.7) * 0.5 +
             Math.Sin(t * 2.71 + 0.4) * 0.3 +
             Math.Sin(t * 4.11 + 2.1) * 0.2) * _cfg.Drift.AmpPx;
 
-        // Sway
+        // Sway = whole-image rotation about foot pivot. Disabled when amp_deg is 0.
+        // True head-tilt (歪头) needs a separate head layer — not implemented in v0.1.
         var swayPeriod = Math.Max(1f, _cfg.Sway.PeriodMs);
         var swayPhase = (_timeSec * 1000.0 / swayPeriod) * Math.PI * 2.0;
         var rotation = (float)(Math.Sin(swayPhase) * _cfg.Sway.AmpDeg);
@@ -129,7 +128,7 @@ public sealed class MotionEngine
         }
 
         return new MotionFrame(
-            OffsetX: driftX + shakeX,
+            OffsetX: shakeX, // only one-shot emotion shake; no idle horizontal drift
             OffsetY: breathY + bounceY + driftY + jumpY + _sinkPx,
             ScaleX: 1f,
             ScaleY: breathScaleY,
