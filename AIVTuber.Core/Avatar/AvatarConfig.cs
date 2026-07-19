@@ -202,8 +202,9 @@ public sealed class BounceConfig
 
 public sealed class DriftConfig
 {
+    /// <summary>Vertical micro-drift only (horizontal idle motion is not applied).</summary>
     [JsonPropertyName("amp_px")]
-    public float AmpPx { get; set; } = 2.5f;
+    public float AmpPx { get; set; } = 0f;
 
     [JsonPropertyName("speed")]
     public float Speed { get; set; } = 0.3f;
@@ -214,8 +215,9 @@ public sealed class DriftConfig
 
 public sealed class SwayConfig
 {
+    /// <summary>Whole-image rotation degrees. 0 = off (default). Head-tilt is not this field.</summary>
     [JsonPropertyName("amp_deg")]
-    public float AmpDeg { get; set; } = 2.5f;
+    public float AmpDeg { get; set; } = 0f;
 
     [JsonPropertyName("period_ms")]
     public float PeriodMs { get; set; } = 5200;

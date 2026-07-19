@@ -8,8 +8,8 @@ public class MotionEngineTests
     {
         Breath = new BreathConfig { AmpPx = 5, ScaleAmp = 0.012f, PeriodMs = 3200 },
         Bounce = new BounceConfig { MaxPx = 14, AttackMs = 40, ReleaseMs = 180 },
-        Drift = new DriftConfig { AmpPx = 2.5f, Speed = 0.3f },
-        Sway = new SwayConfig { AmpDeg = 2.5f, PeriodMs = 5200 },
+        Drift = new DriftConfig { AmpPx = 2.5f, Speed = 0.3f }, // tests still exercise vertical drift
+        Sway = new SwayConfig { AmpDeg = 0f, PeriodMs = 5200 },
     };
 
     [Fact]
@@ -95,19 +95,37 @@ public class MotionEngineTests
     }
 
     [Fact]
-    public void Drift_IsNonZeroOverTime()
+    public void Drift_IsVerticalOnly_NoIdleHorizontal()
     {
         var eng = new MotionEngine(Cfg());
-        float sumAbsX = 0;
+        float sumAbsX = 0, sumAbsY = 0;
         for (var i = 0; i < 100; i++)
-            sumAbsX += Math.Abs(eng.Tick(16).OffsetX);
-        Assert.True(sumAbsX > 1f, "drift X should accumulate non-trivial motion");
+        {
+            var f = eng.Tick(16);
+            sumAbsX += Math.Abs(f.OffsetX);
+            sumAbsY += Math.Abs(f.OffsetY);
+        }
+        // Idle must not rock left/right; vertical breath+drift still alive.
+        Assert.Equal(0f, sumAbsX);
+        Assert.True(sumAbsY > 1f, "vertical motion should remain");
     }
 
     [Fact]
-    public void Sway_RotatesWithinAmp()
+    public void Sway_ZeroAmp_MeansNoRotation()
     {
-        var eng = new MotionEngine(Cfg());
+        var cfg = Cfg();
+        cfg.Sway.AmpDeg = 0;
+        var eng = new MotionEngine(cfg);
+        for (var i = 0; i < 50; i++)
+            Assert.Equal(0f, eng.Tick(16).RotationDeg);
+    }
+
+    [Fact]
+    public void Sway_RotatesWithinAmp_WhenEnabled()
+    {
+        var cfg = Cfg();
+        cfg.Sway.AmpDeg = 2.5f;
+        var eng = new MotionEngine(cfg);
         float maxAbs = 0;
         for (var i = 0; i < 400; i++)
             maxAbs = Math.Max(maxAbs, Math.Abs(eng.Tick(16).RotationDeg));
