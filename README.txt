@@ -16,6 +16,9 @@ AIVTuber - AI虚拟主播后端程序
 
 本地 ASR Sidecar
 ----------------
+标准 GitHub Release 为轻量 API-ASR 版，不包含 sidecar/python 运行时；默认使用配置模板中的 aliyun API。
+只有明确标注为“本地 ASR 完整版”的分发包才包含并启用以下托管运行时布局：
+
 本地 ASR 使用发布包内的托管 Python 运行时，不读取系统 PATH。发布布局为：
 - sidecar/python/python.exe
 - sidecar/asr_server.py
@@ -25,7 +28,7 @@ AIVTuber - AI虚拟主播后端程序
 发布前运行：
   powershell -File scripts/Test-SidecarPackage.ps1 -PackageRoot . -RequireRuntime
 
-若运行时未随包提供，验证固定返回 ASR-SIDECAR-001；不得将该包描述为自包含本地 ASR 版本。
+若运行时未随包提供，验证固定返回 ASR-SIDECAR-001；API-ASR 版不得描述为自包含本地 ASR 版本。
 无 CUDA 的机器使用 device=auto，由 CPU 兼容的已暂存 wheels 执行；模型或设备初始化失败固定归类为
 ASR-SIDECAR-005，/health 状态为 failed，不会被误判为 ready。
 
