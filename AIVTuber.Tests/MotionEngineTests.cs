@@ -13,7 +13,7 @@ public class MotionEngineTests
     };
 
     [Fact]
-    public void Breath_ProducesOscillatingY()
+    public void Breath_ProducesOscillatingHeadY()
     {
         var eng = new MotionEngine(Cfg());
         float? minY = null, maxY = null;
@@ -21,8 +21,8 @@ public class MotionEngineTests
         for (var i = 0; i < 3200 / 16; i++)
         {
             var f = eng.Tick(16);
-            minY = minY is null ? f.OffsetY : Math.Min(minY.Value, f.OffsetY);
-            maxY = maxY is null ? f.OffsetY : Math.Max(maxY.Value, f.OffsetY);
+            minY = minY is null ? f.BreathOffsetY : Math.Min(minY.Value, f.BreathOffsetY);
+            maxY = maxY is null ? f.BreathOffsetY : Math.Max(maxY.Value, f.BreathOffsetY);
         }
         Assert.NotNull(minY);
         Assert.NotNull(maxY);
@@ -37,11 +37,22 @@ public class MotionEngineTests
         for (var i = 0; i < 200; i++)
         {
             var f = eng.Tick(16);
-            minS = Math.Min(minS, f.ScaleY);
-            maxS = Math.Max(maxS, f.ScaleY);
+            minS = Math.Min(minS, f.BreathScaleY);
+            maxS = Math.Max(maxS, f.BreathScaleY);
         }
         Assert.True(minS < 1f);
         Assert.True(maxS > 1f);
+    }
+
+    [Fact]
+    public void Breath_DoesNotMoveQuietBody()
+    {
+        var cfg = Cfg();
+        cfg.Drift.AmpPx = 0;
+        var eng = new MotionEngine(cfg);
+
+        for (var i = 0; i < 200; i++)
+            Assert.Equal(0f, eng.Tick(16).OffsetY);
     }
 
     [Fact]

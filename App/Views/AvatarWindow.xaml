@@ -10,7 +10,7 @@
         ShowInTaskbar="True"
         AllowsTransparency="False">
     <Grid x:Name="RootGrid" ClipToBounds="True">
-        <!-- Body cross-fade: previous (B) under current (A) -->
+        <!-- Whole-character actions wrap synchronized body/head cross-fade layers. -->
         <Grid x:Name="BodyLayer"
               HorizontalAlignment="Center"
               VerticalAlignment="Bottom"
@@ -22,14 +22,30 @@
                     <TranslateTransform x:Name="BodyTranslate" X="0" Y="0" />
                 </TransformGroup>
             </Grid.RenderTransform>
-            <Image x:Name="BodyImageB"
-                   Stretch="Uniform"
-                   Opacity="0"
-                   IsHitTestVisible="False" />
-            <Image x:Name="BodyImageA"
-                   Stretch="Uniform"
-                   Opacity="1"
-                   IsHitTestVisible="False" />
+            <Grid x:Name="BodyClipLayer">
+                <Image x:Name="BodyImageB"
+                       Stretch="Uniform"
+                       Opacity="0"
+                       IsHitTestVisible="False" />
+                <Image x:Name="BodyImageA"
+                       Stretch="Uniform"
+                       Opacity="1"
+                       IsHitTestVisible="False" />
+            </Grid>
+
+            <Grid x:Name="HeadLayer">
+                <Grid.RenderTransform>
+                    <TranslateTransform x:Name="HeadTranslate" X="0" Y="0" />
+                </Grid.RenderTransform>
+                <Image x:Name="HeadImageB"
+                       Stretch="Uniform"
+                       Opacity="0"
+                       IsHitTestVisible="False" />
+                <Image x:Name="HeadImageA"
+                       Stretch="Uniform"
+                       Opacity="1"
+                       IsHitTestVisible="False" />
+            </Grid>
         </Grid>
 
         <!-- Sticker overlay (canvas coords map to pack canvas, scaled to window) -->

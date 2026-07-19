@@ -175,6 +175,9 @@ public sealed class MotionLayerConfig
 
 public sealed class BreathConfig
 {
+    [JsonPropertyName("target")]
+    public string Target { get; set; } = "body";
+
     [JsonPropertyName("amp_px")]
     public float AmpPx { get; set; } = 5;
 
@@ -183,6 +186,12 @@ public sealed class BreathConfig
 
     [JsonPropertyName("period_ms")]
     public float PeriodMs { get; set; } = 3200;
+
+    [JsonPropertyName("head_cut_y")]
+    public float HeadCutY { get; set; } = 520;
+
+    [JsonPropertyName("head_overlap_px")]
+    public float HeadOverlapPx { get; set; } = 40;
 }
 
 public sealed class BounceConfig

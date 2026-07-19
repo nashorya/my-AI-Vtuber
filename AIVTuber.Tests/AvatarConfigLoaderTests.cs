@@ -16,6 +16,9 @@ public class AvatarConfigLoaderTests
         Assert.True(pack.States.ContainsKey("blink"));
         Assert.NotEmpty(pack.MouthSync.Levels);
         Assert.True(pack.Stickers.Items.ContainsKey("sweat_laugh"));
+        Assert.Equal("head", pack.MotionLayer.Breath.Target);
+        Assert.Equal(520f, pack.MotionLayer.Breath.HeadCutY);
+        Assert.Equal(40f, pack.MotionLayer.Breath.HeadOverlapPx);
     }
 
     [Fact]
@@ -34,6 +37,7 @@ public class AvatarConfigLoaderTests
         var pack = AvatarConfigLoader.Load(Path.Combine(Path.GetTempPath(), "no-avatar-" + Guid.NewGuid()));
         Assert.Equal("dev_placeholder", pack.Meta.Name);
         Assert.Contains("neutral", pack.States.Keys);
+        Assert.Equal("body", pack.MotionLayer.Breath.Target);
     }
 
     private static string FindAvatarAssets()

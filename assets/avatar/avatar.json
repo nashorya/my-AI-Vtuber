@@ -40,7 +40,8 @@
   },
 
   "motion_layer": {
-    "breath":  { "amp_px": 5, "scale_amp": 0.012, "period_ms": 3200 },
+    "breath":  { "target": "head", "amp_px": 2, "scale_amp": 0, "period_ms": 3200,
+                  "head_cut_y": 520, "head_overlap_px": 40 },
     "bounce":  { "comment": "说话弹跳,由RMS驱动", "max_px": 14, "attack_ms": 40, "release_ms": 180 },
     "drift":   { "comment": "微漂移仅保留上下;水平关闭避免整身左右晃", "amp_px": 0, "speed": 0.3 },
     "sway":    { "comment": "整图旋转摆动已关(amp_deg=0)。歪头需头身分层,未做", "amp_deg": 0, "period_ms": 5200 },
