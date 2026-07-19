@@ -209,15 +209,21 @@ public partial class AvatarWindow : Window
     private void OnRendering(object? sender, EventArgs e)
     {
         var args = (RenderingEventArgs)e;
-        double deltaMs;
-        if (_lastRenderTime == TimeSpan.Zero)
-            deltaMs = 16.67;
-        else
-            deltaMs = (args.RenderingTime - _lastRenderTime).TotalMilliseconds;
+        // CompositionTarget.Rendering can fire multiple times with the same RenderingTime
+        // in one frame. deltaMs==0 must skip — substituting 16.67 would advance the state
+        // machine / motion engine an extra "frame" and looks like random speed jitter.
+        if (_lastRenderTime != TimeSpan.Zero && args.RenderingTime == _lastRenderTime)
+            return;
+
+        double deltaMs = _lastRenderTime == TimeSpan.Zero
+            ? 16.67
+            : (args.RenderingTime - _lastRenderTime).TotalMilliseconds;
         _lastRenderTime = args.RenderingTime;
 
-        if (deltaMs <= 0 || deltaMs > 250)
-            deltaMs = 16.67;
+        if (deltaMs <= 0)
+            return;
+        if (deltaMs > 250)
+            deltaMs = 16.67; // hitch clamp only — not for zero-delta re-entries
 
         var sample = _driver.Sample(deltaMs);
         ApplyBody(sample, deltaMs);
