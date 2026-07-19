@@ -99,7 +99,7 @@ public sealed class MotionEngine
             Math.Sin(t * 4.11 + 2.1) * 0.2) * _cfg.Drift.AmpPx;
 
         // Sway = whole-image rotation about foot pivot. Disabled when amp_deg is 0.
-        // True head-tilt (歪头) still needs an articulated mask; the breath split is rectangular.
+        // True head-tilt (歪头) needs a separate head layer — not implemented in v0.1.
         var swayPeriod = Math.Max(1f, _cfg.Sway.PeriodMs);
         var swayPhase = (_timeSec * 1000.0 / swayPeriod) * Math.PI * 2.0;
         var rotation = (float)(Math.Sin(swayPhase) * _cfg.Sway.AmpDeg);
@@ -129,13 +129,11 @@ public sealed class MotionEngine
 
         return new MotionFrame(
             OffsetX: shakeX, // only one-shot emotion shake; no idle horizontal drift
-            OffsetY: bounceY + driftY + jumpY + _sinkPx,
+            OffsetY: breathY + bounceY + driftY + jumpY + _sinkPx,
             ScaleX: 1f,
-            ScaleY: 1f,
+            ScaleY: breathScaleY,
             RotationDeg: rotation,
-            Alpha: 1f,
-            BreathOffsetY: breathY,
-            BreathScaleY: breathScaleY);
+            Alpha: 1f);
     }
 
     /// <summary>Expose smoothed RMS for tests.</summary>
@@ -152,6 +150,4 @@ public readonly record struct MotionFrame(
     float ScaleX,
     float ScaleY,
     float RotationDeg,
-    float Alpha,
-    float BreathOffsetY,
-    float BreathScaleY);
+    float Alpha);

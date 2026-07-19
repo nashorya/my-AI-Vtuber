@@ -30,23 +30,17 @@ public partial class AvatarWindow : Window
     private double _placeholderAccumMs;
     private bool _usePlaceholderSheet;
     private BitmapScalingMode _scalingMode = BitmapScalingMode.Fant;
-    private readonly bool _headOnlyBreath;
 
     public AvatarWindow(PixelAvatarDriver driver, AvatarRuntimeConfig runtimeCfg)
     {
         InitializeComponent();
         _driver = driver;
         _runtimeCfg = runtimeCfg;
-        _headOnlyBreath = string.Equals(
-            driver.Pack.MotionLayer.Breath.Target,
-            "head",
-            StringComparison.OrdinalIgnoreCase);
 
         TitleText.Text = driver.Pack.Meta.Name;
         ApplyWindowChrome();
         PreloadAssets();
         ApplyScalingMode();
-        ConfigureBreathLayers();
 
         Loaded += (_, _) => StartRendering();
         Closed += (_, _) => StopRendering();
@@ -128,61 +122,17 @@ public partial class AvatarWindow : Window
 
         // Seed first frame
         if (_usePlaceholderSheet && _placeholderLoop.Count > 0)
-            SetPrimarySource(_placeholderLoop[0]);
+            BodyImageA.Source = _placeholderLoop[0];
         else if (_bodyFrames.TryGetValue(AvatarStateMachine.Neutral, out var neutral))
-            SetPrimarySource(neutral);
+            BodyImageA.Source = neutral;
         else if (_bodyFrames.Count > 0)
-            SetPrimarySource(_bodyFrames.Values.First());
+            BodyImageA.Source = _bodyFrames.Values.First();
 
         // Pivot: RenderTransformOrigin is already foot-center (0.5, 1).
         // Fine-tune if pack pivot is not dead-center horizontally.
         var canvasW = Math.Max(1, pack.Meta.Canvas.Width);
         var pivotX = pack.Meta.Pivot.X / canvasW;
         BodyLayer.RenderTransformOrigin = new Point(Math.Clamp(pivotX, 0, 1), 1.0);
-    }
-
-    private void ConfigureBreathLayers()
-    {
-        var target = _driver.Pack.MotionLayer.Breath.Target;
-        if (!_headOnlyBreath)
-        {
-            HeadLayer.Visibility = Visibility.Collapsed;
-            BodyClipLayer.Clip = null;
-            if (!string.Equals(target, "body", StringComparison.OrdinalIgnoreCase))
-                DebugLog.Write($"[AvatarWindow] unknown breath target '{target}' -> body");
-            return;
-        }
-
-        HeadLayer.Visibility = Visibility.Visible;
-        BodyLayer.SizeChanged += (_, _) => UpdateBreathClips();
-        Loaded += (_, _) => UpdateBreathClips();
-    }
-
-    private void UpdateBreathClips()
-    {
-        if (!_headOnlyBreath) return;
-
-        var width = BodyLayer.ActualWidth;
-        var height = BodyLayer.ActualHeight;
-        if (width <= 0 || height <= 0) return;
-
-        var canvasHeight = Math.Max(1f, _driver.Pack.Meta.Canvas.Height);
-        var breath = _driver.Pack.MotionLayer.Breath;
-        var cutY = Math.Clamp(breath.HeadCutY, 0f, canvasHeight);
-        var overlap = Math.Clamp(breath.HeadOverlapPx, 0f, cutY);
-        var scaleY = height / canvasHeight;
-        var headEnd = cutY * scaleY;
-        var bodyStart = (cutY - overlap) * scaleY;
-
-        HeadLayer.Clip = new RectangleGeometry(new Rect(0, 0, width, headEnd));
-        BodyClipLayer.Clip = new RectangleGeometry(
-            new Rect(0, bodyStart, width, Math.Max(0, height - bodyStart)));
-    }
-
-    private void SetPrimarySource(ImageSource source)
-    {
-        BodyImageA.Source = source;
-        HeadImageA.Source = source;
     }
 
     private void LoadPlaceholderSheet(string path)
@@ -226,8 +176,6 @@ public partial class AvatarWindow : Window
 
         RenderOptions.SetBitmapScalingMode(BodyImageA, _scalingMode);
         RenderOptions.SetBitmapScalingMode(BodyImageB, _scalingMode);
-        RenderOptions.SetBitmapScalingMode(HeadImageA, _scalingMode);
-        RenderOptions.SetBitmapScalingMode(HeadImageB, _scalingMode);
         RenderOptions.SetBitmapScalingMode(StickerImage, BitmapScalingMode.HighQuality);
     }
 
@@ -292,7 +240,7 @@ public partial class AvatarWindow : Window
             // Dev sheet: loop idle frames for "alive" feel. Prefer a real sprite if one loaded for this state.
             if (_bodyFrames.TryGetValue(state, out var stateFrame))
             {
-                SetPrimarySource(stateFrame);
+                BodyImageA.Source = stateFrame;
             }
             else
             {
@@ -302,13 +250,11 @@ public partial class AvatarWindow : Window
                 {
                     _placeholderAccumMs = 0;
                     _placeholderIndex = (_placeholderIndex + 1) % _placeholderLoop.Count;
-                    SetPrimarySource(_placeholderLoop[_placeholderIndex]);
+                    BodyImageA.Source = _placeholderLoop[_placeholderIndex];
                 }
             }
             BodyImageA.Opacity = 1;
             BodyImageB.Opacity = 0;
-            HeadImageA.Opacity = 1;
-            HeadImageB.Opacity = 0;
             _lastBodyState = state;
             return;
         }
@@ -325,21 +271,15 @@ public partial class AvatarWindow : Window
         {
             BodyImageB.Source = prev;
             BodyImageA.Source = current;
-            HeadImageB.Source = prev;
-            HeadImageA.Source = current;
             BodyImageA.Opacity = sample.State.FadeT;
             BodyImageB.Opacity = 1f - sample.State.FadeT;
-            HeadImageA.Opacity = sample.State.FadeT;
-            HeadImageB.Opacity = 1f - sample.State.FadeT;
         }
         else
         {
             if (!string.Equals(_lastBodyState, state, StringComparison.OrdinalIgnoreCase))
-                SetPrimarySource(current);
+                BodyImageA.Source = current;
             BodyImageA.Opacity = 1;
             BodyImageB.Opacity = 0;
-            HeadImageA.Opacity = 1;
-            HeadImageB.Opacity = 0;
         }
 
         _lastBodyState = state;
@@ -349,21 +289,18 @@ public partial class AvatarWindow : Window
     private void ApplyMotion(MotionFrame m)
     {
         var ox = m.OffsetX;
-        var oy = _headOnlyBreath ? m.OffsetY : m.OffsetY + m.BreathOffsetY;
-        var headY = _headOnlyBreath ? m.BreathOffsetY : 0f;
+        var oy = m.OffsetY;
         if (_runtimeCfg.SnapMotionToPixels)
         {
             ox = MathF.Round(ox);
             oy = MathF.Round(oy);
-            headY = MathF.Round(headY);
         }
 
         BodyTranslate.X = ox;
         BodyTranslate.Y = oy;
         BodyScale.ScaleX = m.ScaleX;
-        BodyScale.ScaleY = _headOnlyBreath ? m.ScaleY : m.ScaleY * m.BreathScaleY;
+        BodyScale.ScaleY = m.ScaleY;
         BodyRotate.Angle = m.RotationDeg;
-        HeadTranslate.Y = headY;
         // m.Alpha reserved for global fades; body cross-fade uses Image opacity.
     }
 
