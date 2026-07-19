@@ -16,6 +16,8 @@ public class AvatarConfigLoaderTests
         Assert.True(pack.States.ContainsKey("blink"));
         Assert.NotEmpty(pack.MouthSync.Levels);
         Assert.True(pack.Stickers.Items.ContainsKey("sweat_laugh"));
+        Assert.Equal(0f, pack.MotionLayer.Breath.AmpPx);
+        Assert.Equal(0f, pack.MotionLayer.Breath.ScaleAmp);
     }
 
     [Fact]
