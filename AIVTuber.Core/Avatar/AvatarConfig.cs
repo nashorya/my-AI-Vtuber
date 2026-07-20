@@ -21,6 +21,11 @@ public sealed class AvatarPackConfig
 
     [JsonPropertyName("stickers")]
     public StickersConfig Stickers { get; set; } = new();
+
+    /// <summary>Optional head/body layer split for head-tilt support (v0.2+). When null or
+    /// Enabled=false, the renderer falls back to the single-sprite mode from v0.1.</summary>
+    [JsonPropertyName("layers")]
+    public LayersConfig? Layers { get; set; }
 }
 
 public sealed class AvatarMeta
@@ -120,6 +125,11 @@ public sealed class MotionOverrideDef
 
     [JsonPropertyName("shake")]
     public ShakeDef? Shake { get; set; }
+
+    /// <summary>Optional head-tilt angle (degrees) applied while this emotion is active.
+    /// v0.2+. Null = leave tilt unchanged.</summary>
+    [JsonPropertyName("tilt_deg")]
+    public float? TiltDeg { get; set; }
 }
 
 public sealed class ShakeDef
@@ -171,10 +181,18 @@ public sealed class MotionLayerConfig
 
     [JsonPropertyName("listening")]
     public ListeningConfig Listening { get; set; } = new();
+
+    /// <summary>Head-tilt spring parameters. Drives the head layer's rotation target
+    /// (SetListening, emotion override). v0.2+.</summary>
+    [JsonPropertyName("tilt")]
+    public TiltConfig Tilt { get; set; } = new();
 }
 
 public sealed class BreathConfig
 {
+    /// <summary>DEPRECATED (v0.2). Breath is now pure ScaleY oscillation; any Y translation
+    /// would cause overlap/gaps. Kept for backward-compat in older avatar.json files but
+    /// MotionEngine forces this to 0. Use <see cref="ScaleAmp"/> instead.</summary>
     [JsonPropertyName("amp_px")]
     public float AmpPx { get; set; } = 5;
 
@@ -195,6 +213,11 @@ public sealed class BounceConfig
 
     [JsonPropertyName("release_ms")]
     public float ReleaseMs { get; set; } = 180;
+
+    /// <summary>RMS-to-bounce multiplier. Higher = more bounce for the same RMS.
+    /// Replaces the previously-hardcoded 4.0 constant (v0.2: externally configurable).</summary>
+    [JsonPropertyName("gain")]
+    public float Gain { get; set; } = 4.0f;
 
     [JsonPropertyName("comment")]
     public string? Comment { get; set; }
@@ -272,6 +295,56 @@ public sealed class StickerItemDef
 
     [JsonPropertyName("scale")]
     public float Scale { get; set; } = 1f;
+}
+
+/// <summary>Head/body layer split configuration (v0.2+). When Enabled and assets exist,
+/// the renderer composites a single body.png with per-expression head sprites and applies
+/// head-tilt rotation about <see cref="NeckPivot"/>. Falls back to single-sprite mode otherwise.</summary>
+public sealed class LayersConfig
+{
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; }
+
+    /// <summary>Body sprite path relative to assets dir (e.g. "layered/body.png"). Single image,
+    /// shared across all expressions; never changes during expression switches.</summary>
+    [JsonPropertyName("body")]
+    public string Body { get; set; } = "";
+
+    /// <summary>Directory (relative to assets dir) containing head sprites named identically to
+    /// the base names in <see cref="AvatarStateDef.File"/> (e.g. gen_00.png). Trailing slash optional.</summary>
+    [JsonPropertyName("head_dir")]
+    public string HeadDir { get; set; } = "layered/head/";
+
+    /// <summary>Y coordinate (in pack canvas space) where the head was cut from the body.
+    /// Informational; the rendering uses <see cref="NeckPivot"/> for the rotation anchor.</summary>
+    [JsonPropertyName("cut_y")]
+    public int CutY { get; set; }
+
+    /// <summary>Pivot (pack canvas space) the head rotates about. Typically the neck center.</summary>
+    [JsonPropertyName("neck_pivot")]
+    public AvatarPivot NeckPivot { get; set; } = new() { X = 627, Y = 500 };
+
+    [JsonPropertyName("comment")]
+    public string? Comment { get; set; }
+
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
+}
+
+/// <summary>Head-tilt spring parameters (v0.2+). Drives a second-order spring on the head layer.</summary>
+public sealed class TiltConfig
+{
+    /// <summary>Soft cap on tilt magnitude (degrees). Spring target is clamped to +-this.</summary>
+    [JsonPropertyName("max_deg")]
+    public float MaxDeg { get; set; } = 6f;
+
+    /// <summary>Spring stiffness (omega^2). Higher = snappier. ~120 feels natural.</summary>
+    [JsonPropertyName("stiffness")]
+    public float Stiffness { get; set; } = 120f;
+
+    /// <summary>Spring damping (2*zeta*omega). Higher = less overshoot. ~14 allows slight overshoot.</summary>
+    [JsonPropertyName("damping")]
+    public float Damping { get; set; } = 14f;
 }
 
 /// <summary>Loads avatar.json and optionally falls back to a minimal neutral-only pack.</summary>

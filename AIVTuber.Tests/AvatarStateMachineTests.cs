@@ -180,6 +180,27 @@ public class AvatarStateMachineTests
     }
 
     [Fact]
+    public void Blink_IntervalScale_DefaultIsOne_NoEffect()
+    {
+        // Default scale 1.0 must leave the interval unchanged.
+        var pack = SamplePack();
+        pack.States["blink"].Auto = new AutoBlinkDef
+        {
+            IntervalMs = [2000, 2000],
+            DurationMs = 80,
+            DoubleBlinkChance = 0,
+        };
+        var sm = new AvatarStateMachine(pack, rng: new Random(42));
+        // No SetBlinkIntervalScale call — default 1.0.
+        var sawBlinkEarly = false;
+        for (var t = 0; t < 1200; t += 20)
+        {
+            if (sm.Tick(20).BodyState == "blink") { sawBlinkEarly = true; break; }
+        }
+        Assert.False(sawBlinkEarly, "with default scale 1.0, no blink expected within 1.2s (interval=2000ms)");
+    }
+
+    [Fact]
     public void Fade_TransitionReportsFadeFromAndProgress()
     {
         var sm = new AvatarStateMachine(SamplePack(), rng: new Random(1));

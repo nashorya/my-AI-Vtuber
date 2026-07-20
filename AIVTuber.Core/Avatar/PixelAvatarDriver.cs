@@ -61,8 +61,11 @@ public sealed class PixelAvatarDriver : IAvatarController
 
     public void SetListening(bool userSpeaking)
     {
-        // Reserved for Realtime VAD listening pose — intentionally empty in v0.1.
-        _ = userSpeaking;
+        // v0.2 listening pose: tilt the head toward the configured listening angle and blink
+        // more frequently (concentration cue). Spring back + normal blink rate on release.
+        var listening = _pack.MotionLayer.Listening;
+        _motion.SetListeningTilt(userSpeaking ? listening.TiltDeg : 0f);
+        _sm.SetBlinkIntervalScale(userSpeaking ? listening.BlinkIntervalScale : 1.0);
     }
 
     public void ShowSticker(string stickerId) => _sm.ShowSticker(stickerId);

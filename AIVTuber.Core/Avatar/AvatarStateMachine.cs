@@ -36,6 +36,8 @@ public sealed class AvatarStateMachine
     private double _blinkCooldownMs;
     private double _blinkRemainingMs;
     private bool _pendingDoubleBlink;
+    // v0.2: scales the blink interval (e.g. 0.7 while listening → blinks more often).
+    private double _blinkIntervalScale = 1.0;
 
     // Fade
     private string _currentState = Neutral;
@@ -81,6 +83,14 @@ public sealed class AvatarStateMachine
 
     /// <summary>Thread-safe RMS ingest.</summary>
     public void OnRms(float rms) => Volatile.Write(ref _latestRms, Math.Clamp(rms, 0f, 2f));
+
+    /// <summary>Scales the random blink interval (v0.2). 1.0 = default; 0.7 = blink more often
+    /// (listening pose). Affects the NEXT scheduled blink, not the current countdown.</summary>
+    public void SetBlinkIntervalScale(double scale)
+    {
+        var clamped = Math.Clamp(scale, 0.1, 5.0);
+        lock (_lock) _blinkIntervalScale = clamped;
+    }
 
     public void SetEmotion(string emotion, TimeSpan? hold = null)
     {
@@ -412,8 +422,8 @@ public sealed class AvatarStateMachine
     private (int min, int max) BlinkIntervalMs()
     {
         if (_pack.States.TryGetValue(Blink, out var def) && def.Auto?.IntervalMs is { Length: >= 2 } iv)
-            return (iv[0], iv[1]);
-        return (2000, 6000);
+            return ((int)(iv[0] * _blinkIntervalScale), (int)(iv[1] * _blinkIntervalScale));
+        return ((int)(2000 * _blinkIntervalScale), (int)(6000 * _blinkIntervalScale));
     }
 
     private int BlinkDurationMs()

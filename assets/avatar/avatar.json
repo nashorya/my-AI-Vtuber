@@ -1,59 +1,213 @@
 {
   "meta": {
     "name": "蓝发女仆 v0.1",
-    "canvas": { "width": 1254, "height": 1254 },
-    "pivot": { "x": 627, "y": 1180, "comment": "脚底中心,旋转/缩放锚点" },
+    "canvas": {
+      "width": 1254,
+      "height": 1254
+    },
+    "pivot": {
+      "x": 627,
+      "y": 1180,
+      "comment": "脚底中心,旋转/缩放锚点"
+    },
     "note": "文件名保持gen_XX不改,状态映射只在本文件维护。带 _verify:true 的状态表示表情标注待人工确认,对照 contact_sheet.png(顺序gen_00~11,每行4张)核对,标错了改这里的file字段即可。"
   },
-
   "states": {
-    "neutral":    { "file": "sprites/gen_00.png", "category": "base",    "transition": { "type": "cut" } },
-    "blink":      { "file": "sprites/gen_03.png", "category": "base",    "transition": { "type": "cut" },
-                    "auto": { "interval_ms": [2000, 6000], "duration_ms": 120, "double_blink_chance": 0.15 } },
-
-    "mouth_half": { "file": "sprites/gen_01.png", "category": "mouth",   "transition": { "type": "cut" }, "_verify": true },
-    "mouth_open": { "file": "sprites/gen_02.png", "category": "mouth",   "transition": { "type": "cut" }, "_verify": true },
-
-    "happy":      { "file": "sprites/gen_04.png", "category": "emotion", "transition": { "type": "cut" }, "_verify": true,
-                    "motion_override": { "bounce_scale": 1.6 } },
-    "shy":        { "file": "sprites/gen_05.png", "category": "emotion", "transition": { "type": "fade", "ms": 150 }, "_verify": true },
-    "angry":      { "file": "sprites/gen_06.png", "category": "emotion", "transition": { "type": "cut" },
-                    "motion_override": { "shake": { "amp_px": 6, "freq_hz": 9, "duration_ms": 600 } } },
-    "upset":      { "file": "sprites/gen_07.png", "category": "emotion", "transition": { "type": "fade", "ms": 150 }, "_verify": true },
-    "surprised":  { "file": "sprites/gen_08.png", "category": "emotion", "transition": { "type": "cut" }, "_verify": true,
-                    "motion_override": { "jump_px": 18 } },
-    "sad":        { "file": "sprites/gen_09.png", "category": "emotion", "transition": { "type": "fade", "ms": 200 }, "_verify": true,
-                    "motion_override": { "breath_rate_scale": 0.6, "sink_px": 8 } },
-
-    "sleep":      { "file": "sprites/gen_11.png", "category": "special", "transition": { "type": "fade", "ms": 450 },
-                    "comment": "挂机专属,全身姿势不同,必须fade" }
+    "neutral": {
+      "file": "sprites/gen_00.png",
+      "category": "base",
+      "transition": {
+        "type": "cut"
+      }
+    },
+    "blink": {
+      "file": "sprites/gen_03.png",
+      "category": "base",
+      "transition": {
+        "type": "cut"
+      },
+      "auto": {
+        "interval_ms": [
+          2000,
+          6000
+        ],
+        "duration_ms": 120,
+        "double_blink_chance": 0.15
+      }
+    },
+    "mouth_half": {
+      "file": "sprites/gen_01.png",
+      "category": "mouth",
+      "transition": {
+        "type": "cut"
+      },
+      "_verify": true
+    },
+    "mouth_open": {
+      "file": "sprites/gen_02.png",
+      "category": "mouth",
+      "transition": {
+        "type": "cut"
+      },
+      "_verify": true
+    },
+    "happy": {
+      "file": "sprites/gen_04.png",
+      "category": "emotion",
+      "transition": {
+        "type": "cut"
+      },
+      "_verify": true,
+      "motion_override": {
+        "bounce_scale": 1.6
+      }
+    },
+    "shy": {
+      "file": "sprites/gen_05.png",
+      "category": "emotion",
+      "transition": {
+        "type": "fade",
+        "ms": 150
+      },
+      "_verify": true
+    },
+    "angry": {
+      "file": "sprites/gen_06.png",
+      "category": "emotion",
+      "transition": {
+        "type": "cut"
+      },
+      "motion_override": {
+        "shake": {
+          "amp_px": 6,
+          "freq_hz": 9,
+          "duration_ms": 600
+        }
+      }
+    },
+    "upset": {
+      "file": "sprites/gen_07.png",
+      "category": "emotion",
+      "transition": {
+        "type": "fade",
+        "ms": 150
+      },
+      "_verify": true
+    },
+    "surprised": {
+      "file": "sprites/gen_08.png",
+      "category": "emotion",
+      "transition": {
+        "type": "cut"
+      },
+      "_verify": true,
+      "motion_override": {
+        "jump_px": 18
+      }
+    },
+    "sad": {
+      "file": "sprites/gen_09.png",
+      "category": "emotion",
+      "transition": {
+        "type": "fade",
+        "ms": 200
+      },
+      "_verify": true,
+      "motion_override": {
+        "breath_rate_scale": 0.6,
+        "sink_px": 8
+      }
+    },
+    "sleep": {
+      "file": "sprites/gen_11.png",
+      "category": "special",
+      "transition": {
+        "type": "fade",
+        "ms": 450
+      },
+      "comment": "挂机专属,全身姿势不同,必须fade"
+    }
   },
-
   "mouth_sync": {
     "comment": "RMS三档口型,数值为归一化音量阈值,情绪期间锁定当前脸不切嘴",
     "levels": [
-      { "below": 0.06, "state": "neutral" },
-      { "below": 0.35, "state": "mouth_half" },
-      { "below": 1.01, "state": "mouth_open" }
+      {
+        "below": 0.06,
+        "state": "neutral"
+      },
+      {
+        "below": 0.35,
+        "state": "mouth_half"
+      },
+      {
+        "below": 1.01,
+        "state": "mouth_open"
+      }
     ],
     "hold_ms": 60
   },
-
   "motion_layer": {
-    "breath":  { "amp_px": 5, "scale_amp": 0.012, "period_ms": 3200 },
-    "bounce":  { "comment": "说话弹跳,由RMS驱动", "max_px": 14, "attack_ms": 40, "release_ms": 180 },
-    "drift":   { "comment": "微漂移仅保留上下;水平关闭避免整身左右晃", "amp_px": 0, "speed": 0.3 },
-    "sway":    { "comment": "整图旋转摆动已关(amp_deg=0)。歪头需头身分层,未做", "amp_deg": 0, "period_ms": 5200 },
-    "listening": { "comment": "Realtime VAD倾听歪头预留;SetListening 空实现,未接线", "tilt_deg": 5, "blink_interval_scale": 0.7 }
+    "breath": {
+      "scale_amp": 0.008,
+      "period_ms": 3200,
+      "comment": "仅纵向缩放,锚点 meta.pivot(脚底)。禁止位移,amp_px 已废弃"
+    },
+    "bounce": {
+      "comment": "说话弹跳,由RMS驱动",
+      "max_px": 14,
+      "attack_ms": 40,
+      "release_ms": 180,
+      "gain": 4.0
+    },
+    "drift": {
+      "comment": "Perlin微漂移",
+      "amp_px": 2.5,
+      "speed": 0.3
+    },
+    "sway": {
+      "comment": "整体轻微旋转摆动,一期用整图,二期换头部层",
+      "amp_deg": 2.5,
+      "period_ms": 5200
+    },
+    "listening": {
+      "comment": "Realtime VAD=用户说话中时的倾听姿态",
+      "tilt_deg": 5,
+      "blink_interval_scale": 0.7
+    },
+    "tilt": {
+      "max_deg": 6,
+      "stiffness": 120,
+      "damping": 14
+    }
   },
-
   "stickers": {
     "comment": "overlay通道,弹出于头部右上方,任意PNG即插即用",
-    "anchor": { "x": 940, "y": 260 },
+    "anchor": {
+      "x": 940,
+      "y": 260
+    },
     "default_duration_ms": 1800,
-    "animation": { "in": "pop", "out": "fade" },
+    "animation": {
+      "in": "pop",
+      "out": "fade"
+    },
     "items": {
-      "sweat_laugh": { "file": "stickers/sweat_laugh.png", "scale": 0.55 }
+      "sweat_laugh": {
+        "file": "stickers/sweat_laugh.png",
+        "scale": 0.55
+      }
     }
+  },
+  "layers": {
+    "enabled": true,
+    "comment": "头层切口 y=535(泡泡袖自 y≈550 起,不得下切);body.png = 535以上为AI补的头发填充、以下为原图身体。资产缺失时须回退单图层模式",
+    "body": "layered/body.png",
+    "head_dir": "layered/head/",
+    "cut_y": 535,
+    "neck_pivot": {
+      "x": 627,
+      "y": 500
+    },
+    "note": "头层切口 y=535(泡泡袖自 y≈550 起,不得下切);支点为颈部中心。头层文件名与 sprites/ 同名,状态映射复用 states 的 file 字段基名。"
   }
 }
