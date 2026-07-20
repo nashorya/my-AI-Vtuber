@@ -12,6 +12,9 @@
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- Avatar PNGs / config sit next to the exe on publish; also extract into the
+         single-file temp dir so AppContext.BaseDirectory can see them. -->
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 

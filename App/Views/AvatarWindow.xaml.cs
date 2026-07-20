@@ -53,6 +53,9 @@ public partial class AvatarWindow : Window
         PreloadAssets();
         ApplyScalingMode();
 
+        if (_usePlaceholderSheet || string.Equals(driver.Pack.Meta.Name, "dev_placeholder", StringComparison.OrdinalIgnoreCase))
+            TitleText.Text = "dev_placeholder（缺立绘，检查 assets/avatar）";
+
         _driver.AvatarConfigReloaded += OnAvatarConfigReloaded;
         Loaded += (_, _) => StartRendering();
         Closed += (_, _) =>

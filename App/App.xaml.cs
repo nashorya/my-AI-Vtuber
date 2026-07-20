@@ -1,5 +1,6 @@
 using System.Windows;
 using AIVTuber.App.Views;
+using AIVTuber.Core;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Runtime;
 using AIVTuber.Core.Ui;
@@ -38,7 +39,7 @@ public partial class App : Application
             args.SetObserved();
         };
 
-        var configPath = System.IO.Path.Combine(AppContext.BaseDirectory, "config.json");
+        var configPath = System.IO.Path.Combine(AppPaths.ContentRoot, "config.json");
         var configManager = new ConfigManager(configPath);
         var config = LoadConfigSafe(configManager, configPath);
         if (config is null)
@@ -49,7 +50,10 @@ public partial class App : Application
 
         var firstRun = FirstRunGuidance.NeedsGuidance(config);
 
-        _runtime = new BotRuntime(config, AppContext.BaseDirectory);
+        Console.WriteLine($"[App] content root: {AppPaths.ContentRoot}");
+        Console.WriteLine($"[App] BaseDirectory: {AppContext.BaseDirectory}");
+
+        _runtime = new BotRuntime(config, AppPaths.ContentRoot);
 
         // Always show the window — even with no keys — so the user can configure in the UI.
         // Then init in the background.
