@@ -18,7 +18,9 @@
     "app_id": "<your-asr-app-id>",
     "model": "",
     "local_asr_url": "http://localhost:8765",
-    "python_path": "sidecar/python/python.exe"
+    "python_path": "sidecar/python/python.exe",
+    "persist_connection": true,
+    "streaming": true
   },
   "llm": {
     "base_url": "https://api.deepseek.com",

@@ -1,4 +1,5 @@
 using AIVTuber.Core.Audio;
+using System.Threading.Channels;
 using AIVTuber.Core.Avatar;
 using AIVTuber.Core.Bot;
 using AIVTuber.Core.Config;
@@ -122,6 +123,18 @@ public sealed class BotRuntime : IAsyncDisposable
 
     // True while AI is speaking — loopback VAD feed is paused to prevent self-hearing.
     private volatile bool _loopbackVadMuted;
+
+    // Streaming-ASR channels: when AsrConfig.Streaming is true, each in-progress speech segment
+    // pushes its frames into one of these channels; the ASR client reads them as an
+    // IAsyncEnumerable. Lazily created on the first SpeechFrame, completed on SpeechDetected.
+    private Channel<byte[]>? _micSpeechChannel;
+    private Channel<byte[]>? _loopbackSpeechChannel;
+    private const int SpeechChannelCapacity = 64; // ~2s of 30ms frames
+    private static Channel<byte[]> NewSpeechChannel()
+        => Channel.CreateBounded<byte[]>(new BoundedChannelOptions(SpeechChannelCapacity)
+        {
+            FullMode = BoundedChannelFullMode.DropOldest // never block the audio capture thread
+        });
 
     // Minimum segment peak (0..1) to send loopback audio to ASR. Below this it's silence/noise,
     // and the local ASR fabricates phantom 对面 lines from it. Real speech is well above this.
@@ -388,7 +401,7 @@ public sealed class BotRuntime : IAsyncDisposable
         }
     }
 
-    private static IAsrClient CreateAsrClient(AsrConfig asr)
+    private static IAsrClient CreateAsrClient(AsrConfig asr, Action<Exception>? onError = null)
     {
         if (asr.Provider.ToLowerInvariant() is "local")
             return new LocalAsrClient(asr.LocalAsrUrl);
@@ -397,8 +410,8 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             // Qwen-ASR uses a different WebSocket protocol (OpenAI Realtime-style) at /realtime
             return !string.IsNullOrWhiteSpace(asr.Model) && asr.Model.StartsWith("qwen", StringComparison.OrdinalIgnoreCase)
-                ? new QwenAsrClient(asr)
-                : new DashScopeAsrClient(asr);
+                ? new QwenAsrClient(asr, onError)
+                : new DashScopeAsrClient(asr, onError);
         }
         return new AsrClient(
             asr.Provider.Contains("deepseek") ? $"https://{asr.Provider}" : $"https://api.{asr.Provider}.com",
@@ -422,7 +435,7 @@ public sealed class BotRuntime : IAsyncDisposable
         if (_asr is null || rebuild.HasFlag(RuntimeChange.RebuildAsr))
         {
             (_asr as IDisposable)?.Dispose();
-            _asr = CreateAsrClient(_config.Asr);
+            _asr = CreateAsrClient(_config.Asr, ex => PipelineError?.Invoke(this, $"[ASR连接] {ex.GetType().Name}: {ex.Message}"));
         }
         if (_llm is null || rebuild.HasFlag(RuntimeChange.RebuildLlm))
         {
@@ -553,23 +566,61 @@ public sealed class BotRuntime : IAsyncDisposable
         _mic.AudioFrameAvailable += (_, buf) => { if (!_micMuted) _vad.Feed(buf); };
         _mic.LevelUpdated += (_, level) => MicLevelUpdated?.Invoke(this, level);
         _mic.ErrorOccurred += (_, ex) => PipelineError?.Invoke(this, $"[麦克风] {ex.Message}");
-        _vad.SpeechDetected += async (_, seg) =>
+
+        if (_config.Asr.Streaming)
         {
-            var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
-            AIVTuber.Core.Diagnostics.DebugLog.Write(
-                $"[麦克风段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
-                $"峰值={peak:F3} micMuted={_micMuted}");
-            if (_micMuted) return;
-            if (peak < MicAsrMinPeak)
+            // Streaming path: lazily create a channel on the first frame of a new segment,
+            // push every frame, and complete the channel when the segment ends (SpeechDetected).
+            _vad.SpeechFrame += (_, frame) =>
             {
-                AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风段] 能量过低(<{MicAsrMinPeak})，跳过ASR");
-                return;
-            }
-            _stateTracker.InputStarted(Environment.TickCount64);
-            var history = _conversation.BuildMessages();
-            // Mic has highest priority: always interrupts (including any loopback processing)
-            await _orchestrator.ProcessSpeechAsync(seg, history, _config.Input.MicTemplate);
-        };
+                if (_micMuted) return;
+                _micSpeechChannel ??= NewSpeechChannel();
+                _micSpeechChannel.Writer.TryWrite(frame);
+            };
+            _vad.SpeechDetected += async (_, seg) =>
+            {
+                var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
+                AIVTuber.Core.Diagnostics.DebugLog.Write(
+                    $"[麦克风段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
+                    $"峰值={peak:F3} micMuted={_micMuted} streaming=true");
+                var channel = _micSpeechChannel;
+                _micSpeechChannel = null;
+                channel?.Writer.TryComplete();
+                if (_micMuted || peak < MicAsrMinPeak)
+                {
+                    if (peak < MicAsrMinPeak)
+                        AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风段] 能量过低(<{MicAsrMinPeak})，跳过ASR");
+                    return;
+                }
+                _stateTracker.InputStarted(Environment.TickCount64);
+                var history = _conversation.BuildMessages();
+                // Mic has highest priority: always interrupts (including any loopback processing)
+                var stream = channel is null
+                    ? System.Linq.AsyncEnumerable.Empty<byte[]>()
+                    : channel.Reader.ReadAllAsync();
+                await _orchestrator.ProcessSpeechStreamingAsync(stream, seg, history, _config.Input.MicTemplate);
+            };
+        }
+        else
+        {
+            _vad.SpeechDetected += async (_, seg) =>
+            {
+                var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
+                AIVTuber.Core.Diagnostics.DebugLog.Write(
+                    $"[麦克风段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
+                    $"峰值={peak:F3} micMuted={_micMuted}");
+                if (_micMuted) return;
+                if (peak < MicAsrMinPeak)
+                {
+                    AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风段] 能量过低(<{MicAsrMinPeak})，跳过ASR");
+                    return;
+                }
+                _stateTracker.InputStarted(Environment.TickCount64);
+                var history = _conversation.BuildMessages();
+                // Mic has highest priority: always interrupts (including any loopback processing)
+                await _orchestrator.ProcessSpeechAsync(seg, history, _config.Input.MicTemplate);
+            };
+        }
         try
         {
             _mic.Start();
@@ -610,29 +661,69 @@ public sealed class BotRuntime : IAsyncDisposable
             try
             {
                 _loopbackVad = new VadDetector(_config.Audio.VadAggressiveness, _config.Audio.PreSpeechPaddingMs, _config.Audio.PostSpeechSilenceMs);
-                _loopbackVad.SpeechDetected += async (_, seg) =>
+
+                if (_config.Asr.Streaming)
                 {
-                    var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
-                    AIVTuber.Core.Diagnostics.DebugLog.Write(
-                        $"[内录段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
-                        $"峰值={peak:F3} loopbackMuted={_loopbackVadMuted}");
-                    // Energy gate: the local ASR (Qwen) hallucinates plausible Chinese from silence/
-                    // near-silent noise. Real speech peaks ~0.4+, hallucination-prone segments ≤0.02.
-                    // Drop low-energy segments so they never reach ASR and get mislabeled as 对面.
-                    if (peak < LoopbackAsrMinPeak)
+                    _loopbackVad.SpeechFrame += (_, frame) =>
                     {
-                        AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
-                        return;
-                    }
-                    var tagged = new AIVTuber.Core.Audio.SpeechSegment
-                    {
-                        AudioData = seg.AudioData,
-                        StartTime = seg.StartTime,
-                        EndTime = seg.EndTime,
-                        Source = AIVTuber.Core.Audio.AudioSource.Loopback,
+                        if (_loopbackVadMuted) return;
+                        _loopbackSpeechChannel ??= NewSpeechChannel();
+                        _loopbackSpeechChannel.Writer.TryWrite(frame);
                     };
-                    await _orchestrator.ProcessLoopbackSpeechAsync(tagged, _conversation.BuildMessages(), _config.Input.LoopbackTemplate);
-                };
+                    _loopbackVad.SpeechDetected += async (_, seg) =>
+                    {
+                        var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
+                        AIVTuber.Core.Diagnostics.DebugLog.Write(
+                            $"[内录段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
+                            $"峰值={peak:F3} loopbackMuted={_loopbackVadMuted} streaming=true");
+                        var channel = _loopbackSpeechChannel;
+                        _loopbackSpeechChannel = null;
+                        channel?.Writer.TryComplete();
+                        if (peak < LoopbackAsrMinPeak)
+                        {
+                            AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
+                            return;
+                        }
+                        var tagged = new AIVTuber.Core.Audio.SpeechSegment
+                        {
+                            AudioData = seg.AudioData,
+                            StartTime = seg.StartTime,
+                            EndTime = seg.EndTime,
+                            Source = AIVTuber.Core.Audio.AudioSource.Loopback,
+                        };
+                        var stream = channel is null
+                            ? System.Linq.AsyncEnumerable.Empty<byte[]>()
+                            : channel.Reader.ReadAllAsync();
+                        await _orchestrator.ProcessLoopbackSpeechStreamingAsync(
+                            stream, tagged, _conversation.BuildMessages(), _config.Input.LoopbackTemplate);
+                    };
+                }
+                else
+                {
+                    _loopbackVad.SpeechDetected += async (_, seg) =>
+                    {
+                        var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
+                        AIVTuber.Core.Diagnostics.DebugLog.Write(
+                            $"[内录段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
+                            $"峰值={peak:F3} loopbackMuted={_loopbackVadMuted}");
+                        // Energy gate: the local ASR (Qwen) hallucinates plausible Chinese from silence/
+                        // near-silent noise. Real speech peaks ~0.4+, hallucination-prone segments ≤0.02.
+                        // Drop low-energy segments so they never reach ASR and get mislabeled as 对面.
+                        if (peak < LoopbackAsrMinPeak)
+                        {
+                            AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
+                            return;
+                        }
+                        var tagged = new AIVTuber.Core.Audio.SpeechSegment
+                        {
+                            AudioData = seg.AudioData,
+                            StartTime = seg.StartTime,
+                            EndTime = seg.EndTime,
+                            Source = AIVTuber.Core.Audio.AudioSource.Loopback,
+                        };
+                        await _orchestrator.ProcessLoopbackSpeechAsync(tagged, _conversation.BuildMessages(), _config.Input.LoopbackTemplate);
+                    };
+                }
 
                 if (!string.IsNullOrWhiteSpace(_config.Audio.LoopbackProcessName))
                 {

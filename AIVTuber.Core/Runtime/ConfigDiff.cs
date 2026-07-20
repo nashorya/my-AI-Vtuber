@@ -45,7 +45,9 @@ public static class ConfigDiff
 
         if (a.Asr.Provider != b.Asr.Provider || a.Asr.ApiKey != b.Asr.ApiKey ||
             a.Asr.AppId != b.Asr.AppId || a.Asr.Model != b.Asr.Model ||
-            a.Asr.LocalAsrUrl != b.Asr.LocalAsrUrl || a.Asr.PythonPath != b.Asr.PythonPath)
+            a.Asr.LocalAsrUrl != b.Asr.LocalAsrUrl || a.Asr.PythonPath != b.Asr.PythonPath ||
+            a.Asr.PersistConnection != b.Asr.PersistConnection ||
+            a.Asr.Streaming != b.Asr.Streaming)
             c |= RuntimeChange.RebuildAsr;
 
         if (a.Tts.Provider != b.Tts.Provider || a.Tts.ApiKey != b.Tts.ApiKey ||
