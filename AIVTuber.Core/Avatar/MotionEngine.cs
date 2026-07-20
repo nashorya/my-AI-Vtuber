@@ -6,7 +6,7 @@ namespace AIVTuber.Core.Avatar;
 /// </summary>
 public sealed class MotionEngine
 {
-    private readonly MotionLayerConfig _cfg;
+    private MotionLayerConfig _cfg;
 
     private double _timeSec;
     private float _smoothedRms;
@@ -24,9 +24,28 @@ public sealed class MotionEngine
     private float _jumpDurationMs = 280f;
     private float _jumpElapsedMs = float.MaxValue;
 
+    // Head-tilt spring (v0.2). Two independent target contributors:
+    //   - emotion tilt (transient, cleared when emotion ends)
+    //   - listening tilt (persistent while SetListening(true))
+    // Effective target = emotionTilt ?? listeningTilt ?? 0. Emotion wins when set.
+    private readonly Spring1D _tiltSpring = new();
+    private float _emotionTiltTarget;   // 0 when no emotion override
+    private bool _hasEmotionTilt;
+    private float _listeningTiltTarget;
+    private bool _listening;
+
     public MotionEngine(MotionLayerConfig? config = null)
     {
         _cfg = config ?? new MotionLayerConfig();
+    }
+
+    /// <summary>Hot-reload motion params (breath/bounce/tilt/…). Preserves runtime state
+    /// (_timeSec, smoothed RMS, tilt spring position/velocity).</summary>
+    public void UpdateConfig(MotionLayerConfig config)
+    {
+        _cfg = config ?? new MotionLayerConfig();
+        // Refresh spring coeffs against the current target with new stiffness/damping.
+        UpdateTiltTarget();
     }
 
     /// <summary>Latest RMS (0..~1). Safe to call from the audio thread.</summary>
@@ -53,6 +72,34 @@ public sealed class MotionEngine
             _jumpElapsedMs = 0;
             _jumpDurationMs = 280f;
         }
+
+        // Emotion tilt override (v0.2). Clamped to the configured max.
+        if (ov?.TiltDeg is { } tiltDeg)
+        {
+            _emotionTiltTarget = Math.Clamp(tiltDeg, -_cfg.Tilt.MaxDeg, _cfg.Tilt.MaxDeg);
+            _hasEmotionTilt = true;
+        }
+        else
+        {
+            _emotionTiltTarget = 0;
+            _hasEmotionTilt = false;
+        }
+        UpdateTiltTarget();
+    }
+
+    /// <summary>Head-tilt angle for listening pose (v0.2). Set by PixelAvatarDriver.SetListening.</summary>
+    public void SetListeningTilt(float tiltDeg)
+    {
+        _listeningTiltTarget = Math.Clamp(tiltDeg, -_cfg.Tilt.MaxDeg, _cfg.Tilt.MaxDeg);
+        _listening = Math.Abs(tiltDeg) > 0.0001f;
+        UpdateTiltTarget();
+    }
+
+    private void UpdateTiltTarget()
+    {
+        // Emotion wins over listening when set; otherwise listening; otherwise 0.
+        var target = _hasEmotionTilt ? _emotionTiltTarget : (_listening ? _listeningTiltTarget : 0f);
+        _tiltSpring.SetTarget(target, _cfg.Tilt.Stiffness, _cfg.Tilt.Damping);
     }
 
     /// <summary>Clear persistent overrides (sink / bounce / breath scale) when emotion ends.</summary>
@@ -61,6 +108,10 @@ public sealed class MotionEngine
         _bounceScale = 1f;
         _breathRateScale = 1f;
         _sinkPx = 0f;
+        // Emotion tilt is transient — clear it so the spring returns to listening/0.
+        _hasEmotionTilt = false;
+        _emotionTiltTarget = 0;
+        UpdateTiltTarget();
     }
 
     public MotionFrame Tick(double deltaMs)
@@ -71,22 +122,25 @@ public sealed class MotionEngine
         _timeSec += deltaMs / 1000.0;
         var dt = (float)deltaMs;
 
-        // Bounce envelope (attack / release on RMS)
+        // Bounce envelope (attack / release on RMS) — frame-rate-independent exponential.
+        // alpha = 1 - exp(-dt/tau) is the standard form; linear dt/attack is unstable at large dt.
         var target = Volatile.Read(ref _latestRms);
-        var attack = Math.Max(1f, _cfg.Bounce.AttackMs);
-        var release = Math.Max(1f, _cfg.Bounce.ReleaseMs);
-        if (target > _smoothedRms)
-            _smoothedRms += (target - _smoothedRms) * Math.Min(1f, dt / attack);
-        else
-            _smoothedRms += (target - _smoothedRms) * Math.Min(1f, dt / release);
+        var attackTau = Math.Max(1f, _cfg.Bounce.AttackMs);
+        var releaseTau = Math.Max(1f, _cfg.Bounce.ReleaseMs);
+        var tau = target > _smoothedRms ? attackTau : releaseTau;
+        var alpha = 1f - MathF.Exp(-dt / tau);
+        _smoothedRms += (target - _smoothedRms) * alpha;
 
-        // Map RMS → upward bounce; factor keeps typical speech RMS near max_px.
-        var bounceY = -Math.Min(_cfg.Bounce.MaxPx, _smoothedRms * _cfg.Bounce.MaxPx * 4f) * _bounceScale;
+        // Map RMS → upward bounce. Gain is configurable (v0.2: replaces hardcoded 4.0).
+        var bounceY = -Math.Min(_cfg.Bounce.MaxPx, _smoothedRms * _cfg.Bounce.MaxPx * _cfg.Bounce.Gain) * _bounceScale;
 
         // Breath
         var period = Math.Max(1f, _cfg.Breath.PeriodMs / Math.Max(0.05f, _breathRateScale));
         var breathPhase = (_timeSec * 1000.0 / period) * Math.PI * 2.0;
-        var breathY = (float)(Math.Sin(breathPhase) * _cfg.Breath.AmpPx);
+        // Breath: pure vertical scale about the foot pivot. Y translation (AmpPx) is intentionally
+        // disabled in v0.2 — any translation causes upper body to overlap or gap the lower body.
+        // breathY = 0 keeps the feet pinned; ScaleY gives the torso-deformation look.
+        var breathY = 0f;
         var breathScaleY = 1f + (float)(Math.Sin(breathPhase) * _cfg.Breath.ScaleAmp);
 
         // Drift: stacked incommensurate sines ≈ Perlin.
@@ -127,13 +181,17 @@ public sealed class MotionEngine
             jumpY = -_jumpPx * 4f * u * (1f - u);
         }
 
+        // Advance the head-tilt spring (v0.2). Position is the live tilt angle in degrees.
+        _tiltSpring.Update(dt / 1000.0);
+
         return new MotionFrame(
             OffsetX: shakeX, // only one-shot emotion shake; no idle horizontal drift
             OffsetY: breathY + bounceY + driftY + jumpY + _sinkPx,
             ScaleX: 1f,
             ScaleY: breathScaleY,
             RotationDeg: rotation,
-            Alpha: 1f);
+            Alpha: 1f,
+            TiltDeg: (float)_tiltSpring.Position);
     }
 
     /// <summary>Expose smoothed RMS for tests.</summary>
@@ -150,4 +208,7 @@ public readonly record struct MotionFrame(
     float ScaleX,
     float ScaleY,
     float RotationDeg,
-    float Alpha);
+    float Alpha,
+    /// <summary>Head-layer tilt angle in degrees (v0.2+). Driven by a spring; 0 = upright.
+    /// Consumed only when the pack has a head layer (Layers.Enabled).</summary>
+    float TiltDeg = 0f);

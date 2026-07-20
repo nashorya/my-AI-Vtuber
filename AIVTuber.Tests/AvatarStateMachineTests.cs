@@ -180,6 +180,27 @@ public class AvatarStateMachineTests
     }
 
     [Fact]
+    public void Blink_IntervalScale_DefaultIsOne_NoEffect()
+    {
+        // Default scale 1.0 must leave the interval unchanged.
+        var pack = SamplePack();
+        pack.States["blink"].Auto = new AutoBlinkDef
+        {
+            IntervalMs = [2000, 2000],
+            DurationMs = 80,
+            DoubleBlinkChance = 0,
+        };
+        var sm = new AvatarStateMachine(pack, rng: new Random(42));
+        // No SetBlinkIntervalScale call — default 1.0.
+        var sawBlinkEarly = false;
+        for (var t = 0; t < 1200; t += 20)
+        {
+            if (sm.Tick(20).BodyState == "blink") { sawBlinkEarly = true; break; }
+        }
+        Assert.False(sawBlinkEarly, "with default scale 1.0, no blink expected within 1.2s (interval=2000ms)");
+    }
+
+    [Fact]
     public void Fade_TransitionReportsFadeFromAndProgress()
     {
         var sm = new AvatarStateMachine(SamplePack(), rng: new Random(1));
@@ -254,5 +275,78 @@ public class AvatarStateMachineTests
         var frame = sm.Tick(1);
         Assert.NotNull(frame.MotionOverride);
         Assert.Equal(1.6f, frame.MotionOverride!.BounceScale);
+    }
+
+    [Fact]
+    public void Tick_WithZeroDelta_DoesNotAdvanceBlinkTimer()
+    {
+        var pack = SamplePack();
+        pack.States["blink"].Auto = new AutoBlinkDef
+        {
+            IntervalMs = [1000, 1000],
+            DurationMs = 80,
+            DoubleBlinkChance = 0,
+        };
+        var sm = new AvatarStateMachine(pack, rng: new Random(1));
+        var before = sm.BlinkCooldownMs;
+        Assert.True(before > 0);
+
+        for (var i = 0; i < 50; i++)
+            sm.Tick(0);
+
+        Assert.Equal(before, sm.BlinkCooldownMs);
+        Assert.NotEqual("blink", sm.Tick(0).BodyState);
+    }
+
+    [Fact]
+    public void UpdatePack_ChangesBlinkInterval_OnNextSchedule()
+    {
+        var pack = SamplePack();
+        pack.States["blink"].Auto = new AutoBlinkDef
+        {
+            IntervalMs = [80, 80],
+            DurationMs = 40,
+            DoubleBlinkChance = 0,
+        };
+        var sm = new AvatarStateMachine(pack, rng: new Random(1));
+
+        // Reach first blink with the short interval.
+        var sawBlink = false;
+        for (var t = 0; t < 300; t += 10)
+        {
+            if (sm.Tick(10).BodyState == "blink")
+            {
+                sawBlink = true;
+                break;
+            }
+        }
+        Assert.True(sawBlink);
+
+        // Swap to a long interval before the blink ends (next ScheduleNextBlink picks it up).
+        var longPack = SamplePack();
+        longPack.States["blink"].Auto = new AutoBlinkDef
+        {
+            IntervalMs = [5000, 5000],
+            DurationMs = 40,
+            DoubleBlinkChance = 0,
+        };
+        sm.UpdatePack(longPack);
+
+        // Finish the active blink so ScheduleNextBlink runs with the new pack.
+        for (var t = 0; t < 100; t += 10)
+            sm.Tick(10);
+
+        Assert.True(sm.BlinkCooldownMs > 1000, $"expected long cooldown after UpdatePack, got {sm.BlinkCooldownMs}");
+
+        var earlyBlink = false;
+        for (var t = 0; t < 1000; t += 20)
+        {
+            if (sm.Tick(20).BodyState == "blink")
+            {
+                earlyBlink = true;
+                break;
+            }
+        }
+        Assert.False(earlyBlink, "blink interval should use updated pack (5000ms)");
     }
 }

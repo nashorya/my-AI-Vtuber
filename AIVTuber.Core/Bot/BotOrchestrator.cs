@@ -329,6 +329,95 @@ public sealed class BotOrchestrator : IDisposable
             }
         });
 
+    /// <summary>
+    /// Process a microphone speech segment with real-time streaming ASR: pushes audio chunks
+    /// to the ASR service as they arrive (via <see cref="IAsrClient.StreamRecognizeAsync"/>)
+    /// instead of waiting for the full VAD segment. <paramref name="meta"/> carries only
+    /// timestamps/source; audio comes from <paramref name="audioStream"/>.
+    /// </summary>
+    public Task ProcessSpeechStreamingAsync(
+        IAsyncEnumerable<byte[]> audioStream, SpeechSegment meta, List<Message> history, string micTemplate) =>
+        _coordinator.EnqueueAsync(InputSource.Microphone, async (envelope, ct) =>
+        {
+            _currentEmotion = null;
+            var pipelineStarted = false;
+            try
+            {
+                var result = await CollectStreamedAsync(audioStream, ct).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(result.Text) || !IsCurrent(envelope, ct)) return;
+                OnUserTranscript?.Invoke(this, result.Text);
+                if (_userOutputCommand is not null)
+                    QueueCommand(new RequestContext(envelope.Generation, ct), "[OBS] user subtitle",
+                        commandCt => _userOutputCommand(result.Text, commandCt));
+                if (result.Emotion is not null && IsCurrent(envelope, ct))
+                    OnUserEmotionDetected?.Invoke(this, result.Emotion);
+                pipelineStarted = true;
+                var annotated = AnnotateWithUserEmotion(result.Text, result.Emotion);
+                await RunStreamingPipelineAsync(
+                    history, micTemplate.Replace("{text}", annotated), envelope, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                ReportCurrentError(envelope.Generation, $"[ASR/Pipeline] {ex.GetType().Name}: {ex.Message}");
+            }
+            finally
+            {
+                if (!pipelineStarted && IsCurrent(envelope, ct, allowCancellation: true))
+                    OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
+            }
+        });
+
+    /// <summary>
+    /// Streaming variant of <see cref="ProcessLoopbackSpeechAsync"/>. Same priority semantics.
+    /// </summary>
+    public Task ProcessLoopbackSpeechStreamingAsync(
+        IAsyncEnumerable<byte[]> audioStream, SpeechSegment meta, List<Message> history, string loopbackTemplate) =>
+        _coordinator.EnqueueAsync(InputSource.Loopback, async (envelope, ct) =>
+        {
+            _currentEmotion = null;
+            var pipelineStarted = false;
+            try
+            {
+                var result = await CollectStreamedAsync(audioStream, ct).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(result.Text) || !IsCurrent(envelope, ct)) return;
+                OnLoopbackTranscript?.Invoke(this, result.Text);
+                pipelineStarted = true;
+                await RunStreamingPipelineAsync(
+                    history, loopbackTemplate.Replace("{text}", result.Text), envelope, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                ReportCurrentError(envelope.Generation, $"[Loopback/ASR] {ex.GetType().Name}: {ex.Message}");
+            }
+            finally
+            {
+                if (!pipelineStarted && IsCurrent(envelope, ct, allowCancellation: true))
+                    OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
+            }
+        });
+
+    /// <summary>
+    /// Drains a streaming ASR result and returns the final transcript + emotion.
+    /// DashScope streaming yields each finalized sentence separately; we concatenate them.
+    /// Emotion comes from the last non-null result (Qwen-ASR fills it).
+    /// </summary>
+    private async Task<AsrResult> CollectStreamedAsync(
+        IAsyncEnumerable<byte[]> audioStream, CancellationToken ct)
+    {
+        var transcript = new StringBuilder();
+        string? emotion = null;
+        await foreach (var r in _asr.StreamRecognizeAsync(audioStream, ct).ConfigureAwait(false))
+        {
+            if (!string.IsNullOrEmpty(r.Text))
+                transcript.Append(r.Text);
+            if (r.Emotion is not null)
+                emotion = r.Emotion;
+        }
+        return new AsrResult(transcript.ToString(), emotion);
+    }
+
     /// <summary>Process text directly (e.g., from danmaku). Interrupts ongoing processing.</summary>
     public Task ProcessTextAsync(string text, List<Message> history)
     {

@@ -49,6 +49,14 @@ public sealed class VadDetector : IDisposable
     /// </summary>
     public event EventHandler<SpeechSegment>? SpeechDetected;
 
+    /// <summary>
+    /// Fired for each audio frame while a speech segment is in progress (including the
+    /// post-speech silence tail before <see cref="SpeechDetected"/>). Use this to stream
+    /// frames to an ASR service in real time. Fires inside the VAD lock — handlers must
+    /// not block; hand frames off via a Channel.
+    /// </summary>
+    public event EventHandler<byte[]>? SpeechFrame;
+
     public VadDetector(
         int aggressiveness = 2,
         int preSpeechPaddingMs = 200,
@@ -124,10 +132,12 @@ public sealed class VadDetector : IDisposable
                     while (_preSpeechBuffer.TryDequeue(out var preFrame))
                     {
                         _currentSpeechFrames.Add(preFrame);
+                        SpeechFrame?.Invoke(this, preFrame);
                     }
                 }
 
                 _currentSpeechFrames.Add(frame);
+                SpeechFrame?.Invoke(this, frame);
                 _silenceFrames = 0;
             }
             else
@@ -136,6 +146,7 @@ public sealed class VadDetector : IDisposable
                 {
                     // Still collect frames during post-speech silence period
                     _currentSpeechFrames.Add(frame);
+                    SpeechFrame?.Invoke(this, frame);
 
                     _silenceFrames++;
                     var silenceMs = _silenceFrames * _frameDurationMs;

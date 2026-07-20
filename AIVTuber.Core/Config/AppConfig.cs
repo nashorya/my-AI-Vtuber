@@ -129,6 +129,14 @@ public sealed class AsrConfig
     public string LocalAsrUrl { get; set; } = "http://localhost:8765";
     /// <summary>Managed Python executable used to launch the packaged local ASR sidecar.</summary>
     public string PythonPath { get; set; } = "sidecar/python/python.exe";
+    /// <summary>When true, reuse a long-lived WebSocket across recognitions instead of opening a
+    /// fresh connection (with TLS+auth handshake) per call. Saves ~200-600ms per utterance.
+    /// Only applies to WebSocket-based providers (DashScope/Qwen). Default true.</summary>
+    public bool PersistConnection { get; set; } = true;
+    /// <summary>When true, stream audio frames to the ASR service while the user is still
+    /// speaking, instead of waiting for the full VAD segment. Returns incremental results.
+    /// Only applies to WebSocket-based providers (DashScope/Qwen). Default true.</summary>
+    public bool Streaming { get; set; } = true;
 }
 
 public sealed class LlmConfig

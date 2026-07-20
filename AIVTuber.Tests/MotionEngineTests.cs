@@ -13,20 +13,42 @@ public class MotionEngineTests
     };
 
     [Fact]
-    public void Breath_ProducesOscillatingY()
+    public void Breath_ProducesOscillatingScaleY()
     {
+        // v0.2: breath is pure vertical ScaleY oscillation about the foot pivot.
+        // Y translation was removed because it caused upper-body overlap with lower body.
         var eng = new MotionEngine(Cfg());
-        float? minY = null, maxY = null;
+        float minS = 2, maxS = 0;
         // Sample a full breath period in 16ms steps
         for (var i = 0; i < 3200 / 16; i++)
         {
             var f = eng.Tick(16);
-            minY = minY is null ? f.OffsetY : Math.Min(minY.Value, f.OffsetY);
-            maxY = maxY is null ? f.OffsetY : Math.Max(maxY.Value, f.OffsetY);
+            minS = Math.Min(minS, f.ScaleY);
+            maxS = Math.Max(maxS, f.ScaleY);
         }
-        Assert.NotNull(minY);
-        Assert.NotNull(maxY);
-        Assert.True(maxY - minY > 5, $"breath amplitude too small: {maxY - minY}");
+        var amp = maxS - minS;
+        // scale_amp default 0.012 → peak-to-peak ~0.024; assert a non-trivial oscillation.
+        Assert.True(amp > 0.01f, $"breath ScaleY amplitude too small: {amp}");
+    }
+
+    [Fact]
+    public void Breath_NoVerticalTranslation_AfterV02()
+    {
+        // Regression guard: Y translation in breath must stay 0 so feet never leave their pixel row.
+        // With RMS=0 (no bounce/jump/sink) and drift disabled, OffsetY must be exactly 0 throughout.
+        var cfg = new MotionLayerConfig
+        {
+            Breath = new BreathConfig { AmpPx = 5, ScaleAmp = 0.012f, PeriodMs = 3200 },
+            Bounce = new BounceConfig { MaxPx = 14, AttackMs = 40, ReleaseMs = 180, Gain = 4.0f },
+            Drift = new DriftConfig { AmpPx = 0, Speed = 0.3f },
+            Sway = new SwayConfig { AmpDeg = 0f, PeriodMs = 5200 },
+        };
+        var eng = new MotionEngine(cfg);
+        for (var i = 0; i < 3200 / 16; i++)
+        {
+            var f = eng.Tick(16);
+            Assert.Equal(0f, f.OffsetY);
+        }
     }
 
     [Fact]
@@ -77,6 +99,57 @@ public class MotionEngineTests
 
         // Bounce is negative Y (upward in screen space with Y-down WPF).
         Assert.True(loud < quiet, $"expected upward bounce, quiet={quiet} loud={loud}");
+    }
+
+    [Fact]
+    public void Bounce_RespectsGainConfig()
+    {
+        // v0.2: gain is now configurable. Higher gain → larger bounce for the same RMS.
+        // At RMS=0.05, MaxPx=14: low-gain(2) → 0.05*14*2=1.4 ; high-gain(8) → 0.05*14*8=5.6 (clamped by MaxPx).
+        var cfgLow = Cfg();
+        cfgLow.Bounce.Gain = 2.0f;
+        var cfgHigh = Cfg();
+        cfgHigh.Bounce.Gain = 8.0f;
+        // Disable drift so it does not pollute OffsetY.
+        cfgLow.Drift.AmpPx = 0;
+        cfgHigh.Drift.AmpPx = 0;
+
+        var engLow = new MotionEngine(cfgLow);
+        var engHigh = new MotionEngine(cfgHigh);
+        engLow.SetRms(0.05f);
+        engHigh.SetRms(0.05f);
+
+        // Let the envelope settle (attack=40ms).
+        for (var i = 0; i < 10; i++) { engLow.Tick(16); engHigh.Tick(16); }
+
+        var fLow = engLow.Tick(16);
+        var fHigh = engHigh.Tick(16);
+        // High-gain bounce should be more negative (larger upward offset).
+        Assert.True(fHigh.OffsetY < fLow.OffsetY,
+            $"high-gain bounce ({fHigh.OffsetY}) should exceed low-gain ({fLow.OffsetY})");
+    }
+
+    [Fact]
+    public void Bounce_ExponentialSmoothing_IsFrameRateIndependent()
+    {
+        // v0.2: envelope is now exponential (1 - exp(-dt/tau)). Same total elapsed time at
+        // different frame rates should reach ~the same smoothed value (unlike linear dt/attack).
+        var cfgA = Cfg(); cfgA.Drift.AmpPx = 0;
+        var cfgB = Cfg(); cfgB.Drift.AmpPx = 0;
+
+        var engA = new MotionEngine(cfgA); // 10 ticks @ 40ms = 400ms
+        var engB = new MotionEngine(cfgB); // 20 ticks @ 20ms = 400ms
+        engA.SetRms(1.0f);
+        engB.SetRms(1.0f);
+
+        for (var i = 0; i < 10; i++) engA.Tick(40);
+        for (var i = 0; i < 20; i++) engB.Tick(20);
+
+        var fA = engA.Tick(1);
+        var fB = engB.Tick(1);
+        // Allow a few percent drift from numerical differences; both should be near saturation.
+        Assert.True(Math.Abs(fA.OffsetY - fB.OffsetY) < 1.5f,
+            $"frame-rate dependent bounce: 10x40ms={fA.OffsetY} vs 20x20ms={fB.OffsetY}");
     }
 
     [Fact]
@@ -232,5 +305,81 @@ public class MotionEngineTests
     {
         var eng = new MotionEngine(Cfg());
         Assert.Equal(1f, eng.Tick(16).Alpha);
+    }
+
+    [Fact]
+    public void Tilt_SpringReachesListeningTarget()
+    {
+        var eng = new MotionEngine(Cfg());
+        eng.SetListeningTilt(5f);
+        for (var i = 0; i < 500; i++) eng.Tick(16);
+        var f = eng.Tick(1);
+        Assert.True(Math.Abs(f.TiltDeg - 5f) < 0.3f, $"tilt settled at {f.TiltDeg}, expected ~5");
+    }
+
+    [Fact]
+    public void Tilt_ClampsToConfiguredMax()
+    {
+        var cfg = Cfg();
+        cfg.Tilt.MaxDeg = 6f;
+        var eng = new MotionEngine(cfg);
+        eng.SetListeningTilt(100f);
+        for (var i = 0; i < 500; i++) eng.Tick(16);
+        var f = eng.Tick(1);
+        Assert.True(Math.Abs(f.TiltDeg - 6f) < 0.3f, $"tilt exceeded clamp: {f.TiltDeg}");
+    }
+
+    [Fact]
+    public void Tilt_EmotionOverride_BeatsListening()
+    {
+        var eng = new MotionEngine(Cfg());
+        eng.SetListeningTilt(5f);
+        for (var i = 0; i < 300; i++) eng.Tick(16);
+        eng.ApplyOverride(new MotionOverrideDef { TiltDeg = -3f });
+        for (var i = 0; i < 500; i++) eng.Tick(16);
+        var f = eng.Tick(1);
+        Assert.True(Math.Abs(f.TiltDeg - (-3f)) < 0.3f, $"emotion tilt lost: {f.TiltDeg}");
+    }
+
+    [Fact]
+    public void Tilt_ReturnsToListening_AfterEmotionEnds()
+    {
+        var eng = new MotionEngine(Cfg());
+        eng.SetListeningTilt(5f);
+        for (var i = 0; i < 300; i++) eng.Tick(16);
+        eng.ApplyOverride(new MotionOverrideDef { TiltDeg = -3f });
+        for (var i = 0; i < 300; i++) eng.Tick(16);
+        eng.ClearPersistentOverride();
+        for (var i = 0; i < 500; i++) eng.Tick(16);
+        var f = eng.Tick(1);
+        Assert.True(Math.Abs(f.TiltDeg - 5f) < 0.3f, $"did not return to listening: {f.TiltDeg}");
+    }
+
+    [Fact]
+    public void Tilt_StartsAtZero_WhenNoTarget()
+    {
+        var eng = new MotionEngine(Cfg());
+        Assert.Equal(0f, eng.Tick(16).TiltDeg);
+    }
+
+    [Fact]
+    public void UpdateConfig_ChangesBounceGain()
+    {
+        var cfg = Cfg();
+        cfg.Bounce.Gain = 1f;
+        cfg.Drift.AmpPx = 0;
+        cfg.Breath.ScaleAmp = 0;
+        cfg.Sway.AmpDeg = 0;
+        var eng = new MotionEngine(cfg);
+        eng.SetRms(1f);
+        for (var i = 0; i < 60; i++) eng.Tick(16);
+        var lowGain = eng.Tick(16).OffsetY;
+
+        cfg.Bounce.Gain = 8f;
+        eng.UpdateConfig(cfg);
+        var highGain = eng.Tick(16).OffsetY;
+
+        Assert.True(highGain < lowGain,
+            $"UpdateConfig gain not applied: lowGainY={lowGain} highGainY={highGain}");
     }
 }
