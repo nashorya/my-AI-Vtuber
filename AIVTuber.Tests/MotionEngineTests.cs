@@ -361,4 +361,25 @@ public class MotionEngineTests
         var eng = new MotionEngine(Cfg());
         Assert.Equal(0f, eng.Tick(16).TiltDeg);
     }
+
+    [Fact]
+    public void UpdateConfig_ChangesBounceGain()
+    {
+        var cfg = Cfg();
+        cfg.Bounce.Gain = 1f;
+        cfg.Drift.AmpPx = 0;
+        cfg.Breath.ScaleAmp = 0;
+        cfg.Sway.AmpDeg = 0;
+        var eng = new MotionEngine(cfg);
+        eng.SetRms(1f);
+        for (var i = 0; i < 60; i++) eng.Tick(16);
+        var lowGain = eng.Tick(16).OffsetY;
+
+        cfg.Bounce.Gain = 8f;
+        eng.UpdateConfig(cfg);
+        var highGain = eng.Tick(16).OffsetY;
+
+        Assert.True(highGain < lowGain,
+            $"UpdateConfig gain not applied: lowGainY={lowGain} highGainY={highGain}");
+    }
 }

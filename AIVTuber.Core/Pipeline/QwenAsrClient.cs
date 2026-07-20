@@ -133,19 +133,48 @@ public sealed class QwenAsrClient : IAsrClient, IDisposable
         }
         else
         {
+            // Buffer while streaming so a socket-error retry can replay (IAsyncEnumerable is single-pass).
+            var buffered = new List<byte[]>();
             try
             {
-                result = await StreamPooledAsync(audioStream, cancellationToken).ConfigureAwait(false);
+                result = await StreamPooledAsync(
+                    BufferingTee(audioStream, buffered, cancellationToken), cancellationToken)
+                    .ConfigureAwait(false);
             }
             catch (WebSocketException)
             {
                 _pool.Invalidate();
-                result = await StreamPooledAsync(audioStream, cancellationToken).ConfigureAwait(false);
+                result = await StreamPooledAsync(
+                    ReplayBuffered(buffered), cancellationToken).ConfigureAwait(false);
             }
         }
 
         if (result is { Text: not null } && !string.IsNullOrWhiteSpace(result.Text))
             yield return result;
+    }
+
+    private static async IAsyncEnumerable<byte[]> BufferingTee(
+        IAsyncEnumerable<byte[]> source,
+        List<byte[]> buffer,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (var chunk in source.WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            buffer.Add(chunk);
+            yield return chunk;
+        }
+    }
+
+    private static async IAsyncEnumerable<byte[]> ReplayBuffered(
+        IReadOnlyList<byte[]> buffer,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        foreach (var chunk in buffer)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return chunk;
+        }
+        await Task.CompletedTask.ConfigureAwait(false);
     }
 
     private async Task<AsrResult?> StreamPooledAsync(

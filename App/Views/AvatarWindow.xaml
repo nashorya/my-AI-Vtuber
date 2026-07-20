@@ -30,6 +30,26 @@
                    Stretch="Uniform"
                    Opacity="1"
                    IsHitTestVisible="False" />
+            <!-- Head layer (v0.3): independent tilt + neck follow; collapsed unless layers.enabled -->
+            <Grid x:Name="HeadLayer"
+                  Visibility="Collapsed"
+                  IsHitTestVisible="False"
+                  RenderTransformOrigin="0.5,0.4">
+                <Grid.RenderTransform>
+                    <TransformGroup>
+                        <RotateTransform x:Name="HeadTilt" Angle="0" />
+                        <TranslateTransform x:Name="HeadTranslate" X="0" Y="0" />
+                    </TransformGroup>
+                </Grid.RenderTransform>
+                <Image x:Name="HeadImageB"
+                       Stretch="Uniform"
+                       Opacity="0"
+                       IsHitTestVisible="False" />
+                <Image x:Name="HeadImageA"
+                       Stretch="Uniform"
+                       Opacity="1"
+                       IsHitTestVisible="False" />
+            </Grid>
         </Grid>
 
         <!-- Sticker overlay (canvas coords map to pack canvas, scaled to window) -->

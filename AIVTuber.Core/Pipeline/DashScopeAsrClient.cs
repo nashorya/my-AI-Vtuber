@@ -149,20 +149,50 @@ public sealed class DashScopeAsrClient : IAsrClient, IDisposable
         }
 
         List<AsrResult>? results = null;
+        // IAsyncEnumerable is single-pass: buffer while streaming so a socket-error retry
+        // can replay the same audio instead of getting an empty transcript.
+        var buffered = new List<byte[]>();
         try
         {
-            results = await StreamPooledAsync(audioStream, model, cancellationToken).ConfigureAwait(false);
+            results = await StreamPooledAsync(
+                BufferingTee(audioStream, buffered, cancellationToken), model, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (WebSocketException)
         {
             _pool.Invalidate();
-            results = await StreamPooledAsync(audioStream, model, cancellationToken).ConfigureAwait(false);
+            results = await StreamPooledAsync(
+                ReplayBuffered(buffered), model, cancellationToken).ConfigureAwait(false);
         }
 
         foreach (var r in results)
         {
             if (!string.IsNullOrWhiteSpace(r.Text)) yield return r;
         }
+    }
+
+    private static async IAsyncEnumerable<byte[]> BufferingTee(
+        IAsyncEnumerable<byte[]> source,
+        List<byte[]> buffer,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        await foreach (var chunk in source.WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            buffer.Add(chunk);
+            yield return chunk;
+        }
+    }
+
+    private static async IAsyncEnumerable<byte[]> ReplayBuffered(
+        IReadOnlyList<byte[]> buffer,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        foreach (var chunk in buffer)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return chunk;
+        }
+        await Task.CompletedTask.ConfigureAwait(false);
     }
 
     /// <summary>One streaming cycle on the pooled connection. Audio is pushed on a background

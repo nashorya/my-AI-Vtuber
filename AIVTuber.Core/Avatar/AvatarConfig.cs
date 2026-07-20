@@ -359,26 +359,49 @@ public static class AvatarConfigLoader
 
     public static AvatarPackConfig Load(string assetsDirectory)
     {
+        if (TryLoad(assetsDirectory, out var pack))
+            return pack;
+
+        DebugLog.Write($"[Avatar] avatar.json missing/invalid under {assetsDirectory}; using empty placeholder pack");
+        return CreatePlaceholderPack();
+    }
+
+    /// <summary>
+    /// Parse avatar.json without falling back to the placeholder pack.
+    /// Returns false when the file is missing, unreadable, or deserializes to null —
+    /// so hot-reload can refuse to overwrite a live pack with a placeholder.
+    /// </summary>
+    public static bool TryLoad(string assetsDirectory, out AvatarPackConfig pack)
+    {
+        pack = null!;
         var path = Path.Combine(assetsDirectory, "avatar.json");
         if (!File.Exists(path))
-        {
-            DebugLog.Write($"[Avatar] avatar.json missing at {path}; using empty placeholder pack");
-            return CreatePlaceholderPack();
-        }
+            return false;
 
         try
         {
             var json = File.ReadAllText(path);
-            var pack = JsonSerializer.Deserialize<AvatarPackConfig>(json, JsonOptions) ?? CreatePlaceholderPack();
+            var parsed = JsonSerializer.Deserialize<AvatarPackConfig>(json, JsonOptions);
+            if (parsed is null)
+                return false;
+
             // Dictionaries deserialize without ordinal-ignore comparer; rebuild for safe lookups.
-            pack.States = new Dictionary<string, AvatarStateDef>(pack.States, StringComparer.OrdinalIgnoreCase);
-            pack.Stickers.Items = new Dictionary<string, StickerItemDef>(pack.Stickers.Items, StringComparer.OrdinalIgnoreCase);
-            return pack;
+            parsed.States = new Dictionary<string, AvatarStateDef>(parsed.States, StringComparer.OrdinalIgnoreCase);
+            parsed.Stickers.Items = new Dictionary<string, StickerItemDef>(parsed.Stickers.Items, StringComparer.OrdinalIgnoreCase);
+
+            // Refuse the synthetic placeholder identity if somehow present — hot-reload must
+            // never clobber a real pack with the empty fallback.
+            if (string.Equals(parsed.Meta.Name, "dev_placeholder", StringComparison.OrdinalIgnoreCase)
+                && parsed.States.Count <= 2)
+                return false;
+
+            pack = parsed;
+            return true;
         }
         catch (Exception ex)
         {
             DebugLog.Write($"[Avatar] failed to parse avatar.json: {ex.Message}");
-            return CreatePlaceholderPack();
+            return false;
         }
     }
 

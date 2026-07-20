@@ -13,7 +13,7 @@ public sealed class AvatarStateMachine
     public const string Blink = "blink";
     public static readonly TimeSpan DefaultEmotionHold = TimeSpan.FromMilliseconds(1500);
 
-    private readonly AvatarPackConfig _pack;
+    private AvatarPackConfig _pack;
     private readonly HashSet<string> _available;
     private readonly Random _rng;
     private readonly object _lock = new();
@@ -90,6 +90,30 @@ public sealed class AvatarStateMachine
     {
         var clamped = Math.Clamp(scale, 0.1, 5.0);
         lock (_lock) _blinkIntervalScale = clamped;
+    }
+
+    /// <summary>Hot-reload pack definition. Preserves current state, blink timers, emotion hold.</summary>
+    public void UpdatePack(AvatarPackConfig pack, IEnumerable<string>? availableStates = null)
+    {
+        ArgumentNullException.ThrowIfNull(pack);
+        lock (_lock)
+        {
+            _pack = pack;
+            _available.Clear();
+            if (availableStates is null)
+            {
+                foreach (var k in pack.States.Keys)
+                    _available.Add(k);
+            }
+            else
+            {
+                foreach (var k in availableStates)
+                    _available.Add(k);
+            }
+
+            if (!_available.Contains(Neutral) && pack.States.ContainsKey(Neutral))
+                _available.Add(Neutral);
+        }
     }
 
     public void SetEmotion(string emotion, TimeSpan? hold = null)
@@ -406,6 +430,18 @@ public sealed class AvatarStateMachine
 
         _sticker = s;
         return new StickerFrame(s.Id, scale, alpha, _pack.Stickers.Anchor.X, _pack.Stickers.Anchor.Y);
+    }
+
+    /// <summary>Test seam: remaining ms until next blink fires (0 while blinking).</summary>
+    internal double BlinkCooldownMs
+    {
+        get { lock (_lock) return _blinkCooldownMs; }
+    }
+
+    /// <summary>Test seam: remaining ms of the active blink (0 when not blinking).</summary>
+    internal double BlinkRemainingMs
+    {
+        get { lock (_lock) return _blinkRemainingMs; }
     }
 
     private void ScheduleNextBlink(bool immediate)

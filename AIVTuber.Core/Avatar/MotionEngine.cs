@@ -6,7 +6,7 @@ namespace AIVTuber.Core.Avatar;
 /// </summary>
 public sealed class MotionEngine
 {
-    private readonly MotionLayerConfig _cfg;
+    private MotionLayerConfig _cfg;
 
     private double _timeSec;
     private float _smoothedRms;
@@ -37,6 +37,15 @@ public sealed class MotionEngine
     public MotionEngine(MotionLayerConfig? config = null)
     {
         _cfg = config ?? new MotionLayerConfig();
+    }
+
+    /// <summary>Hot-reload motion params (breath/bounce/tilt/…). Preserves runtime state
+    /// (_timeSec, smoothed RMS, tilt spring position/velocity).</summary>
+    public void UpdateConfig(MotionLayerConfig config)
+    {
+        _cfg = config ?? new MotionLayerConfig();
+        // Refresh spring coeffs against the current target with new stiffness/damping.
+        UpdateTiltTarget();
     }
 
     /// <summary>Latest RMS (0..~1). Safe to call from the audio thread.</summary>

@@ -42,6 +42,7 @@ public sealed class BotRuntime : IAsyncDisposable
     private LlmClient _memoryLlm = null!; // owned by BotRuntime so it can be disposed (MemoryExtractor is not IDisposable)
     private VtsClient? _vts;
     private PixelAvatarDriver? _pixelAvatar;
+    private AvatarConfigWatcher? _avatarConfigWatcher;
     private EventHandler<float>? _avatarRmsHandler;
     private EventHandler<string>? _avatarEmotionHandler;
     private ObsClient? _obs;
@@ -127,19 +128,30 @@ public sealed class BotRuntime : IAsyncDisposable
     // Streaming-ASR channels: when AsrConfig.Streaming is true, each in-progress speech segment
     // pushes its frames into one of these channels; the ASR client reads them as an
     // IAsyncEnumerable. Lazily created on the first SpeechFrame, completed on SpeechDetected.
+    // Unbounded: VAD segments are finite (ended by post-speech silence). A small bounded
+    // DropOldest channel previously truncated utterances longer than ~2s.
     private Channel<byte[]>? _micSpeechChannel;
     private Channel<byte[]>? _loopbackSpeechChannel;
-    private const int SpeechChannelCapacity = 64; // ~2s of 30ms frames
     private static Channel<byte[]> NewSpeechChannel()
-        => Channel.CreateBounded<byte[]>(new BoundedChannelOptions(SpeechChannelCapacity)
+        => Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions
         {
-            FullMode = BoundedChannelFullMode.DropOldest // never block the audio capture thread
+            SingleReader = true,
+            SingleWriter = true,
+            AllowSynchronousContinuations = false,
         });
 
     // Minimum segment peak (0..1) to send loopback audio to ASR. Below this it's silence/noise,
     // and the local ASR fabricates phantom 对面 lines from it. Real speech is well above this.
     private const float LoopbackAsrMinPeak = 0.05f;
     private const float MicAsrMinPeak = 0.03f;
+
+    /// <summary>Abandon an in-progress loopback speech channel so muted/reset gaps cannot
+    /// leak stale frames into a later ASR session.</summary>
+    private void AbandonLoopbackSpeechChannel()
+    {
+        var channel = Interlocked.Exchange(ref _loopbackSpeechChannel, null);
+        channel?.Writer.TryComplete();
+    }
 
     /// <summary>Feeds a loopback frame to its VAD unless the AI itself is speaking (which would
     /// otherwise feed the AI's own TTS back into the 对面 channel).</summary>
@@ -149,6 +161,7 @@ public sealed class BotRuntime : IAsyncDisposable
         if (_loopbackVadMuted)
         {
             _loopbackVad.Reset(); // drop any half-open segment so it can't merge across the gap
+            AbandonLoopbackSpeechChannel();
             return;
         }
         _loopbackVad.Feed(buf);
@@ -268,6 +281,8 @@ public sealed class BotRuntime : IAsyncDisposable
     private void InitPixelAvatar()
     {
         UnwirePixelAvatar();
+        _avatarConfigWatcher?.Dispose();
+        _avatarConfigWatcher = null;
         _pixelAvatar = null;
 
         if (!_config.Avatar.UsesPixel)
@@ -302,6 +317,7 @@ public sealed class BotRuntime : IAsyncDisposable
 
             _pixelAvatar = new PixelAvatarDriver(pack, assetsDir, available, _config.Avatar.EmotionMap);
             WirePixelAvatar();
+            StartAvatarConfigWatcher(assetsDir);
             Console.WriteLine($"[Avatar] pixel driver ready ({pack.Meta.Name}) @ {assetsDir}");
         }
         catch (Exception ex)
@@ -311,6 +327,38 @@ public sealed class BotRuntime : IAsyncDisposable
             PipelineError?.Invoke(this, msg);
             _pixelAvatar = null;
         }
+    }
+
+    private void StartAvatarConfigWatcher(string assetsDir)
+    {
+        _avatarConfigWatcher?.Dispose();
+        _avatarConfigWatcher = null;
+        if (!Directory.Exists(assetsDir)) return;
+
+        var capturedDir = assetsDir;
+        _avatarConfigWatcher = new AvatarConfigWatcher(
+            capturedDir,
+            () =>
+            {
+                try
+                {
+                    if (!AvatarConfigLoader.TryLoad(capturedDir, out var pack))
+                    {
+                        Console.WriteLine("[Avatar] hot-reload skipped (parse failed / placeholder)");
+                        return Task.CompletedTask;
+                    }
+
+                    var available = AvatarConfigLoader.ResolveAvailableStates(pack, capturedDir);
+                    _pixelAvatar?.ReloadConfig(pack, available);
+                    Console.WriteLine($"[Avatar] hot-reloaded ({pack.Meta.Name})");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[Avatar] hot-reload error: {ex.Message}");
+                }
+                return Task.CompletedTask;
+            },
+            TimeSpan.FromMilliseconds(300));
     }
 
     private void WirePixelAvatar()
@@ -494,8 +542,19 @@ public sealed class BotRuntime : IAsyncDisposable
             _stateTracker.LlmFirstSentenceReady(Environment.TickCount64);
 
         // Mute loopback VAD while AI is playing so it doesn't hear its own TTS output.
-        _orchestrator.OnAiStartSpeaking += (_, _) => _loopbackVadMuted = true;
-        _orchestrator.OnAiStopSpeaking += (_, _) => { _loopbackVadMuted = false; _loopbackVad?.Reset(); };
+        // Also abandon any in-flight streaming channel so mute gaps cannot mix into later ASR.
+        _orchestrator.OnAiStartSpeaking += (_, _) =>
+        {
+            _loopbackVadMuted = true;
+            _loopbackVad?.Reset();
+            AbandonLoopbackSpeechChannel();
+        };
+        _orchestrator.OnAiStopSpeaking += (_, _) =>
+        {
+            _loopbackVadMuted = false;
+            _loopbackVad?.Reset();
+            AbandonLoopbackSpeechChannel();
+        };
 
         // Stable speaking->selector bridge, added once per orchestrator. Null-safe so it works
         // whether or not danmaku is active, and reads the current _selector field after rebuilds —
@@ -965,6 +1024,8 @@ public sealed class BotRuntime : IAsyncDisposable
         _cts.Cancel();
         await DrainBackgroundTasksAsync();
         UnwirePixelAvatar();
+        _avatarConfigWatcher?.Dispose();
+        _avatarConfigWatcher = null;
         if (_pixelAvatar is not null)
         {
             await _pixelAvatar.DisposeAsync();

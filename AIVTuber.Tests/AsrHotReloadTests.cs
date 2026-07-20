@@ -43,12 +43,14 @@ public class AsrHotReloadTests
     }
 
     [Fact]
-    public void StreamingChange_RebuildsAsrOnly()
+    public void StreamingChange_RebuildsAsrAndRestartsAudio()
     {
         var candidate = new AppConfig();
         candidate.Asr.Streaming = false; // default is true
 
-        Assert.Equal(RuntimeChange.RebuildAsr, ConfigDiff.Compute(new AppConfig(), candidate));
+        var change = ConfigDiff.Compute(new AppConfig(), candidate);
+        Assert.True(change.HasFlag(RuntimeChange.RebuildAsr));
+        Assert.True(change.HasFlag(RuntimeChange.RestartAudio));
     }
 
     [Fact]

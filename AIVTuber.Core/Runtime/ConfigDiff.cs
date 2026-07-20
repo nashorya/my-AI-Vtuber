@@ -46,9 +46,11 @@ public static class ConfigDiff
         if (a.Asr.Provider != b.Asr.Provider || a.Asr.ApiKey != b.Asr.ApiKey ||
             a.Asr.AppId != b.Asr.AppId || a.Asr.Model != b.Asr.Model ||
             a.Asr.LocalAsrUrl != b.Asr.LocalAsrUrl || a.Asr.PythonPath != b.Asr.PythonPath ||
-            a.Asr.PersistConnection != b.Asr.PersistConnection ||
-            a.Asr.Streaming != b.Asr.Streaming)
+            a.Asr.PersistConnection != b.Asr.PersistConnection)
             c |= RuntimeChange.RebuildAsr;
+        // Streaming toggles VAD→channel wiring inside StartAudio; ASR client rebuild alone is not enough.
+        if (a.Asr.Streaming != b.Asr.Streaming)
+            c |= RuntimeChange.RebuildAsr | RuntimeChange.RestartAudio;
 
         if (a.Tts.Provider != b.Tts.Provider || a.Tts.ApiKey != b.Tts.ApiKey ||
             a.Tts.VoiceId != b.Tts.VoiceId || a.Tts.Model != b.Tts.Model ||
