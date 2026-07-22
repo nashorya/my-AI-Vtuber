@@ -38,6 +38,8 @@ public partial class AvatarWindow : Window
     private double _canvasH = 1;
     private float _neckPivotX = 627;
     private float _neckPivotY = 500;
+    private double _cutY = 535;
+    private double _footPivotY = 1180;
     private BitmapScalingMode _scalingMode = BitmapScalingMode.Fant;
     private AvatarPackConfig _pack;
 
@@ -126,11 +128,18 @@ public partial class AvatarWindow : Window
         }
 
         SeedFirstFrame();
+        ApplyBodyPivot();
+    }
 
-        // Pivot: RenderTransformOrigin is already foot-center (0.5, 1).
-        // Fine-tune if pack pivot is not dead-center horizontally.
+    /// <summary>Foot pivot from <c>meta.pivot</c> — ScaleY must anchor here (A1), not canvas bottom.</summary>
+    private void ApplyBodyPivot()
+    {
+        _footPivotY = _pack.Meta.Pivot.Y;
         var pivotX = _pack.Meta.Pivot.X / _canvasW;
-        BodyLayer.RenderTransformOrigin = new Point(Math.Clamp(pivotX, 0, 1), 1.0);
+        var pivotY = _footPivotY / _canvasH;
+        BodyLayer.RenderTransformOrigin = new Point(
+            Math.Clamp(pivotX, 0, 1),
+            Math.Clamp(pivotY, 0, 1));
     }
 
     private bool TryLoadLayered(AvatarPackConfig pack, string dir)
@@ -190,6 +199,8 @@ public partial class AvatarWindow : Window
 
         _neckPivotX = layers.NeckPivot.X;
         _neckPivotY = layers.NeckPivot.Y;
+        // Breath follow uses cut_y (not neck_pivot / body top). Fallback if pack omits cut_y.
+        _cutY = layers.CutY > 0 ? layers.CutY : layers.NeckPivot.Y;
         HeadLayer.Visibility = Visibility.Visible;
         HeadLayer.RenderTransformOrigin = new Point(
             Math.Clamp(_neckPivotX / _canvasW, 0, 1),
@@ -270,11 +281,12 @@ public partial class AvatarWindow : Window
             var wasLayered = _useLayered;
             var needsHeadRebuild = WasLayeredHeadChanged(dir);
 
-            if (wasLayered && _pack.Layers is { Enabled: true } && !needsHeadRebuild)
+            if (wasLayered && _pack.Layers is { Enabled: true } layers && !needsHeadRebuild)
             {
-                // Motion/tilt params changed only — keep bitmaps, refresh neck pivot.
-                _neckPivotX = _pack.Layers.NeckPivot.X;
-                _neckPivotY = _pack.Layers.NeckPivot.Y;
+                // Motion/tilt/cut params changed only — keep bitmaps, refresh pivots.
+                _neckPivotX = layers.NeckPivot.X;
+                _neckPivotY = layers.NeckPivot.Y;
+                _cutY = layers.CutY > 0 ? layers.CutY : layers.NeckPivot.Y;
                 HeadLayer.RenderTransformOrigin = new Point(
                     Math.Clamp(_neckPivotX / _canvasW, 0, 1),
                     Math.Clamp(_neckPivotY / _canvasH, 0, 1));
@@ -296,8 +308,7 @@ public partial class AvatarWindow : Window
                 ApplyScalingMode();
             }
 
-            var pivotX = _pack.Meta.Pivot.X / _canvasW;
-            BodyLayer.RenderTransformOrigin = new Point(Math.Clamp(pivotX, 0, 1), 1.0);
+            ApplyBodyPivot();
             _lastBodyState = null; // force ApplyBody to re-bind sources next frame
         });
     }
@@ -542,9 +553,9 @@ public partial class AvatarWindow : Window
         if (_useLayered)
         {
             HeadTilt.Angle = m.TiltDeg;
-            // Body ScaleY about foot pivot lifts the neck; keep head seated on the neck.
-            // WPF Y grows downward, so negative = visually upward.
-            HeadTranslate.Y = -(_canvasH - _neckPivotY) * (m.ScaleY - 1.0);
+            // Body ScaleY about foot pivot lifts the cut; head follows by cut height (not body top).
+            // Soft edge is baked into the head PNG — do not feather / clip edges in code.
+            HeadTranslate.Y = LayeredBreathFollow.HeadTranslateY(_footPivotY, _cutY, m.ScaleY);
         }
         else
         {

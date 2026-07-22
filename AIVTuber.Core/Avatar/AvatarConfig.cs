@@ -315,10 +315,17 @@ public sealed class LayersConfig
     [JsonPropertyName("head_dir")]
     public string HeadDir { get; set; } = "layered/head/";
 
-    /// <summary>Y coordinate (in pack canvas space) where the head was cut from the body.
-    /// Informational; the rendering uses <see cref="NeckPivot"/> for the rotation anchor.</summary>
+    /// <summary>Y coordinate (in pack canvas space) of the head/body cut.
+    /// Used with <c>meta.pivot.y</c> for breath follow:
+    /// <c>HeadTranslate.Y = -(pivot_y - cut_y) × (scaleY - 1)</c>.
+    /// Soft edge / feather lives in the head PNG (<c>feather_to_y</c> is documentation only).</summary>
     [JsonPropertyName("cut_y")]
     public int CutY { get; set; }
+
+    /// <summary>Optional pack note: head PNG alpha fades through this Y (inclusive soft edge).
+    /// Not consumed by the renderer — feathering must already be baked into the PNG.</summary>
+    [JsonPropertyName("feather_to_y")]
+    public int FeatherToY { get; set; }
 
     /// <summary>Pivot (pack canvas space) the head rotates about. Typically the neck center.</summary>
     [JsonPropertyName("neck_pivot")]
