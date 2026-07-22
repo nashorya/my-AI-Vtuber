@@ -25,6 +25,8 @@ public sealed class BotOrchestrator : IDisposable
     private readonly EventHandler<string> _sentenceReadyHandler;
     private readonly EventHandler<string> _emotionDetectedHandler;
     private readonly EventHandler<string> _actionDetectedHandler;
+    private readonly EventHandler<string> _poseDetectedHandler;
+    private readonly IReadOnlyDictionary<string, string> _ttsEmotionMap;
     private readonly EventHandler<float>? _rmsUpdatedHandler;
     private readonly EventHandler? _playbackFinishedHandler;
 
@@ -47,6 +49,7 @@ public sealed class BotOrchestrator : IDisposable
     public event EventHandler? OnFirstSentenceToTts;
     public event EventHandler<string>? OnEmotionDetected;
     public event EventHandler<string>? OnActionDetected;
+    public event EventHandler<string>? OnPoseDetected;
     public event EventHandler<string>? OnSentenceReady;
     public event EventHandler<string>? OnUserTranscript;
     /// <summary>Fired when Qwen-ASR returns a non-neutral emotion for the user's speech.</summary>
@@ -58,10 +61,12 @@ public sealed class BotOrchestrator : IDisposable
     public BotOrchestrator(
         IAsrClient asr, ILlmClient llm, ITtsClient tts,
         AudioPlayer player, TtsConfig ttsConfig,
-        VtsClient? vts = null, VtsConfig? vtsConfig = null)
+        VtsClient? vts = null, VtsConfig? vtsConfig = null,
+        IReadOnlyDictionary<string, string>? ttsEmotionMap = null)
         : this(asr, llm, tts, player, ttsConfig, vts, vtsConfig,
             player.PlayChunksAsync, player.Stop,
-            vts is null ? null : vts.TriggerHotkeyAsync)
+            vts is null ? null : vts.TriggerHotkeyAsync,
+            ttsEmotionMap)
     {
     }
 
@@ -71,7 +76,8 @@ public sealed class BotOrchestrator : IDisposable
         VtsClient? vts, VtsConfig? vtsConfig,
         Func<IAsyncEnumerable<byte[]>, CancellationToken, Task> playChunksAsync,
         Action stopPlayback,
-        Func<string, CancellationToken, Task>? triggerHotkeyAsync)
+        Func<string, CancellationToken, Task>? triggerHotkeyAsync,
+        IReadOnlyDictionary<string, string>? ttsEmotionMap = null)
     {
         _asr = asr;
         _llm = llm;
@@ -80,6 +86,8 @@ public sealed class BotOrchestrator : IDisposable
         _ttsConfig = ttsConfig;
         _vts = vts;
         _vtsConfig = vtsConfig ?? new VtsConfig();
+        _ttsEmotionMap = ttsEmotionMap
+            ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         _coordinator = new RequestCoordinator();
         _playChunksAsync = playChunksAsync;
         _stopPlayback = stopPlayback;
@@ -111,9 +119,16 @@ public sealed class BotOrchestrator : IDisposable
             OnActionDetected?.Invoke(this, action);
             QueueMappedHotkey(context, _vtsConfig.ActionMap, action, "action");
         };
+        _poseDetectedHandler = (_, pose) =>
+        {
+            var context = CurrentEventContext();
+            if (context is null) return;
+            OnPoseDetected?.Invoke(this, pose);
+        };
         _llm.OnSentenceReady += _sentenceReadyHandler;
         _llm.OnEmotionDetected += _emotionDetectedHandler;
         _llm.OnActionDetected += _actionDetectedHandler;
+        _llm.OnPoseDetected += _poseDetectedHandler;
 
         // Wire up RMS -> VTS lip-sync
         if (_vts is not null)
@@ -494,7 +509,10 @@ public sealed class BotOrchestrator : IDisposable
                     if (cleaned.Length != raw.Length) { buffer.Clear(); buffer.Append(cleaned); }
                     if (LlmClient.ContainsSentenceBoundary(buffer.ToString(), out var sentence, out var remainder))
                     {
-                        var trimmed = LlmClient.StripActionText(LlmClient.StripControlTags(LlmClient.StripPartialTags(sentence))).Trim();
+                        var trimmed = LlmClient.LimitSpokenText(
+                            LlmClient.StripActionText(
+                                LlmClient.StripControlTags(
+                                    LlmClient.StripPartialTags(sentence))).Trim());
                         if (!string.IsNullOrWhiteSpace(trimmed))
                         {
                             sentencesEmitted++;
@@ -505,7 +523,10 @@ public sealed class BotOrchestrator : IDisposable
                         buffer.Append(remainder);
                     }
                 }
-                var remaining = LlmClient.StripActionText(LlmClient.StripControlTags(LlmClient.StripPartialTags(buffer.ToString()))).Trim();
+                var remaining = LlmClient.LimitSpokenText(
+                    LlmClient.StripActionText(
+                        LlmClient.StripControlTags(
+                            LlmClient.StripPartialTags(buffer.ToString()))).Trim());
                 if (IsCurrent(envelope, ct) && !string.IsNullOrWhiteSpace(remaining))
                 {
                     sentencesEmitted++;
@@ -542,7 +563,11 @@ public sealed class BotOrchestrator : IDisposable
                     OnFirstSentenceToTts?.Invoke(this, EventArgs.Empty);
                     OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
                 }
-                await foreach (var chunk in _tts.StreamAsync(sentence, _ttsConfig.VoiceId, _currentEmotion, streamCt))
+                await foreach (var chunk in _tts.StreamAsync(
+                                   sentence,
+                                   _ttsConfig.VoiceId,
+                                   ResolveTtsEmotion(_currentEmotion),
+                                   streamCt))
                 {
                     if (!IsCurrent(envelope, streamCt)) yield break;
                     yield return chunk;
@@ -573,6 +598,15 @@ public sealed class BotOrchestrator : IDisposable
 
         if (pipelineEx is not null) throw pipelineEx;
     }
+    private string? ResolveTtsEmotion(string? emotion)
+    {
+        if (string.IsNullOrWhiteSpace(emotion)) return null;
+        // Map LLM words (incl. Chinese) through avatar EmotionMap → English state for Fish/MiniMax.
+        if (_ttsEmotionMap.TryGetValue(emotion, out var mapped) && !string.IsNullOrWhiteSpace(mapped))
+            return mapped;
+        return emotion;
+    }
+
     private static string AnnotateWithUserEmotion(string text, string? emotion) => emotion switch
     {
         null or "neutral" => text,
@@ -593,6 +627,7 @@ public sealed class BotOrchestrator : IDisposable
         _llm.OnSentenceReady -= _sentenceReadyHandler;
         _llm.OnEmotionDetected -= _emotionDetectedHandler;
         _llm.OnActionDetected -= _actionDetectedHandler;
+        _llm.OnPoseDetected -= _poseDetectedHandler;
         if (_rmsUpdatedHandler is not null)
             _player.RmsUpdated -= _rmsUpdatedHandler;
         if (_playbackFinishedHandler is not null)

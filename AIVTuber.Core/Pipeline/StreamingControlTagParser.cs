@@ -7,19 +7,27 @@ internal sealed class StreamingControlTagParser
     private const int MaxTagLength = 256;
     private const string ActionPrefix = "[action:";
     private const string EmotionPrefix = "[emotion:";
+    private const string PosePrefix = "[pose:";
     private const string ActionStem = "[action";
     private const string EmotionStem = "[emotion";
+    private const string PoseStem = "[pose";
 
     private readonly Action<string> _onAction;
     private readonly Action<string> _onEmotion;
+    private readonly Action<string> _onPose;
     private readonly HashSet<string> _actions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _poses = new(StringComparer.OrdinalIgnoreCase);
     private readonly StringBuilder _candidate = new();
     private bool _discardingMalformedTag;
 
-    public StreamingControlTagParser(Action<string> onAction, Action<string> onEmotion)
+    public StreamingControlTagParser(
+        Action<string> onAction,
+        Action<string> onEmotion,
+        Action<string>? onPose = null)
     {
         _onAction = onAction;
         _onEmotion = onEmotion;
+        _onPose = onPose ?? (_ => { });
     }
 
     public string Consume(string chunk)
@@ -109,6 +117,12 @@ internal sealed class StreamingControlTagParser
             return;
         }
 
+        if (prefix == PosePrefix)
+        {
+            if (_poses.Add(value)) _onPose(value);
+            return;
+        }
+
         _onEmotion(value);
     }
 
@@ -116,7 +130,8 @@ internal sealed class StreamingControlTagParser
     {
         var value = candidate.ToString();
         return ActionPrefix.StartsWith(value, StringComparison.Ordinal) ||
-               EmotionPrefix.StartsWith(value, StringComparison.Ordinal);
+               EmotionPrefix.StartsWith(value, StringComparison.Ordinal) ||
+               PosePrefix.StartsWith(value, StringComparison.Ordinal);
     }
 
     private static bool IsControlTagCandidate(StringBuilder candidate)
@@ -130,12 +145,14 @@ internal sealed class StreamingControlTagParser
     {
         if (candidate.StartsWith(ActionPrefix, StringComparison.Ordinal)) return ActionPrefix;
         if (candidate.StartsWith(EmotionPrefix, StringComparison.Ordinal)) return EmotionPrefix;
+        if (candidate.StartsWith(PosePrefix, StringComparison.Ordinal)) return PosePrefix;
         return null;
     }
 
     private static bool StartsWithControlStem(string candidate) =>
         candidate.StartsWith(ActionStem, StringComparison.Ordinal) ||
-        candidate.StartsWith(EmotionStem, StringComparison.Ordinal);
+        candidate.StartsWith(EmotionStem, StringComparison.Ordinal) ||
+        candidate.StartsWith(PoseStem, StringComparison.Ordinal);
 
     private void ResetCandidate()
     {

@@ -66,6 +66,41 @@ public class LlmClientTests
     }
 
     [Fact]
+    public void LimitSpokenText_CutsAtSentenceEndAtOrAfterSoftLimit()
+    {
+        // Ends at 70 / 92 / 111 — keep through the first end ≥ 80 (= 92).
+        var s70 = new string('啊', 70) + "。";
+        var s92 = s70 + new string('吧', 21) + "！"; // 70+1+21+1 = 93? Let's build carefully.
+        // 70 chars + 。 = index end 71. Need ends at 70, 92, 111 as exclusive lengths.
+        var part1 = new string('一', 69) + "。"; // length 70
+        var part2 = new string('二', 21) + "！"; // +22 → length 92
+        var part3 = new string('三', 18) + "？"; // +19 → length 111
+        var full = part1 + part2 + part3;
+        Assert.Equal(111, full.Length);
+        Assert.Equal(92, (part1 + part2).Length);
+
+        var limited = LlmClient.LimitSpokenText(full, 80);
+        Assert.Equal(part1 + part2, limited);
+        Assert.EndsWith("！", limited);
+    }
+
+    [Fact]
+    public void LimitSpokenText_WhenAllEndsBeforeLimit_KeepsLastCompleteSentence()
+    {
+        var text = new string('短', 20) + "。" + new string('句', 20) + "？"; // length 42
+        var padded = text + new string('续', 50); // no more terminators, total 92
+        var limited = LlmClient.LimitSpokenText(padded, 80);
+        Assert.Equal(text, limited);
+    }
+
+    [Fact]
+    public void LimitSpokenText_NoTerminator_HardCutsAtLimit()
+    {
+        var text = new string('字', 100);
+        Assert.Equal(80, LlmClient.LimitSpokenText(text, 80).Length);
+    }
+
+    [Fact]
     public void ExtractActionTags_EmitsActionAndRemovesTag()
     {
         var actions = new List<string>();

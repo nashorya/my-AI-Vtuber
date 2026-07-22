@@ -115,6 +115,7 @@ public class LifecycleConcurrencyVerificationTests
         private EventHandler<string>? _sentenceReady;
         private EventHandler<string>? _emotionDetected;
         private EventHandler<string>? _actionDetected;
+        private EventHandler<string>? _poseDetected;
 
         public (int Sentence, int Emotion, int Action) HandlerCounts =>
             (Count(_sentenceReady), Count(_emotionDetected), Count(_actionDetected));
@@ -135,6 +136,12 @@ public class LifecycleConcurrencyVerificationTests
         {
             add => _actionDetected += value;
             remove => _actionDetected -= value;
+        }
+
+        public event EventHandler<string>? OnPoseDetected
+        {
+            add => _poseDetected += value;
+            remove => _poseDetected -= value;
         }
 
         public void EmitSentence(string sentence) => _sentenceReady?.Invoke(this, sentence);

@@ -98,4 +98,18 @@ public sealed class ActionStreamingTests
         Assert.Equal(["wave"], actions);
         Assert.Equal(["happy"], emotions);
     }
+
+    [Fact]
+    public void Parser_EmitsPoseTagsAndStripsFromSpeechText()
+    {
+        var poses = new List<string>();
+        var emotions = new List<string>();
+        var parser = new StreamingControlTagParser(_ => { }, emotions.Add, poses.Add);
+
+        var clean = parser.Consume("嗯[pose:tilt_left][emotion:shy]。") + parser.Complete();
+
+        Assert.Equal("嗯。", clean);
+        Assert.Equal(["tilt_left"], poses);
+        Assert.Equal(["shy"], emotions);
+    }
 }
