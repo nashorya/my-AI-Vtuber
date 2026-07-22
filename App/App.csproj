@@ -12,9 +12,9 @@
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <!-- Avatar PNGs / config sit next to the exe on publish; also extract into the
-         single-file temp dir so AppContext.BaseDirectory can see them. -->
-    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+    <!-- Do NOT set IncludeAllContentForSelfExtract: it bundles CopyToPublishDirectory
+         content into the exe and leaves publish/ without sidecar/config/assets, which
+         breaks the Windows quality gate. AppPaths resolves content next to the .exe. -->
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
