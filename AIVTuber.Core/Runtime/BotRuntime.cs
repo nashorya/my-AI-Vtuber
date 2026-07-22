@@ -293,9 +293,7 @@ public sealed class BotRuntime : IAsyncDisposable
 
         try
         {
-            var assetsDir = Path.IsPathRooted(_config.Avatar.AssetsPath)
-                ? _config.Avatar.AssetsPath
-                : Path.Combine(_baseDir, _config.Avatar.AssetsPath);
+            var assetsDir = AppPaths.ResolveAvatarAssetsDirectory(_config.Avatar.AssetsPath);
 
             if (!Directory.Exists(assetsDir))
             {
@@ -306,19 +304,24 @@ public sealed class BotRuntime : IAsyncDisposable
                 assetsDir = Path.Combine(_baseDir, "assets", "avatar");
             }
 
+            Console.WriteLine($"[Avatar] resolving pack under: {assetsDir}");
             var pack = AvatarConfigLoader.Load(assetsDir);
             var available = AvatarConfigLoader.ResolveAvailableStates(pack, assetsDir);
             if (available.Count == 0 && AvatarConfigLoader.ResolveDevPlaceholderIdle(assetsDir) is not null)
             {
+                var missingHint = pack.States.Count > 0
+                    ? $"avatar.json loaded ({pack.Meta.Name}) but 0/{pack.States.Count} sprite files found under {assetsDir}"
+                    : $"no usable sprites under {assetsDir}";
+                Console.WriteLine($"[Avatar] falling back to dev_placeholder pack — {missingHint}");
+                PipelineError?.Invoke(this, $"[Avatar] {missingHint}");
                 pack = AvatarConfigLoader.CreatePlaceholderPack();
                 available = AvatarConfigLoader.ResolveAvailableStates(pack, assetsDir);
-                Console.WriteLine("[Avatar] falling back to dev_placeholder pack");
             }
 
             _pixelAvatar = new PixelAvatarDriver(pack, assetsDir, available, _config.Avatar.EmotionMap);
             WirePixelAvatar();
             StartAvatarConfigWatcher(assetsDir);
-            Console.WriteLine($"[Avatar] pixel driver ready ({pack.Meta.Name}) @ {assetsDir}");
+            Console.WriteLine($"[Avatar] pixel driver ready ({pack.Meta.Name}, states={available.Count}) @ {assetsDir}");
         }
         catch (Exception ex)
         {

@@ -12,6 +12,9 @@
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <!-- Do NOT set IncludeAllContentForSelfExtract: it bundles CopyToPublishDirectory
+         content into the exe and leaves publish/ without sidecar/config/assets, which
+         breaks the Windows quality gate. AppPaths resolves content next to the .exe. -->
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
