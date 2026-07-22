@@ -20,8 +20,9 @@ public sealed class LlmClient : ILlmClient, IDisposable
     private readonly string _systemPrompt;
 
     private static readonly Regex SentenceBoundaryRegex = new(@"[。！？；，,.!?;\n]", RegexOptions.Compiled);
-    private static readonly Regex EmotionTagRegex = new(@"\[emotion:(\w+)\]", RegexOptions.Compiled);
+    private static readonly Regex EmotionTagRegex = new(@"\[emotion:([^\]\r\n]+)\]", RegexOptions.Compiled);
     private static readonly Regex ActionTagRegex = new(@"\[action:([^\]\r\n]+)\]", RegexOptions.Compiled);
+    private static readonly Regex PoseTagRegex = new(@"\[pose:([^\]\r\n]+)\]", RegexOptions.Compiled);
     // Strips *action text* and （动作）/(action) that LLMs sometimes emit as stage directions.
     // Asterisk form: any non-newline chars between * … * on the same line.
     // Parenthesis form: no length cap — long action descriptions like （她翻了个白眼，靠在椅背上）must also be stripped.
@@ -32,6 +33,7 @@ public sealed class LlmClient : ILlmClient, IDisposable
     public event EventHandler<string>? OnSentenceReady;
     public event EventHandler<string>? OnEmotionDetected;
     public event EventHandler<string>? OnActionDetected;
+    public event EventHandler<string>? OnPoseDetected;
 
     public LlmClient(string baseUrl, string apiKey, string model, string systemPrompt)
     {
@@ -78,7 +80,8 @@ public sealed class LlmClient : ILlmClient, IDisposable
         var buffer = new StringBuilder();
         var controlTags = new StreamingControlTagParser(
             action => OnActionDetected?.Invoke(this, action),
-            emotion => OnEmotionDetected?.Invoke(this, emotion));
+            emotion => OnEmotionDetected?.Invoke(this, emotion),
+            pose => OnPoseDetected?.Invoke(this, pose));
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -104,7 +107,7 @@ public sealed class LlmClient : ILlmClient, IDisposable
             var delta = chunk.Choices[0].Delta;
             if (delta?.Content is null) continue;
 
-            var token = controlTags.Consume(delta.Content);
+                var token = controlTags.Consume(delta.Content);
             if (token.Length == 0) continue;
             buffer.Append(token);
             yield return token;
@@ -113,7 +116,8 @@ public sealed class LlmClient : ILlmClient, IDisposable
             var currentText = buffer.ToString();
             if (ContainsSentenceBoundary(currentText, out var sentence, out var remainder))
             {
-                var trimmed = StripActionText(StripControlTags(sentence)).Trim();
+                var trimmed = LimitSpokenText(
+                    StripActionText(StripControlTags(sentence)).Trim());
                 if (!string.IsNullOrWhiteSpace(trimmed))
                 {
                     OnSentenceReady?.Invoke(this, trimmed);
@@ -131,7 +135,8 @@ public sealed class LlmClient : ILlmClient, IDisposable
         }
 
         // Emit any remaining text as a sentence
-        var remaining = StripActionText(StripControlTags(buffer.ToString())).Trim();
+        var remaining = LimitSpokenText(
+            StripActionText(StripControlTags(buffer.ToString())).Trim());
         if (!string.IsNullOrWhiteSpace(remaining))
         {
             OnSentenceReady?.Invoke(this, remaining);
@@ -171,8 +176,48 @@ public sealed class LlmClient : ILlmClient, IDisposable
     internal static string StripActionTags(string text)
         => ActionTagRegex.Replace(text, string.Empty);
 
+    internal static string StripPoseTags(string text)
+        => PoseTagRegex.Replace(text, string.Empty);
+
     internal static string StripControlTags(string text)
-        => StripActionTags(StripEmotionTags(text));
+        => StripPoseTags(StripActionTags(StripEmotionTags(text)));
+
+    /// <summary>
+    /// Soft-cap spoken text near <paramref name="maxChars"/>, but always cut on a sentence
+    /// boundary (。！？.!?). Prefers the first terminator at or after the limit so a sentence
+    /// that finishes just past 80 is still spoken in full; never leaves a hanging clause.
+    /// </summary>
+    internal static string LimitSpokenText(string text, int maxChars = 80)
+    {
+        if (string.IsNullOrEmpty(text) || maxChars <= 0) return text;
+        if (text.Length <= maxChars) return text;
+
+        // Collect end indices (exclusive) of each sentence terminator in the string.
+        var ends = new List<int>();
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (IsSpokenSentenceEnd(text[i]))
+                ends.Add(i + 1);
+        }
+
+        if (ends.Count > 0)
+        {
+            // First terminator at/after the soft limit (e.g. 70 then 92 → keep through 92).
+            foreach (var end in ends)
+            {
+                if (end >= maxChars)
+                    return text[..end].TrimEnd();
+            }
+
+            // All terminators are before the limit — keep through the last complete sentence.
+            return text[..ends[^1]].TrimEnd();
+        }
+
+        // No terminator at all — hard cut.
+        return text[..maxChars];
+    }
+
+    private static bool IsSpokenSentenceEnd(char c) => c is '。' or '！' or '？' or '.' or '!' or '?';
 
     internal static string ExtractActionTags(string text, Action<string> onAction)
         => ActionTagRegex.Replace(text, match =>

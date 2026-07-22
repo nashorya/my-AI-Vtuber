@@ -77,12 +77,16 @@ public partial class App : Application
         try
         {
             await _runtime!.StartAsync();
-            Dispatcher.Invoke(OpenAvatarWindowIfNeeded);
         }
         catch (Exception ex)
         {
             // Keep the window open (the user can fix config in the UI) — don't kill the app.
             ShowFatalError("启动失败（窗口保留，可在配置页修改后重启）", ex);
+        }
+        finally
+        {
+            // Pixel avatar may already be inited before a later StartAsync failure (e.g. VAD).
+            Dispatcher.Invoke(OpenAvatarWindowIfNeeded);
         }
     }
 

@@ -21,6 +21,7 @@ public partial class AvatarWindow : Window
     private readonly AvatarRuntimeConfig _runtimeCfg;
     private readonly Dictionary<string, ImageSource> _bodyFrames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ImageSource> _headFrames = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ImageSource> _poseFrames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, ImageSource> _stickerFrames = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTime> _headFileMtimes = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<ImageSource> _placeholderLoop = [];
@@ -32,13 +33,16 @@ public partial class AvatarWindow : Window
     private int _placeholderIndex;
     private double _placeholderAccumMs;
     private bool _usePlaceholderSheet;
+    private bool _usePoses;
     private bool _useLayered;
+    private string? _lastPoseId;
     private ImageSource? _bodyBitmap;
     private double _canvasW = 1;
     private double _canvasH = 1;
     private float _neckPivotX = 627;
     private float _neckPivotY = 500;
     private double _cutY = 535;
+    private double _headRotateBottomY = 515;
     private double _footPivotY = 1180;
     private BitmapScalingMode _scalingMode = BitmapScalingMode.Fant;
     private AvatarPackConfig _pack;
@@ -54,6 +58,7 @@ public partial class AvatarWindow : Window
         ApplyWindowChrome();
         PreloadAssets();
         ApplyScalingMode();
+        ApplyCanvasSize();
 
         if (_usePlaceholderSheet || string.Equals(driver.Pack.Meta.Name, "dev_placeholder", StringComparison.OrdinalIgnoreCase))
             TitleText.Text = "dev_placeholder（缺立绘，检查 assets/avatar）";
@@ -93,12 +98,30 @@ public partial class AvatarWindow : Window
         _canvasW = Math.Max(1, _pack.Meta.Canvas.Width);
         _canvasH = Math.Max(1, _pack.Meta.Canvas.Height);
 
-        _useLayered = TryLoadLayered(_pack, dir);
-
-        if (!_useLayered)
+        _usePoses = TryLoadPoses(_pack, dir);
+        if (_usePoses)
         {
+            _useLayered = false;
             HeadLayer.Visibility = Visibility.Collapsed;
+            ApplyHeadRotateClip();
             LoadSingleLayerBodies(_pack, dir);
+            DebugLog.Write($"[AvatarWindow] poses mode on: {_poseFrames.Count} poses (layers skipped)");
+        }
+        else
+        {
+            _useLayered = TryLoadLayered(_pack, dir);
+
+            if (!_useLayered)
+            {
+                HeadLayer.Visibility = Visibility.Collapsed;
+                ApplyHeadRotateClip();
+                LoadSingleLayerBodies(_pack, dir);
+                if (_pack.Layers is { Enabled: true })
+                {
+                    DebugLog.Write("[AvatarWindow] layers.enabled but layered load failed — single-layer fallback (tilt→whole body)");
+                    TitleText.Text = $"{_pack.Meta.Name}（单图层回退）";
+                }
+            }
         }
 
         // If no HD frames but placeholder exists, use it (single-layer only).
@@ -140,6 +163,54 @@ public partial class AvatarWindow : Window
         BodyLayer.RenderTransformOrigin = new Point(
             Math.Clamp(pivotX, 0, 1),
             Math.Clamp(pivotY, 0, 1));
+    }
+
+    /// <summary>Lock body/head layers to pack canvas pixels so neck_pivot maps 1:1 onto HeadTilt.Center.</summary>
+    private void ApplyCanvasSize()
+    {
+        BodyLayer.Width = _canvasW;
+        BodyLayer.Height = _canvasH;
+        BodyImageA.Width = _canvasW;
+        BodyImageA.Height = _canvasH;
+        BodyImageB.Width = _canvasW;
+        BodyImageB.Height = _canvasH;
+        HeadLayer.Width = _canvasW;
+        HeadLayer.Height = _canvasH;
+        HeadImageA.Width = _canvasW;
+        HeadImageA.Height = _canvasH;
+        HeadImageB.Width = _canvasW;
+        HeadImageB.Height = _canvasH;
+        ApplyHeadPivot();
+    }
+
+    private void ApplyHeadPivot()
+    {
+        // Prefer RotateTransform.CenterX/Y in canvas pixels over RenderTransformOrigin fractions —
+        // fractions break when the head layer's layout size ≠ the painted bitmap.
+        HeadTilt.CenterX = _neckPivotX;
+        HeadTilt.CenterY = _neckPivotY;
+        ApplyHeadRotateClip();
+    }
+
+    /// <summary>
+    /// Clip head bitmaps above shoulder flare so tilt only moves face/neck; shoulders stay on body.
+    /// </summary>
+    private void ApplyHeadRotateClip()
+    {
+        // Called from TryLoadLayered before _useLayered is assigned by the caller — key off Visibility.
+        if (HeadLayer.Visibility != Visibility.Visible
+            || _headRotateBottomY <= 0
+            || _headRotateBottomY >= _canvasH)
+        {
+            HeadImageA.Clip = null;
+            HeadImageB.Clip = null;
+            return;
+        }
+
+        var rect = new RectangleGeometry(new Rect(0, 0, _canvasW, _headRotateBottomY));
+        if (rect.CanFreeze) rect.Freeze();
+        HeadImageA.Clip = rect;
+        HeadImageB.Clip = rect;
     }
 
     private bool TryLoadLayered(AvatarPackConfig pack, string dir)
@@ -197,14 +268,41 @@ public partial class AvatarWindow : Window
             return false;
         }
 
+        // body.png paints a second upright 呆毛 + 蕾丝 under the head. Punch those out so
+        // tilt only shows the rotating head's lace/ahoge (not a ghost copy on the body).
+        if (_bodyBitmap is not null)
+        {
+            ImageSource? maskSrc = null;
+            if (_headFrames.TryGetValue(AvatarStateMachine.Neutral, out var neutralHead))
+                maskSrc = neutralHead;
+            else if (_headFrames.Count > 0)
+                maskSrc = _headFrames.Values.First();
+
+            if (maskSrc is BitmapSource punchMask)
+            {
+                try
+                {
+                    var bodySrc = _bodyBitmap as BitmapSource
+                                  ?? throw new InvalidOperationException("body is not BitmapSource");
+                    _bodyBitmap = PunchBodyHeadDecorations(bodySrc, punchMask);
+                }
+                catch (Exception ex)
+                {
+                    DebugLog.Write($"[AvatarWindow] body decoration punch failed: {ex.Message}");
+                }
+            }
+        }
+
         _neckPivotX = layers.NeckPivot.X;
         _neckPivotY = layers.NeckPivot.Y;
         // Breath follow uses cut_y (not neck_pivot / body top). Fallback if pack omits cut_y.
         _cutY = layers.CutY > 0 ? layers.CutY : layers.NeckPivot.Y;
+        // Shoulder flare starts ~516 on this pack; clip rotating head above it.
+        _headRotateBottomY = layers.HeadRotateBottomY > 0
+            ? layers.HeadRotateBottomY
+            : Math.Min(_cutY, 515);
         HeadLayer.Visibility = Visibility.Visible;
-        HeadLayer.RenderTransformOrigin = new Point(
-            Math.Clamp(_neckPivotX / _canvasW, 0, 1),
-            Math.Clamp(_neckPivotY / _canvasH, 0, 1));
+        ApplyHeadPivot();
 
         BodyImageA.Source = _bodyBitmap;
         BodyImageA.Opacity = 1;
@@ -213,6 +311,32 @@ public partial class AvatarWindow : Window
 
         DebugLog.Write($"[AvatarWindow] layered mode on: {_headFrames.Count} heads, body={layers.Body}");
         return true;
+    }
+
+    private bool TryLoadPoses(AvatarPackConfig pack, string dir)
+    {
+        _poseFrames.Clear();
+        if (pack.Poses?.List is not { Count: > 0 } list)
+            return false;
+
+        var loaded = 0;
+        foreach (var (id, def) in list)
+        {
+            if (string.IsNullOrWhiteSpace(def.File)) continue;
+            var path = Path.Combine(dir, def.File);
+            if (!File.Exists(path)) continue;
+            try
+            {
+                _poseFrames[id] = LoadFrozenBitmap(path);
+                loaded++;
+            }
+            catch (Exception ex)
+            {
+                DebugLog.Write($"[AvatarWindow] pose load failed {path}: {ex.Message}");
+            }
+        }
+
+        return loaded > 0;
     }
 
     private void LoadSingleLayerBodies(AvatarPackConfig pack, string dir)
@@ -248,6 +372,20 @@ public partial class AvatarWindow : Window
 
     private void SeedFirstFrame()
     {
+        if (_usePoses)
+        {
+            var defaultId = _pack.Poses?.Default ?? PoseController.Front;
+            if (_poseFrames.TryGetValue(defaultId, out var pose))
+                BodyImageA.Source = pose;
+            else if (_poseFrames.Count > 0)
+                BodyImageA.Source = _poseFrames.Values.First();
+            else if (_bodyFrames.TryGetValue(AvatarStateMachine.Neutral, out var neutral))
+                BodyImageA.Source = neutral;
+            BodyImageA.Opacity = 1;
+            BodyImageB.Opacity = 0;
+            return;
+        }
+
         if (_useLayered)
         {
             if (_headFrames.TryGetValue(AvatarStateMachine.Neutral, out var neutral))
@@ -281,15 +419,27 @@ public partial class AvatarWindow : Window
             var wasLayered = _useLayered;
             var needsHeadRebuild = WasLayeredHeadChanged(dir);
 
-            if (wasLayered && _pack.Layers is { Enabled: true } layers && !needsHeadRebuild)
+            _usePoses = TryLoadPoses(_pack, dir);
+            if (_usePoses)
+            {
+                _useLayered = false;
+                HeadLayer.Visibility = Visibility.Collapsed;
+                if (_bodyFrames.Count == 0)
+                    LoadSingleLayerBodies(_pack, dir);
+                SeedFirstFrame();
+                ApplyScalingMode();
+                ApplyCanvasSize();
+            }
+            else if (wasLayered && _pack.Layers is { Enabled: true } layers && !needsHeadRebuild)
             {
                 // Motion/tilt/cut params changed only — keep bitmaps, refresh pivots.
                 _neckPivotX = layers.NeckPivot.X;
                 _neckPivotY = layers.NeckPivot.Y;
                 _cutY = layers.CutY > 0 ? layers.CutY : layers.NeckPivot.Y;
-                HeadLayer.RenderTransformOrigin = new Point(
-                    Math.Clamp(_neckPivotX / _canvasW, 0, 1),
-                    Math.Clamp(_neckPivotY / _canvasH, 0, 1));
+                _headRotateBottomY = layers.HeadRotateBottomY > 0
+                    ? layers.HeadRotateBottomY
+                    : Math.Min(_cutY, 515);
+                ApplyCanvasSize();
             }
             else
             {
@@ -306,10 +456,12 @@ public partial class AvatarWindow : Window
                 }
                 SeedFirstFrame();
                 ApplyScalingMode();
+                ApplyCanvasSize();
             }
 
             ApplyBodyPivot();
             _lastBodyState = null; // force ApplyBody to re-bind sources next frame
+            _lastPoseId = null;
         });
     }
 
@@ -387,13 +539,111 @@ public partial class AvatarWindow : Window
 
     private static BitmapImage LoadFrozenBitmap(string path)
     {
+        // StreamSource + OnLoad: .NET 10 UriSource can fail on some NTFS-wrapped PNGs
+        // ("未找到适用于完成此操作的图像处理组件") even when the logical bytes are valid.
+        var bytes = File.ReadAllBytes(path);
+        if (bytes.Length < 8
+            || bytes[0] != 0x89 || bytes[1] != 0x50 || bytes[2] != 0x4E || bytes[3] != 0x47)
+        {
+            throw new InvalidDataException(
+                $"Not a PNG (bad magic, len={bytes.Length}): {path}. " +
+                "Re-save layered avatar assets so the file starts with \\x89PNG.");
+        }
+
+        using var ms = new MemoryStream(bytes, writable: false);
         var bmp = new BitmapImage();
         bmp.BeginInit();
-        bmp.UriSource = new Uri(path, UriKind.Absolute);
+        bmp.StreamSource = ms;
         bmp.CacheOption = BitmapCacheOption.OnLoad;
+        bmp.CreateOptions = BitmapCreateOptions.IgnoreColorProfile;
         bmp.EndInit();
         if (bmp.CanFreeze) bmp.Freeze();
         return bmp;
+    }
+
+    /// <summary>
+    /// Clears body pixels that duplicate the head's 呆毛 and 蕾丝 (white frill + dark outline).
+    /// Leaves face/eyes/neck alone for the seam.
+    /// </summary>
+    private static ImageSource PunchBodyHeadDecorations(BitmapSource body, BitmapSource head)
+    {
+        var body32 = EnsureBgra32(body);
+        var head32 = EnsureBgra32(head);
+        var w = body32.PixelWidth;
+        var h = body32.PixelHeight;
+        if (head32.PixelWidth != w || head32.PixelHeight != h)
+            throw new InvalidOperationException(
+                $"body/head size mismatch: {w}x{h} vs {head32.PixelWidth}x{head32.PixelHeight}");
+
+        const int bytesPerPixel = 4;
+        var stride = w * bytesPerPixel;
+        var bodyPx = new byte[stride * h];
+        var headPx = new byte[stride * h];
+        body32.CopyPixels(bodyPx, stride, 0);
+        head32.CopyPixels(headPx, stride, 0);
+
+        var yMax = Math.Min(h, 220);
+        var punched = 0;
+        for (var y = 0; y < yMax; y++)
+        {
+            var row = y * stride;
+            for (var x = 0; x < w; x++)
+            {
+                var i = row + x * bytesPerPixel;
+                var ba = bodyPx[i + 3];
+                if (ba < 16) continue;
+
+                var ha = headPx[i + 3];
+                var hb = headPx[i];
+                var hg = headPx[i + 1];
+                var hr = headPx[i + 2];
+                var bb = bodyPx[i];
+                var bg = bodyPx[i + 1];
+                var br = bodyPx[i + 2];
+
+                // Ahoge tip + fringe residuals just outside the head matte.
+                var inAhogeRect = y is >= 55 and <= 85 && x is >= 555 and <= 610;
+                var ahogeHit = y < 80 && (ha > 16 || inAhogeRect);
+
+                // Lace: white frill + dark blue/purple outline under the headband.
+                var laceHit = y is >= 66 and < 205 && ha > 16
+                              && (IsLaceLike(hr, hg, hb) || IsLaceLike(br, bg, bb));
+
+                if (!ahogeHit && !laceHit) continue;
+
+                bodyPx[i] = 0;
+                bodyPx[i + 1] = 0;
+                bodyPx[i + 2] = 0;
+                bodyPx[i + 3] = 0;
+                punched++;
+            }
+        }
+
+        var wb = new WriteableBitmap(w, h, body32.DpiX, body32.DpiY, PixelFormats.Bgra32, null);
+        wb.WritePixels(new Int32Rect(0, 0, w, h), bodyPx, stride, 0);
+        if (wb.CanFreeze) wb.Freeze();
+        DebugLog.Write($"[AvatarWindow] body decoration punch cleared {punched} px");
+        return wb;
+    }
+
+    /// <summary>White lace frill or dark outline (blue-biased, not skin/hair midtones).</summary>
+    private static bool IsLaceLike(byte r, byte g, byte b)
+    {
+        if (r >= 198 && g >= 198 && b >= 215)
+            return true; // near-white lace
+        // dark blue/purple outline around lace
+        if (b >= Math.Max(r, g) + 3 && b >= 70 && (r + g + b) <= 450)
+            return true;
+        return false;
+    }
+
+    private static BitmapSource EnsureBgra32(BitmapSource src)
+    {
+        if (src.Format == PixelFormats.Bgra32)
+            return src;
+        var converted = new FormatConvertedBitmap(src, PixelFormats.Bgra32, null, 0);
+        if (converted.CanFreeze) converted.Freeze();
+        return converted;
     }
 
     private void StartRendering()
@@ -435,11 +685,28 @@ public partial class AvatarWindow : Window
         ApplyBody(sample, deltaMs);
         ApplyMotion(sample.Motion);
         ApplySticker(sample.State.Sticker);
+
+        // Live readout for Monitor QA.
+        if (_usePoses)
+            TitleText.Text = $"{_pack.Meta.Name}  pose {sample.Pose.PoseId}";
+        else if (_useLayered)
+        {
+            var tilt = sample.Motion.TiltDeg;
+            TitleText.Text = Math.Abs(tilt) < 0.05f
+                ? $"{_pack.Meta.Name}  tilt 0°"
+                : $"{_pack.Meta.Name}  tilt {tilt:+0.0;-0.0}°";
+        }
     }
 
     private void ApplyBody(AvatarRenderSample sample, double deltaMs)
     {
         var state = sample.State.BodyState;
+
+        if (_usePoses)
+        {
+            ApplyPoseBody(sample, deltaMs, state);
+            return;
+        }
 
         if (_useLayered)
         {
@@ -454,6 +721,118 @@ public partial class AvatarWindow : Window
             {
                 BodyImageA.Source = stateFrame;
             }
+            else
+            {
+                _placeholderAccumMs += deltaMs;
+                const double frameMs = 120;
+                if (_placeholderAccumMs >= frameMs)
+                {
+                    _placeholderAccumMs = 0;
+                    _placeholderIndex = (_placeholderIndex + 1) % _placeholderLoop.Count;
+                    BodyImageA.Source = _placeholderLoop[_placeholderIndex];
+                }
+            }
+            BodyImageA.Opacity = 1;
+            BodyImageB.Opacity = 0;
+            _lastBodyState = state;
+            return;
+        }
+
+        if (!_bodyFrames.TryGetValue(state, out var current))
+        {
+            if (!_bodyFrames.TryGetValue(AvatarStateMachine.Neutral, out current))
+                return;
+        }
+
+        var fading = sample.State.FadeFromState is not null && sample.State.FadeT < 1f;
+        if (fading && sample.State.FadeFromState is { } from
+            && _bodyFrames.TryGetValue(from, out var prev))
+        {
+            BodyImageB.Source = prev;
+            BodyImageA.Source = current;
+            BodyImageA.Opacity = sample.State.FadeT;
+            BodyImageB.Opacity = 1f - sample.State.FadeT;
+        }
+        else
+        {
+            if (!string.Equals(_lastBodyState, state, StringComparison.OrdinalIgnoreCase))
+                BodyImageA.Source = current;
+            BodyImageA.Opacity = 1;
+            BodyImageB.Opacity = 0;
+        }
+
+        _lastBodyState = state;
+        _lastFadeFrom = sample.State.FadeFromState;
+    }
+
+    private void ApplyPoseBody(AvatarRenderSample sample, double deltaMs, string state)
+    {
+        var pose = sample.Pose;
+        var fading = pose.FadeFromPoseId is not null && pose.FadeT < 1f;
+
+        // Settled on front: full expression / mouth / blink via sprite states.
+        if (pose.FullExpression && !fading)
+        {
+            ApplyExpressionBody(sample, deltaMs, state);
+            _lastPoseId = pose.PoseId;
+            return;
+        }
+
+        if (fading && pose.FadeFromPoseId is { } fromId)
+        {
+            var fromSrc = ResolvePoseBitmap(fromId, state, useExpressionOnFront: false);
+            var toSrc = ResolvePoseBitmap(pose.PoseId, state, useExpressionOnFront: false);
+            if (fromSrc is not null && toSrc is not null)
+            {
+                BodyImageB.Source = fromSrc;
+                BodyImageA.Source = toSrc;
+                BodyImageA.Opacity = pose.FadeT;
+                BodyImageB.Opacity = 1f - pose.FadeT;
+            }
+        }
+        else if (ResolvePoseBitmap(pose.PoseId, state, useExpressionOnFront: false) is { } current)
+        {
+            if (!string.Equals(_lastPoseId, pose.PoseId, StringComparison.OrdinalIgnoreCase))
+                BodyImageA.Source = current;
+            BodyImageA.Opacity = 1;
+            BodyImageB.Opacity = 0;
+        }
+
+        _lastPoseId = pose.PoseId;
+        _lastBodyState = state;
+    }
+
+    /// <summary>
+    /// Front pose during cross-fade: prefer poses/front.png for foot alignment; else expression sprite.
+    /// Settled front uses expression sprites via <see cref="ApplyExpressionBody"/>.
+    /// </summary>
+    private ImageSource? ResolvePoseBitmap(string poseId, string bodyState, bool useExpressionOnFront)
+    {
+        var isFront = string.Equals(poseId, PoseController.Front, StringComparison.OrdinalIgnoreCase);
+
+        if (isFront && useExpressionOnFront)
+        {
+            if (_bodyFrames.TryGetValue(bodyState, out var expr)) return expr;
+            if (_bodyFrames.TryGetValue(AvatarStateMachine.Neutral, out var neutral)) return neutral;
+        }
+
+        if (_poseFrames.TryGetValue(poseId, out var pose)) return pose;
+
+        if (isFront)
+        {
+            if (_bodyFrames.TryGetValue(bodyState, out var expr)) return expr;
+            if (_bodyFrames.TryGetValue(AvatarStateMachine.Neutral, out var neutral)) return neutral;
+        }
+
+        return null;
+    }
+
+    private void ApplyExpressionBody(AvatarRenderSample sample, double deltaMs, string state)
+    {
+        if (_usePlaceholderSheet && _placeholderLoop.Count > 0)
+        {
+            if (_bodyFrames.TryGetValue(state, out var stateFrame))
+                BodyImageA.Source = stateFrame;
             else
             {
                 _placeholderAccumMs += deltaMs;
@@ -547,19 +926,22 @@ public partial class AvatarWindow : Window
         BodyTranslate.Y = oy;
         BodyScale.ScaleX = m.ScaleX;
         BodyScale.ScaleY = m.ScaleY;
-        BodyRotate.Angle = m.RotationDeg;
         // m.Alpha reserved for global fades; body cross-fade uses Image opacity.
 
         if (_useLayered)
         {
-            HeadTilt.Angle = m.TiltDeg;
-            // Body ScaleY about foot pivot lifts the cut; head follows by cut height (not body top).
-            // Soft edge is baked into the head PNG — do not feather / clip edges in code.
-            HeadTranslate.Y = LayeredBreathFollow.HeadTranslateY(_footPivotY, _cutY, m.ScaleY);
+            // Layered: body stays planted; sway + intentional tilt both go to the head.
+            BodyRotate.Angle = 0;
+            HeadTilt.Angle = m.TiltDeg + m.RotationDeg;
+            HeadTranslate.X = 0;
+            HeadTranslate.Y = 0;
         }
         else
         {
+            // Poses or single-layer: no head tilt — whole image rotates only.
+            BodyRotate.Angle = m.RotationDeg;
             HeadTilt.Angle = 0;
+            HeadTranslate.X = 0;
             HeadTranslate.Y = 0;
         }
     }

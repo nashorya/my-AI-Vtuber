@@ -45,6 +45,7 @@ public sealed class BotRuntime : IAsyncDisposable
     private AvatarConfigWatcher? _avatarConfigWatcher;
     private EventHandler<float>? _avatarRmsHandler;
     private EventHandler<string>? _avatarEmotionHandler;
+    private EventHandler<string>? _avatarPoseHandler;
     private ObsClient? _obs;
     private IAsrClient _asr = null!;   // provider-specific (whisper-HTTP or DashScope-WebSocket)
     private LlmClient _llm = null!;
@@ -255,7 +256,7 @@ public sealed class BotRuntime : IAsyncDisposable
     private void BuildMemoryExtractor()
     {
         _memoryLlm?.Dispose();
-        _memoryLlm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Vts.BuildSystemPrompt(_config.Llm.SystemPrompt));
+        _memoryLlm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, BuildLlmSystemPrompt());
         _memoryExtractor = new MemoryExtractor(_memoryLlm, _factRepo, _config.Memory, _conversation);
     }
 
@@ -319,7 +320,9 @@ public sealed class BotRuntime : IAsyncDisposable
             }
 
             _pixelAvatar = new PixelAvatarDriver(pack, assetsDir, available, _config.Avatar.EmotionMap);
-            WirePixelAvatar();
+            // Wire after InitPipeline creates the orchestrator; StartAsync calls InitPipeline first.
+            if (_orchestrator is not null)
+                WirePixelAvatar();
             StartAvatarConfigWatcher(assetsDir);
             Console.WriteLine($"[Avatar] pixel driver ready ({pack.Meta.Name}, states={available.Count}) @ {assetsDir}");
         }
@@ -373,6 +376,9 @@ public sealed class BotRuntime : IAsyncDisposable
 
         _avatarEmotionHandler = (_, emotion) => _pixelAvatar?.SetEmotion(emotion);
         _orchestrator.OnEmotionDetected += _avatarEmotionHandler;
+
+        _avatarPoseHandler = (_, pose) => _pixelAvatar?.SetPose(pose);
+        _orchestrator.OnPoseDetected += _avatarPoseHandler;
     }
 
     private void UnwirePixelAvatar()
@@ -381,8 +387,11 @@ public sealed class BotRuntime : IAsyncDisposable
             _player.RmsUpdated -= _avatarRmsHandler;
         if (_avatarEmotionHandler is not null && _orchestrator is not null)
             _orchestrator.OnEmotionDetected -= _avatarEmotionHandler;
+        if (_avatarPoseHandler is not null && _orchestrator is not null)
+            _orchestrator.OnPoseDetected -= _avatarPoseHandler;
         _avatarRmsHandler = null;
         _avatarEmotionHandler = null;
+        _avatarPoseHandler = null;
     }
 
     private void InitObs()
@@ -492,7 +501,7 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             _llm?.Dispose();
             _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model,
-                _config.Vts.BuildSystemPrompt(_config.Llm.SystemPrompt));
+                BuildLlmSystemPrompt());
         }
         if (_tts is null || rebuild.HasFlag(RuntimeChange.RebuildTts))
         {
@@ -505,7 +514,9 @@ public sealed class BotRuntime : IAsyncDisposable
             // Single stable tap: reads _virtualMic field, so mixer restarts pick up automatically.
             _player.PcmChunkPlayed += (_, chunk) => _virtualMic?.WriteTts(chunk);
         }
-        _orchestrator = new BotOrchestrator(_asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts);
+        _orchestrator = new BotOrchestrator(
+            _asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts,
+            ttsEmotionMap: _config.Avatar.EmotionMap);
 
         _orchestrator.OnError += (_, msg) => PipelineError?.Invoke(this, msg);
 
@@ -576,14 +587,51 @@ public sealed class BotRuntime : IAsyncDisposable
             AiStopSpeaking?.Invoke(this, EventArgs.Empty);
         };
 
-        // Orchestrator is recreated here — re-attach pixel avatar emotion hook if active.
+        // Orchestrator is recreated here — re-attach pixel avatar hooks if active.
         if (_pixelAvatar is not null)
         {
             if (_avatarEmotionHandler is not null)
                 _orchestrator.OnEmotionDetected -= _avatarEmotionHandler;
+            if (_avatarPoseHandler is not null)
+                _orchestrator.OnPoseDetected -= _avatarPoseHandler;
             _avatarEmotionHandler = (_, emotion) => _pixelAvatar?.SetEmotion(emotion);
+            _avatarPoseHandler = (_, pose) => _pixelAvatar?.SetPose(pose);
             _orchestrator.OnEmotionDetected += _avatarEmotionHandler;
+            _orchestrator.OnPoseDetected += _avatarPoseHandler;
         }
+    }
+
+    /// <summary>Merges VTS + pixel avatar emotion/pose allow-lists into the LLM system prompt.</summary>
+    private string BuildLlmSystemPrompt()
+    {
+        var extraEmotions = _config.Avatar.EmotionMap.Keys;
+        return _config.Vts.BuildSystemPrompt(
+            _config.Llm.SystemPrompt,
+            extraEmotions,
+            ResolvePoseIdsForPrompt());
+    }
+
+    private IEnumerable<string> ResolvePoseIdsForPrompt()
+    {
+        if (_pixelAvatar?.Pack.Poses?.List is { Count: > 0 } live)
+            return live.Keys;
+
+        if (!_config.Avatar.UsesPixel)
+            return [];
+
+        try
+        {
+            var dir = AppPaths.ResolveAvatarAssetsDirectory(_config.Avatar.AssetsPath);
+            if (AvatarConfigLoader.TryLoad(dir, out var pack)
+                && pack.Poses?.List is { Count: > 0 } poses)
+                return poses.Keys;
+        }
+        catch
+        {
+            // Prompt enrichment is best-effort.
+        }
+
+        return [];
     }
 
     /// <summary>
