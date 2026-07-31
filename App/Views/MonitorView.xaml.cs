@@ -99,6 +99,13 @@ public partial class MonitorView : UserControl
             AvatarListeningButton.Content = _avatarListeningOn ? "倾听 OFF" : "倾听 ON";
     }
 
+    private void OnAvatarPose(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MonitorViewModel vm) return;
+        if (sender is FrameworkElement { Tag: string poseId })
+            vm.TriggerAvatarPose(poseId);
+    }
+
     private void OnOperationalEventScrollChanged(object sender, ScrollChangedEventArgs e)
     {
         if (_followLatestScrollPolicy.ShouldPauseFollowing(e.VerticalChange) &&

@@ -304,6 +304,22 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
         _dispatch(() => AddOperationalEvent("形象", on ? "倾听 → ON" : "倾听 → OFF"));
     }
 
+    /// <summary>Manual QA: switch whole-image pose (v0.6).</summary>
+    public void TriggerAvatarPose(string poseId)
+    {
+        if (string.IsNullOrWhiteSpace(poseId)) return;
+        var driver = _runtime.PixelAvatar;
+        if (driver is null)
+        {
+            _dispatch(() => AddOperationalEvent(
+                "形象", $"未启用（backend 需 pixel/both）: pose {poseId}", isError: true));
+            return;
+        }
+
+        driver.SetPose(poseId);
+        _dispatch(() => AddOperationalEvent("形象", $"姿态 → {poseId}"));
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)

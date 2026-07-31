@@ -144,7 +144,8 @@ public sealed class LlmConfig
     public string BaseUrl { get; set; } = "https://api.deepseek.com";
     public string ApiKey { get; set; } = string.Empty;
     public string Model { get; set; } = "deepseek-chat";
-    public string SystemPrompt { get; set; } = "你是一个VTuber...";
+    public string SystemPrompt { get; set; } =
+        "你是直播中的 AI VTuber。口语短句回答，正文不超过80字（控制标记不计入），一句顶十句，别啰嗦、别列点。";
     public int MaxHistoryTokens { get; set; } = 4096;
 }
 
@@ -175,22 +176,56 @@ public sealed class VtsConfig
     public Dictionary<string, string> ActionMap { get; set; } = new();
 
     /// <summary>
-    /// Appends an auto-generated "[emotion:word]" vocabulary hint built from EmotionMap's keys,
-    /// so the prompt always advertises exactly the emotion words that are actually wired to a
-    /// VTS hotkey — no need to hand-edit the system prompt every time a mapping is added.
+    /// Appends auto-generated control-tag vocabulary so the LLM emits exactly the
+    /// [emotion:] / [pose:] / [action:] tokens we can parse. Extra emotion/pose lists
+    /// (pixel avatar pack) merge with VTS maps.
+    /// Prefer short replies: one spoken sentence keeps one emotion/pose naturally aligned with TTS.
     /// </summary>
-    public string BuildSystemPrompt(string basePrompt)
+    public string BuildSystemPrompt(
+        string basePrompt,
+        IEnumerable<string>? extraEmotions = null,
+        IEnumerable<string>? poses = null)
     {
         var instructions = new List<string>();
-        if (EmotionMap.Count > 0)
+
+        instructions.Add(
+            "回复要短：正文（去掉所有 [emotion:]/[pose:]/[action:] 标记后）尽量不超过 80 个字；" +
+            "默认一句说完，最多两句。标记紧挨该句句号前写，不计入字数。" +
+            "若超长会在 。！？ 处截断，保证念完完整一句。");
+
+        var emotionWords = EmotionMap.Keys
+            .Concat(extraEmotions ?? [])
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (emotionWords.Count > 0)
         {
-            var words = string.Join("、", EmotionMap.Keys);
-            instructions.Add($"你可以在合适的时候插入 [emotion:词] 来切换表情。可用的情绪词只有：{words}。每句话最多一个，不要创造列表外的词。标记不会被读出或显示。");
+            var words = string.Join("、", emotionWords);
+            instructions.Add(
+                "需要换表情时，在该句句号前插入 [emotion:词]（驱动立绘/VTS）。" +
+                $"可用情绪词只有：{words}。每句最多一个，不要列表外的词。" +
+                "标记不会被读出；TTS 只念正文，情绪另传参数。");
         }
+
+        var poseWords = (poses ?? [])
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (poseWords.Count > 0)
+        {
+            var words = string.Join("、", poseWords);
+            instructions.Add(
+                "需要换整图姿态时，在该句句号前插入 [pose:姿态名]。" +
+                $"可用姿态名只有：{words}。每句最多一个。" +
+                "示例：好呀[emotion:shy][pose:tilt_left]。");
+        }
+
         if (ActionMap.Count > 0)
         {
             var actions = string.Join("、", ActionMap.Keys);
-            instructions.Add($"你可以在动作应该开始的位置插入 [action:动作名] 来触发模型动作。可用的动作名只有：{actions}。只在语义合适时使用，每句话最多一个，不要创造列表外的动作。标记不会被读出或显示。");
+            instructions.Add(
+                $"需要动作时在该句句号前插入 [action:动作名]。可用：{actions}。" +
+                "每句最多一个，不要列表外的动作。标记不会被读出。");
         }
 
         if (instructions.Count == 0) return basePrompt;

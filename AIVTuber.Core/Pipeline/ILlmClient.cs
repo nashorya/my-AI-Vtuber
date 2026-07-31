@@ -41,6 +41,11 @@ public interface ILlmClient
     event EventHandler<string>? OnActionDetected;
 
     /// <summary>
+    /// Fires when a pose tag is detected (e.g., [pose:tilt_left]).
+    /// </summary>
+    event EventHandler<string>? OnPoseDetected;
+
+    /// <summary>
     /// Streams LLM response tokens. Each yielded string is a token chunk.
     /// </summary>
     IAsyncEnumerable<string> StreamAsync(

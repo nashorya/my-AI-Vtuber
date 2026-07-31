@@ -157,16 +157,19 @@ public sealed class TtsClient : ITtsClient, IDisposable
     /// <summary>Prepends an inline emotion tag to text for Fish Audio S2. S1 ignores unknown tags.</summary>
     private static string ApplyFishEmotionTag(string text, string? emotion)
     {
-        var tag = emotion?.ToLowerInvariant() switch
+        var key = emotion?.Trim().ToLowerInvariant();
+        // Accept both English state names and a few Chinese aliases (after orchestrator mapping).
+        var tag = key switch
         {
-            "happy"     => "[happy]",
-            "sad"       => "[sad]",
-            "angry"     => "[angry]",
-            "fearful"   => "[fearful]",
-            "disgusted" => "[disgusted]",
-            "surprised" => "[surprised]",
-            "whisper"   => "[whispers]",
-            _           => null,
+            "happy" or "开心" or "愉快" => "[happy]",
+            "sad" or "难过" or "悲伤" => "[sad]",
+            "angry" or "生气" or "愤怒" => "[angry]",
+            "fearful" or "恐惧" => "[fearful]",
+            "disgusted" or "厌恶" => "[disgusted]",
+            "surprised" or "惊讶" => "[surprised]",
+            "shy" or "害羞" => "[happy]", // Fish has no shy — closest soft tone
+            "whisper" => "[whispers]",
+            _ => null,
         };
         return tag is null ? text : $"{tag} {text}";
     }

@@ -94,10 +94,11 @@ public class VtsConfigTests
     }
 
     [Fact]
-    public void BuildSystemPrompt_AdvertisesOnlyConfiguredActions()
+    public void BuildSystemPrompt_AdvertisesEmotionsPosesAndActions()
     {
         var config = new VtsConfig
         {
+            EmotionMap = new Dictionary<string, string> { ["happy"] = "hk1" },
             ActionMap = new Dictionary<string, string>
             {
                 ["head_shake"] = "hotkey-1",
@@ -105,11 +106,20 @@ public class VtsConfigTests
             }
         };
 
-        var prompt = config.BuildSystemPrompt("base prompt");
+        var prompt = config.BuildSystemPrompt(
+            "base prompt",
+            extraEmotions: ["开心", "shy"],
+            poses: ["front", "tilt_left"]);
 
+        Assert.Contains("[emotion:词]", prompt);
+        Assert.Contains("happy", prompt);
+        Assert.Contains("开心", prompt);
+        Assert.Contains("[pose:姿态名]", prompt);
+        Assert.Contains("tilt_left", prompt);
         Assert.Contains("[action:动作名]", prompt);
         Assert.Contains("head_shake", prompt);
-        Assert.Contains("wave", prompt);
+        Assert.Contains("回复要短", prompt);
+        Assert.Contains("80", prompt);
         Assert.DoesNotContain("hotkey-1", prompt);
     }
 }

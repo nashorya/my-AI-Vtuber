@@ -169,13 +169,32 @@
                                            Padding="10,0" Click="OnAvatarEmotion" Tag="sad"
                                            ToolTip="SetEmotion(sad) + sink" AutomationProperties.Name="测表情难过" />
                             </WrapPanel>
+                            <TextBlock Text="姿态" FontSize="{StaticResource FontSizeCaption}"
+                                       Foreground="{DynamicResource AppTextSecondaryBrush}" Margin="0,4,0,4" />
+                            <WrapPanel>
+                                <ui:Button Content="正脸" Appearance="Secondary" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarPose" Tag="front"
+                                           ToolTip="SetPose(front)" AutomationProperties.Name="测姿态正脸" />
+                                <ui:Button Content="右歪" Appearance="Secondary" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarPose" Tag="tilt_right"
+                                           ToolTip="SetPose(tilt_right)" AutomationProperties.Name="测姿态右歪" />
+                                <ui:Button Content="左歪" Appearance="Secondary" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarPose" Tag="tilt_left"
+                                           ToolTip="SetPose(tilt_left)" AutomationProperties.Name="测姿态左歪" />
+                                <ui:Button Content="右侧" Appearance="Secondary" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarPose" Tag="side_right"
+                                           ToolTip="SetPose(side_right)" AutomationProperties.Name="测姿态右侧" />
+                                <ui:Button Content="左侧" Appearance="Secondary" Height="32" Margin="0,0,6,6"
+                                           Padding="10,0" Click="OnAvatarPose" Tag="side_left"
+                                           ToolTip="SetPose(side_left)" AutomationProperties.Name="测姿态左侧" />
+                            </WrapPanel>
                             <TextBlock Text="倾听" FontSize="{StaticResource FontSizeCaption}"
                                        Foreground="{DynamicResource AppTextSecondaryBrush}" Margin="0,4,0,4" />
                             <WrapPanel>
                                 <ui:Button x:Name="AvatarListeningButton" Content="倾听 ON" Appearance="Secondary"
                                            Height="32" Margin="0,0,6,6" Padding="10,0"
                                            Click="OnAvatarListening" Tag="listening"
-                                           ToolTip="SetListening(true) — 头部歪 + 眨眼变勤"
+                                           ToolTip="SetListening — 倾听姿态 + 眨眼变勤"
                                            AutomationProperties.Name="测倾听姿态" />
                             </WrapPanel>
                             <TextBlock Text="挂机 / 贴纸" FontSize="{StaticResource FontSizeCaption}"

@@ -9,48 +9,67 @@
         Topmost="True"
         ShowInTaskbar="True"
         AllowsTransparency="False">
-    <Grid x:Name="RootGrid" ClipToBounds="True">
-        <!-- Body cross-fade: previous (B) under current (A) -->
-        <Grid x:Name="BodyLayer"
-              HorizontalAlignment="Center"
-              VerticalAlignment="Bottom"
-              RenderTransformOrigin="0.5,1">
-            <Grid.RenderTransform>
-                <TransformGroup>
-                    <ScaleTransform x:Name="BodyScale" ScaleX="1" ScaleY="1" />
-                    <RotateTransform x:Name="BodyRotate" Angle="0" />
-                    <TranslateTransform x:Name="BodyTranslate" X="0" Y="0" />
-                </TransformGroup>
-            </Grid.RenderTransform>
-            <Image x:Name="BodyImageB"
-                   Stretch="Uniform"
-                   Opacity="0"
-                   IsHitTestVisible="False" />
-            <Image x:Name="BodyImageA"
-                   Stretch="Uniform"
-                   Opacity="1"
-                   IsHitTestVisible="False" />
-            <!-- Head layer (v0.3): independent tilt + neck follow; collapsed unless layers.enabled -->
-            <Grid x:Name="HeadLayer"
-                  Visibility="Collapsed"
-                  IsHitTestVisible="False"
-                  RenderTransformOrigin="0.5,0.4">
+    <Grid x:Name="RootGrid"
+          ClipToBounds="False"
+          UseLayoutRounding="True"
+          SnapsToDevicePixels="True">
+        <!-- Fixed pack-canvas inside Viewbox: body/head share the same pixel grid so neck_pivot maps 1:1. -->
+        <Viewbox x:Name="AvatarViewbox"
+                 Margin="0,28,0,0"
+                 Stretch="Uniform"
+                 HorizontalAlignment="Center"
+                 VerticalAlignment="Bottom"
+                 SnapsToDevicePixels="True">
+            <Grid x:Name="BodyLayer"
+                  Width="1254" Height="1254"
+                  RenderTransformOrigin="0.5,1"
+                  SnapsToDevicePixels="True">
                 <Grid.RenderTransform>
                     <TransformGroup>
-                        <RotateTransform x:Name="HeadTilt" Angle="0" />
-                        <TranslateTransform x:Name="HeadTranslate" X="0" Y="0" />
+                        <ScaleTransform x:Name="BodyScale" ScaleX="1" ScaleY="1" />
+                        <RotateTransform x:Name="BodyRotate" Angle="0" />
+                        <TranslateTransform x:Name="BodyTranslate" X="0" Y="0" />
                     </TransformGroup>
                 </Grid.RenderTransform>
-                <Image x:Name="HeadImageB"
-                       Stretch="Uniform"
+                <Image x:Name="BodyImageB"
+                       Width="1254" Height="1254"
+                       Stretch="Fill"
                        Opacity="0"
-                       IsHitTestVisible="False" />
-                <Image x:Name="HeadImageA"
-                       Stretch="Uniform"
+                       IsHitTestVisible="False"
+                       SnapsToDevicePixels="True" />
+                <Image x:Name="BodyImageA"
+                       Width="1254" Height="1254"
+                       Stretch="Fill"
                        Opacity="1"
-                       IsHitTestVisible="False" />
+                       IsHitTestVisible="False"
+                       SnapsToDevicePixels="True" />
+                <!-- Head layer: rotate about neck_pivot in canvas pixels (CenterX/Y set in code). -->
+                <Grid x:Name="HeadLayer"
+                      Width="1254" Height="1254"
+                      Visibility="Collapsed"
+                      IsHitTestVisible="False"
+                      SnapsToDevicePixels="True">
+                    <Grid.RenderTransform>
+                        <TransformGroup>
+                            <RotateTransform x:Name="HeadTilt" Angle="0" CenterX="627" CenterY="500" />
+                            <TranslateTransform x:Name="HeadTranslate" X="0" Y="0" />
+                        </TransformGroup>
+                    </Grid.RenderTransform>
+                    <Image x:Name="HeadImageB"
+                           Width="1254" Height="1254"
+                           Stretch="Fill"
+                           Opacity="0"
+                           IsHitTestVisible="False"
+                           SnapsToDevicePixels="True" />
+                    <Image x:Name="HeadImageA"
+                           Width="1254" Height="1254"
+                           Stretch="Fill"
+                           Opacity="1"
+                           IsHitTestVisible="False"
+                           SnapsToDevicePixels="True" />
+                </Grid>
             </Grid>
-        </Grid>
+        </Viewbox>
 
         <!-- Sticker overlay (canvas coords map to pack canvas, scaled to window) -->
         <Canvas x:Name="StickerCanvas" IsHitTestVisible="False">

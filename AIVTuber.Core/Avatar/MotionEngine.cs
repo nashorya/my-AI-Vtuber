@@ -24,11 +24,14 @@ public sealed class MotionEngine
     private float _jumpDurationMs = 280f;
     private float _jumpElapsedMs = float.MaxValue;
 
-    // Head-tilt spring (v0.2). Two independent target contributors:
-    //   - emotion tilt (transient, cleared when emotion ends)
-    //   - listening tilt (persistent while SetListening(true))
-    // Effective target = emotionTilt ?? listeningTilt ?? 0. Emotion wins when set.
+    // Head-tilt spring (v0.2). Target priority (highest wins):
+    //   1. manual QA tilt (Monitor 歪头 button)
+    //   2. emotion tilt (transient, cleared when emotion ends)
+    //   3. listening tilt (persistent while SetListening(true))
+    //   4. 0
     private readonly Spring1D _tiltSpring = new();
+    private float _manualTiltTarget;
+    private bool _hasManualTilt;
     private float _emotionTiltTarget;   // 0 when no emotion override
     private bool _hasEmotionTilt;
     private float _listeningTiltTarget;
@@ -95,12 +98,32 @@ public sealed class MotionEngine
         UpdateTiltTarget();
     }
 
-    private void UpdateTiltTarget()
+    /// <summary>QA / Monitor override. Pass null to clear so listening/emotion resume.</summary>
+    public void SetManualTilt(float? tiltDeg)
     {
-        // Emotion wins over listening when set; otherwise listening; otherwise 0.
-        var target = _hasEmotionTilt ? _emotionTiltTarget : (_listening ? _listeningTiltTarget : 0f);
-        _tiltSpring.SetTarget(target, _cfg.Tilt.Stiffness, _cfg.Tilt.Damping);
+        if (tiltDeg is null)
+        {
+            _hasManualTilt = false;
+            _manualTiltTarget = 0;
+        }
+        else
+        {
+            _manualTiltTarget = Math.Clamp(tiltDeg.Value, -_cfg.Tilt.MaxDeg, _cfg.Tilt.MaxDeg);
+            _hasManualTilt = true;
+        }
+        UpdateTiltTarget();
     }
+
+    private float ResolveTiltTarget()
+    {
+        if (_hasManualTilt) return _manualTiltTarget;
+        if (_hasEmotionTilt) return _emotionTiltTarget;
+        if (_listening) return _listeningTiltTarget;
+        return 0f;
+    }
+
+    private void UpdateTiltTarget() =>
+        _tiltSpring.SetTarget(ResolveTiltTarget(), _cfg.Tilt.Stiffness, _cfg.Tilt.Damping);
 
     /// <summary>Clear persistent overrides (sink / bounce / breath scale) when emotion ends.</summary>
     public void ClearPersistentOverride()
@@ -152,8 +175,8 @@ public sealed class MotionEngine
             Math.Sin(t * 2.71 + 0.4) * 0.3 +
             Math.Sin(t * 4.11 + 2.1) * 0.2) * _cfg.Drift.AmpPx;
 
-        // Sway = whole-image rotation about foot pivot. Disabled when amp_deg is 0.
-        // True head-tilt (歪头) needs a separate head layer — not implemented in v0.1.
+        // Sway rotation (amp_deg). Single-layer AvatarWindow applies this to the whole body;
+        // layered mode routes RotationDeg to the head only so the torso stays planted.
         var swayPeriod = Math.Max(1f, _cfg.Sway.PeriodMs);
         var swayPhase = (_timeSec * 1000.0 / swayPeriod) * Math.PI * 2.0;
         var rotation = (float)(Math.Sin(swayPhase) * _cfg.Sway.AmpDeg);

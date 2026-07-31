@@ -1,6 +1,6 @@
 {
   "meta": {
-    "name": "鲸鱼女仆 v0.5",
+    "name": "鲸鱼女仆 v0.6",
     "canvas": {
       "width": 1254,
       "height": 1254
@@ -165,8 +165,8 @@
       "speed": 0.3
     },
     "sway": {
-      "comment": "整体轻微旋转摆动,一期用整图,二期换头部层",
-      "amp_deg": 2.5,
+      "comment": "整体轻微旋转摆动。默认关闭(0);需要时再开",
+      "amp_deg": 0,
       "period_ms": 5200
     },
     "listening": {
@@ -199,7 +199,7 @@
     }
   },
   "layers": {
-    "enabled": true,
+    "enabled": false,
     "comment": "头层切口548,与身体层原图内容形成13px重叠带(泡泡袖自550起)。重叠是接缝的美术解:小幅相对位移被头层覆盖,渲染层无需精确对齐公式。资产缺失回退单图层。",
     "body": "layered/body.png",
     "head_dir": "layered/head/",
@@ -209,6 +209,80 @@
       "y": 500
     },
     "note": "头层 y535~545 线性羽化渐隐(袖子起于y≈550,不得再下移);body.png 为AI整张生成的'头发盖脸'完整立绘,无拼接。接缝已量化验证:各角度突变强度低于原图天然基线",
-    "feather_to_y": 545
+    "feather_to_y": 545,
+    "deprecated": "分层旋转歪头方案已弃用(头发撕裂+接缝问题)。改用poses整图切换。此节及layered/资产保留仅作参考,渲染器应走poses"
+  },
+  "poses": {
+    "comment": "整图姿态切换(方向3)。front挂完整表情/口型/眨眼系统;其余姿态为整张固定立绘,说话时嘴型简化或不动,情绪表情不生效",
+    "dir": "poses/",
+    "default": "front",
+    "foot_baseline_y": 1188,
+    "list": {
+      "front": {
+        "file": "poses/front.png",
+        "full_expression": true
+      },
+      "tilt_right": {
+        "file": "poses/tilt_right.png",
+        "full_expression": false,
+        "mouth": "none"
+      },
+      "tilt_left": {
+        "file": "poses/tilt_left.png",
+        "full_expression": false,
+        "mouth": "none"
+      },
+      "side_right": {
+        "file": "poses/side_right.png",
+        "full_expression": false,
+        "mouth": "none"
+      },
+      "side_left": {
+        "file": "poses/side_left.png",
+        "full_expression": false,
+        "mouth": "none"
+      }
+    },
+    "transition": {
+      "type": "fade",
+      "ms": 180,
+      "comment": "姿态间交叉淡化,避免硬跳"
+    },
+    "triggers": {
+      "idle_random": {
+        "enabled": true,
+        "interval_ms": [
+          45000,
+          90000
+        ],
+        "poses": [
+          "tilt_left",
+          "tilt_right"
+        ],
+        "comment": "待机只随机摇头(tilt),不含侧身;约45~90s一次,停留2-4s后回front"
+      },
+      "manual": {
+        "comment": "Monitor页可手动触发测试"
+      },
+      "emotion_hint": {
+        "enabled": true,
+        "map": {
+          "shy": "tilt_left",
+          "害羞": "tilt_left",
+          "sad": "tilt_right",
+          "难过": "tilt_right",
+          "surprised": "side_right",
+          "惊讶": "side_left",
+          "happy": "front",
+          "开心": "front",
+          "angry": "front",
+          "生气": "front",
+          "upset": "front",
+          "无语": "front"
+        },
+        "comment": "LLM [emotion:] 时顺带切姿态；也可用显式 [pose:] 覆盖"
+      }
+    },
+    "note": "非front姿态期间:呼吸/漂移/摆动运动层照常作用于整图;口型和情绪表情暂停;姿态切回front恢复全部功能。歪头/侧身本身已画在图里,不再做分层旋转"
   }
 }
