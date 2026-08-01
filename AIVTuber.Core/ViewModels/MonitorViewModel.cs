@@ -220,6 +220,10 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
     /// <summary>Interrupts the AI immediately — stops current speech/generation and playback.</summary>
     public void StopSpeaking() => _runtime.StopSpeaking();
 
+    /// <summary>Manually marks a new PK match, for when the opponent could not be
+    /// auto-detected. Clears the previous opponent and tells the AI a fresh match began.</summary>
+    public void StartNewPk() => _runtime.StartNewPk();
+
     /// <summary>
     /// Manual test: drive the in-process PNG avatar to an emotion face.
     /// No-ops with a log line when backend is not pixel/both.

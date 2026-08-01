@@ -263,6 +263,9 @@ public sealed class InputTemplateConfig
     public string DanmakuTemplate { get; set; } = "（弹幕 {username}：{content}）";
     /// <summary>Wraps a PK match start. Use {uname}, {follower}, {uid} and {roomid} as placeholders.</summary>
     public string PkTemplate { get; set; } = "（PK 开始了，对手是 {uname}，有 {follower} 个粉丝）";
+    /// <summary>Wraps a manually announced PK match, used when the opponent could not be
+    /// resolved. No opponent placeholders are available on this path.</summary>
+    public string PkManualTemplate { get; set; } = "（新的一场 PK 开始了，还不知道对手是谁）";
 }
 
 public sealed class BilibiliConfig

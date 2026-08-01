@@ -878,7 +878,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _selector = CreateSelector();
         _danmaku = new BilibiliDanmakuClient(_config.Bilibili);
         _danmaku.OnDanmaku += (_, d) => { _selector?.Enqueue(d); _selector?.TrySelectNext(); };
-        _danmaku.OnPkStarted += OnPkStarted;
+        _danmaku.OnPkStarted += (_, pk) => AnnouncePkOpponent(pk);
         // Surface bridge health to the UI error banner, and pipe its stdout/stderr to the debug log.
         _danmaku.OnError += (_, msg) => PipelineError?.Invoke(this, $"[弹幕] {msg}");
         _danmaku.OnProcessExited += (_, msg) => PipelineError?.Invoke(this, $"[弹幕] {msg}");
@@ -896,25 +896,53 @@ public sealed class BotRuntime : IAsyncDisposable
         }
     }
 
+    /// <summary>The opponent of the PK match currently in progress, or null when no match is
+    /// running or the opponent could not be resolved.</summary>
+    public PkOpponent? CurrentPkOpponent { get; private set; }
+
     /// <summary>
     /// Announces the opposing streamer when a PK match starts. Deliberately bypasses
     /// DanmakuSelector: that queue exists to pick one message out of a backlog on a
     /// SelectionIntervalSec throttle, which would delay or drop a one-shot, time-critical
     /// event. Fire-and-forget so the HTTP accept loop is never blocked by the pipeline.
     /// </summary>
-    private async void OnPkStarted(object? sender, PkOpponent pk)
+    public void AnnouncePkOpponent(PkOpponent pk)
     {
+        ArgumentNullException.ThrowIfNull(pk);
+        CurrentPkOpponent = pk;
+        AIVTuber.Core.Diagnostics.DebugLog.Write(
+            $"[PK] 对手 {pk.Username}（{pk.FollowerCount} 粉，房间 {pk.RoomId}）");
+
+        var text = _config.Input.PkTemplate
+            .Replace("{uname}", pk.Username)
+            .Replace("{follower}", pk.FollowerCount.ToString())
+            .Replace("{uid}", pk.Uid)
+            .Replace("{roomid}", pk.RoomId.ToString());
+        FeedPkText(text, pk.Uid);
+    }
+
+    /// <summary>
+    /// Manually marks the start of a new PK match. Exists because auto-detection cannot
+    /// always resolve the opponent (the room id may be absent from the payload, or the
+    /// lookup may fail); without this the AI would keep treating the previous opponent as
+    /// current. Clears the recorded opponent, then tells the AI a fresh match has begun.
+    /// </summary>
+    public void StartNewPk()
+    {
+        CurrentPkOpponent = null;
+        AIVTuber.Core.Diagnostics.DebugLog.Write("[PK] 手动标记新一场 PK");
+        FeedPkText(_config.Input.PkManualTemplate, uid: "pk-manual");
+    }
+
+    /// <summary>Pushes a PK line straight into the pipeline. No-ops before the pipeline is
+    /// initialized, so UI controls stay safe to press while the bot is stopped.</summary>
+    private async void FeedPkText(string text, string uid)
+    {
+        if (_orchestrator is null) return;
         try
         {
             _stateTracker.TextInputStarted(Environment.TickCount64);
-            var text = _config.Input.PkTemplate
-                .Replace("{uname}", pk.Username)
-                .Replace("{follower}", pk.FollowerCount.ToString())
-                .Replace("{uid}", pk.Uid)
-                .Replace("{roomid}", pk.RoomId.ToString());
-            AIVTuber.Core.Diagnostics.DebugLog.Write(
-                $"[PK] 对手 {pk.Username}（{pk.FollowerCount} 粉，房间 {pk.RoomId}）");
-            await _orchestrator.ProcessTextAsync(text, _conversation.BuildMessages(pk.Uid));
+            await _orchestrator.ProcessTextAsync(text, _conversation.BuildMessages(uid));
         }
         catch (Exception ex)
         {

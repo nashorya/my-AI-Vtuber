@@ -52,6 +52,12 @@ public partial class MonitorView : UserControl
             vm.StopSpeaking();
     }
 
+    private void OnNewPkClicked(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is MonitorViewModel vm)
+            vm.StartNewPk();
+    }
+
     private void OnRestartLocalAsr(object sender, RoutedEventArgs e)
     {
         if (DataContext is MonitorViewModel vm)
