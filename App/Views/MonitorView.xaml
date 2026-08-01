@@ -26,6 +26,7 @@
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <WrapPanel Grid.Column="0" VerticalAlignment="Center">
                     <TextBlock Text="LIVE CONTROL" FontSize="{StaticResource FontSizeBody}" FontWeight="Bold"
@@ -60,6 +61,11 @@
                         </Style>
                     </ui:Button.Style>
                 </ui:Button>
+                <ui:Button Grid.Column="3" x:Name="NewPkButton" Content="新 PK"
+                           Icon="{ui:SymbolIcon Symbol=Flash24}" Width="96" Height="{StaticResource DeckToolHeight}"
+                           Margin="8,0,0,0" Appearance="Secondary" Click="OnNewPkClicked"
+                           ToolTip="识别不到对手时手动标记新一场 PK，并清掉上一场对手"
+                           AutomationProperties.Name="开始新一场 PK" />
             </Grid>
         </Border>
 

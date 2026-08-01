@@ -21,6 +21,9 @@ public sealed class BilibiliDanmakuClient : IDisposable
     private bool _disposed;
 
     public event EventHandler<Danmaku>? OnDanmaku;
+    /// <summary>Raised when a PK match starts and the opposing streamer has been resolved.
+    /// Only fires when <see cref="BilibiliConfig.PkNotice"/> is enabled.</summary>
+    public event EventHandler<PkOpponent>? OnPkStarted;
     public event EventHandler<string>? OnProcessExited;
     public event EventHandler<string>? OnError;
     /// <summary>Raised for each stdout/stderr line emitted by the Python bridge (for diagnostics).</summary>
@@ -39,6 +42,7 @@ public sealed class BilibiliDanmakuClient : IDisposable
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         _httpListener = new HttpListener();
         _httpListener.Prefixes.Add($"http://localhost:{_config.PushPort}/danmaku/");
+        _httpListener.Prefixes.Add($"http://localhost:{_config.PushPort}/pk/");
         _httpListener.Start();
         _ = AcceptLoopAsync(_cts.Token);
         StartPythonProcess();
@@ -82,14 +86,23 @@ public sealed class BilibiliDanmakuClient : IDisposable
             using var reader = new StreamReader(ctx.Request.InputStream, Encoding.UTF8);
             var body = await reader.ReadToEndAsync(ct).ConfigureAwait(false);
 
-            var data = JsonSerializer.Deserialize<DanmakuPush>(body);
-            if (data is not null && !string.IsNullOrEmpty(data.Content))
+            var path = ctx.Request.Url?.AbsolutePath ?? string.Empty;
+            if (path.StartsWith("/pk", StringComparison.OrdinalIgnoreCase))
             {
-                OnDanmaku?.Invoke(this, new Danmaku
+                if (PkOpponent.TryParse(body, out var opponent))
+                    OnPkStarted?.Invoke(this, opponent!);
+            }
+            else
+            {
+                var data = JsonSerializer.Deserialize<DanmakuPush>(body);
+                if (data is not null && !string.IsNullOrEmpty(data.Content))
                 {
-                    Uid = data.Uid ?? "0", Username = data.Username ?? "unknown",
-                    Content = data.Content, Timestamp = DateTime.UtcNow, Platform = "bilibili"
-                });
+                    OnDanmaku?.Invoke(this, new Danmaku
+                    {
+                        Uid = data.Uid ?? "0", Username = data.Username ?? "unknown",
+                        Content = data.Content, Timestamp = DateTime.UtcNow, Platform = "bilibili"
+                    });
+                }
             }
             ctx.Response.StatusCode = 200;
             await ctx.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes("{\"status\":\"ok\"}"), ct);
@@ -118,6 +131,13 @@ public sealed class BilibiliDanmakuClient : IDisposable
         // Trailing slash so it matches the HttpListener prefix "/danmaku/" (a POST to "/danmaku"
         // without the slash would not match the prefix).
         si.Environment["PUSH_URL"] = $"http://localhost:{_config.PushPort}/danmaku/";
+        si.Environment["PK_PUSH_URL"] = $"http://localhost:{_config.PushPort}/pk/";
+        si.Environment["PK_NOTICE"] = _config.PkNotice ? "1" : "0";
+        // UseShellExecute=false makes the child inherit our full environment. If the host
+        // shell exports a proxy, the bridge's Bilibili API calls detour through it and
+        // degrade from ~0.1s to seconds. These APIs never need a proxy.
+        si.Environment["no_proxy"] = "*";
+        si.Environment["NO_PROXY"] = "*";
 
         _pythonProcess = new Process { StartInfo = si, EnableRaisingEvents = true };
         _pythonProcess.Exited += OnPythonProcessExited;
