@@ -79,12 +79,15 @@
             <TabItem Header="语音">
                 <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel MaxWidth="720">
                     <TextBlock Text="语音" Style="{StaticResource SectionTitle}" />
-                    <TextBlock Text="TTS 提供商" Style="{StaticResource FieldLabel}" /><ComboBox SelectedValue="{Binding Working.Tts.Provider}" SelectedValuePath="Content"><ComboBoxItem Content="fish-audio"/><ComboBoxItem Content="minimax"/><ComboBoxItem Content="aliyun"/></ComboBox>
+                    <TextBlock Text="TTS 提供商" Style="{StaticResource FieldLabel}" /><ComboBox SelectedValue="{Binding Working.Tts.Provider}" SelectedValuePath="Content"><ComboBoxItem Content="fish-audio"/><ComboBoxItem Content="minimax"/><ComboBoxItem Content="aliyun"/><ComboBoxItem Content="dots"/></ComboBox>
                     <TextBlock Text="TTS API Key（留空不修改）" Style="{StaticResource FieldLabel}" /><ui:PasswordBox x:Name="TtsKey" />
                     <TextBlock Text="Voice ID" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Tts.VoiceId, UpdateSourceTrigger=PropertyChanged}" />
                     <TextBlock Text="模型" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Tts.Model, UpdateSourceTrigger=PropertyChanged}" />
                     <TextBlock Text="MiniMax Group ID" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Tts.GroupId, UpdateSourceTrigger=PropertyChanged}" />
-                    <TextBlock Text="语速（0.5-2.0）" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Tts.Speed, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,16" />
+                    <TextBlock Text="语速（0.5-2.0）" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Tts.Speed, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Text="dots.tts 服务地址" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Tts.BaseUrl, UpdateSourceTrigger=PropertyChanged}" ToolTip="自建 dots.tts 服务的 base_url，例如 https://xxx.seetacloud.com:8443" />
+                    <TextBlock Text="dots.tts 语言 / 随机种子" Style="{StaticResource FieldLabel}" /><StackPanel Orientation="Horizontal"><ui:TextBox Width="150" Text="{Binding Working.Tts.Language, UpdateSourceTrigger=PropertyChanged}"/><ui:TextBox Width="150" Margin="8,0,0,0" Text="{Binding Working.Tts.Seed, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
+                    <TextBlock Text="dots.tts 采样步数（1-32）/ 引导强度（0.1-3.0）" Style="{StaticResource FieldLabel}" /><StackPanel Orientation="Horizontal" Margin="0,0,0,16"><ui:TextBox Width="150" Text="{Binding Working.Tts.NumSteps, UpdateSourceTrigger=PropertyChanged}"/><ui:TextBox Width="150" Margin="8,0,0,0" Text="{Binding Working.Tts.GuidanceScale, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
                 </StackPanel></ScrollViewer>
             </TabItem>
             <TabItem Header="直播集成">
