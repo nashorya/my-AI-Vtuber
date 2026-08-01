@@ -261,6 +261,8 @@ public sealed class InputTemplateConfig
     public string LoopbackTemplate { get; set; } = "（你听到对面说：{text}）";
     /// <summary>Wraps danmaku. Use {username} and {content} as placeholders.</summary>
     public string DanmakuTemplate { get; set; } = "（弹幕 {username}：{content}）";
+    /// <summary>Wraps a PK match start. Use {uname}, {follower}, {uid} and {roomid} as placeholders.</summary>
+    public string PkTemplate { get; set; } = "（PK 开始了，对手是 {uname}，有 {follower} 个粉丝）";
 }
 
 public sealed class BilibiliConfig
@@ -276,4 +278,7 @@ public sealed class BilibiliConfig
     public int SelectionIntervalSec { get; set; } = 8;
     /// <summary>Python executable path. Defaults to "python".</summary>
     public string PythonPath { get; set; } = "python";
+    /// <summary>Announce the opposing streamer when a PK match starts. Read by the bridge
+    /// at startup, so changing it respawns the bridge process.</summary>
+    public bool PkNotice { get; set; } = false;
 }

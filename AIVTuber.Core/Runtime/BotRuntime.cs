@@ -878,6 +878,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _selector = CreateSelector();
         _danmaku = new BilibiliDanmakuClient(_config.Bilibili);
         _danmaku.OnDanmaku += (_, d) => { _selector?.Enqueue(d); _selector?.TrySelectNext(); };
+        _danmaku.OnPkStarted += OnPkStarted;
         // Surface bridge health to the UI error banner, and pipe its stdout/stderr to the debug log.
         _danmaku.OnError += (_, msg) => PipelineError?.Invoke(this, $"[弹幕] {msg}");
         _danmaku.OnProcessExited += (_, msg) => PipelineError?.Invoke(this, $"[弹幕] {msg}");
@@ -892,6 +893,32 @@ public sealed class BotRuntime : IAsyncDisposable
             var msg = $"[弹幕] 启动失败: {ex.Message}";
             Console.WriteLine(msg);
             PipelineError?.Invoke(this, msg);
+        }
+    }
+
+    /// <summary>
+    /// Announces the opposing streamer when a PK match starts. Deliberately bypasses
+    /// DanmakuSelector: that queue exists to pick one message out of a backlog on a
+    /// SelectionIntervalSec throttle, which would delay or drop a one-shot, time-critical
+    /// event. Fire-and-forget so the HTTP accept loop is never blocked by the pipeline.
+    /// </summary>
+    private async void OnPkStarted(object? sender, PkOpponent pk)
+    {
+        try
+        {
+            _stateTracker.TextInputStarted(Environment.TickCount64);
+            var text = _config.Input.PkTemplate
+                .Replace("{uname}", pk.Username)
+                .Replace("{follower}", pk.FollowerCount.ToString())
+                .Replace("{uid}", pk.Uid)
+                .Replace("{roomid}", pk.RoomId.ToString());
+            AIVTuber.Core.Diagnostics.DebugLog.Write(
+                $"[PK] 对手 {pk.Username}（{pk.FollowerCount} 粉，房间 {pk.RoomId}）");
+            await _orchestrator.ProcessTextAsync(text, _conversation.BuildMessages(pk.Uid));
+        }
+        catch (Exception ex)
+        {
+            PipelineError?.Invoke(this, $"[PK] 播报失败：{ex.Message}");
         }
     }
 

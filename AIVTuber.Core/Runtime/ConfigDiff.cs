@@ -77,7 +77,7 @@ public static class ConfigDiff
         if (a.Bilibili.Enable != b.Bilibili.Enable || a.Bilibili.RoomId != b.Bilibili.RoomId ||
             a.Bilibili.Sessdata != b.Bilibili.Sessdata || a.Bilibili.BiliJct != b.Bilibili.BiliJct ||
             a.Bilibili.Buvid3 != b.Bilibili.Buvid3 || a.Bilibili.PushPort != b.Bilibili.PushPort ||
-            a.Bilibili.PythonPath != b.Bilibili.PythonPath)
+            a.Bilibili.PythonPath != b.Bilibili.PythonPath || a.Bilibili.PkNotice != b.Bilibili.PkNotice)
             c |= RuntimeChange.RestartDanmaku;
 
         if (a.Memory.ExtractEveryNTurns != b.Memory.ExtractEveryNTurns)
