@@ -484,6 +484,7 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             "aliyun" or "cosyvoice" or "dashscope" => new DashScopeTtsClient(tts),
             "minimax" => new MiniMaxWsTtsClient(tts),
+            "dots" or "dots-tts" => new DotsTtsClient(tts),
             _ => new TtsClient(tts),
         };
 

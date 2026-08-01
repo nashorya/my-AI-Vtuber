@@ -54,7 +54,10 @@ public static class ConfigDiff
 
         if (a.Tts.Provider != b.Tts.Provider || a.Tts.ApiKey != b.Tts.ApiKey ||
             a.Tts.VoiceId != b.Tts.VoiceId || a.Tts.Model != b.Tts.Model ||
-            a.Tts.GroupId != b.Tts.GroupId || a.Tts.Speed != b.Tts.Speed)
+            a.Tts.GroupId != b.Tts.GroupId || a.Tts.Speed != b.Tts.Speed ||
+            a.Tts.BaseUrl != b.Tts.BaseUrl || a.Tts.Language != b.Tts.Language ||
+            a.Tts.Seed != b.Tts.Seed || a.Tts.NumSteps != b.Tts.NumSteps ||
+            a.Tts.GuidanceScale != b.Tts.GuidanceScale)
             c |= RuntimeChange.RebuildTts;
 
         if (a.Vts.MouthScale != b.Vts.MouthScale ||
