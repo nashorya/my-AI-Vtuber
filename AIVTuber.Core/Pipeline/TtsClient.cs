@@ -59,7 +59,7 @@ public sealed class TtsClient : ITtsClient, IDisposable
         var model = string.IsNullOrWhiteSpace(_config.Model) ? "s1" : _config.Model;
         // S2 supports inline emotion tags; S1 ignores them harmlessly.
         var textWithEmotion = ApplyFishEmotionTag(text, emotion);
-        var json = BuildFishRequestJson(textWithEmotion, voiceId, _config.Speed, AudioPlayer.DefaultSampleRate);
+        var json = BuildFishRequestJson(textWithEmotion, voiceId, _config.Speed, _config.SampleRate);
 
         var request = new HttpRequestMessage(HttpMethod.Post, "https://api.fish.audio/v1/tts")
         {
@@ -107,7 +107,7 @@ public sealed class TtsClient : ITtsClient, IDisposable
         const string url = "https://api.minimaxi.com/v1/t2a_v2";
 
         var miniMaxEmotion = MapToMiniMaxEmotion(emotion);
-        var json = BuildMiniMaxRequestJson(text, voiceId, model, _config.Speed, AudioPlayer.DefaultSampleRate, miniMaxEmotion);
+        var json = BuildMiniMaxRequestJson(text, voiceId, model, _config.Speed, _config.SampleRate, miniMaxEmotion);
         var request = new HttpRequestMessage(HttpMethod.Post, url)
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json")

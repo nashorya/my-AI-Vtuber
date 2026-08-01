@@ -511,7 +511,8 @@ public sealed class BotRuntime : IAsyncDisposable
         }
         if (_player is null)
         {
-            _player = new AudioPlayer(deviceIndex: _config.Audio.OutputDeviceIndex);
+            _player = new AudioPlayer(sampleRate: _config.Tts.SampleRate,
+                deviceIndex: _config.Audio.OutputDeviceIndex);
             // Single stable tap: reads _virtualMic field, so mixer restarts pick up automatically.
             _player.PcmChunkPlayed += (_, chunk) => _virtualMic?.WriteTts(chunk);
         }
@@ -750,7 +751,8 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             try
             {
-                _virtualMic = new AIVTuber.Core.Audio.VirtualMicMixer(_config.Audio.VirtualMicDeviceName);
+                _virtualMic = new AIVTuber.Core.Audio.VirtualMicMixer(_config.Audio.VirtualMicDeviceName,
+                    _config.Tts.SampleRate);
                 _virtualMic.Start();
                 // Real mic is intentionally not injected into the virtual cable here. The
                 // cable carries AI TTS only; mic capture remains available for AI listening.

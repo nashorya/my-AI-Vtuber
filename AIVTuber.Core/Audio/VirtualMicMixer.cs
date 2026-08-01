@@ -28,7 +28,17 @@ public sealed class VirtualMicMixer : IDisposable
     private BufferedWaveProvider? _ttsBuffer;
     private bool _disposed;
 
-    public VirtualMicMixer(string? deviceName = null) => _deviceName = deviceName;
+    private readonly int _ttsSampleRate;
+
+    public VirtualMicMixer(string? deviceName = null, int ttsSampleRate = AudioPlayer.DefaultSampleRate)
+    {
+        _deviceName = deviceName;
+        _ttsSampleRate = ttsSampleRate;
+    }
+
+    /// <summary>Rate of the TTS side of the mix. Must match the player, or the stream sent
+    /// to broadcasting software is pitch-shifted while local playback sounds correct.</summary>
+    public int TtsSampleRate => _ttsSampleRate;
 
     /// <summary>Lists friendly names of all active render (output) devices.</summary>
     public static IReadOnlyList<string> ListRenderDevices()
@@ -63,7 +73,7 @@ public sealed class VirtualMicMixer : IDisposable
             DiscardOnBufferOverflow = true,
             ReadFully = true,   // output silence when empty — keeps the mix stream continuous
         };
-        _ttsBuffer = new BufferedWaveProvider(new WaveFormat(AudioPlayer.DefaultSampleRate, 16, 1))
+        _ttsBuffer = new BufferedWaveProvider(new WaveFormat(_ttsSampleRate, 16, 1))
         {
             BufferDuration = TimeSpan.FromSeconds(3),
             DiscardOnBufferOverflow = true,

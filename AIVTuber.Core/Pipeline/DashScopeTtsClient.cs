@@ -47,7 +47,7 @@ public sealed class DashScopeTtsClient : ITtsClient
         var taskId = DashScopeProtocol.NewTaskId();
         var instructions = MapToDashScopeInstruction(emotion);
         await DashScopeSocket.SendTextAsync(ws,
-            DashScopeProtocol.RunTaskTts(taskId, model, voiceId, AudioPlayer.DefaultSampleRate, _config.Speed, instructions),
+            DashScopeProtocol.RunTaskTts(taskId, model, voiceId, _config.SampleRate, _config.Speed, instructions),
             cancellationToken);
 
         var textSent = false;

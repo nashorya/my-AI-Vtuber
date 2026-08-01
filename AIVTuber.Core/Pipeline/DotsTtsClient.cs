@@ -2,15 +2,14 @@ using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
-using AIVTuber.Core.Audio;
 using AIVTuber.Core.Config;
 
 namespace AIVTuber.Core.Pipeline;
 
 /// <summary>
 /// Self-hosted dots.tts over HTTP. The service must return raw 16-bit mono PCM at
-/// <see cref="AudioPlayer.DefaultSampleRate"/>; dots.tts generates 48kHz natively, so the
-/// resampling belongs on the server side.
+/// <see cref="TtsConfig.SampleRate"/>. dots.tts generates 48kHz natively: set the rate to
+/// 48000 to skip resampling altogether, or to a lower one and let the server resample.
 /// Single-speaker fine-tunes carry no voice id, and dots.tts exposes no emotion control, so
 /// both of those parameters are ignored here.
 /// </summary>
@@ -58,7 +57,7 @@ public sealed class DotsTtsClient : ITtsClient, IDisposable
             seed = _config.Seed,
             num_steps = _config.NumSteps,
             guidance_scale = _config.GuidanceScale,
-            sample_rate = AudioPlayer.DefaultSampleRate,
+            sample_rate = _config.SampleRate,
         });
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "v1/tts")
@@ -78,17 +77,29 @@ public sealed class DotsTtsClient : ITtsClient, IDisposable
                 $"dots.tts 请求失败：{(int)response.StatusCode} {error}");
         }
 
-        EnsureSampleRateMatches(response);
+        EnsureSampleRateMatches(response, _config.SampleRate);
 
         await using var stream = await response.Content
             .ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
 
+        // Network framing lands wherever it lands, but a chunk must always be a whole
+        // number of 16-bit samples: hand the consumer half a sample and every sample after
+        // it is byte-swapped, which is heard as noise and screeching rather than as an
+        // error. Carry the odd trailing byte into the next chunk.
         var buffer = new byte[8192];
+        var carry = 0;
         while (true)
         {
-            var read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            var read = await stream.ReadAsync(buffer.AsMemory(carry, buffer.Length - carry),
+                cancellationToken).ConfigureAwait(false);
             if (read == 0) break;
-            yield return buffer.AsSpan(0, read).ToArray();
+
+            var available = carry + read;
+            var aligned = available & ~1;
+            if (aligned > 0) yield return buffer.AsSpan(0, aligned).ToArray();
+
+            carry = available - aligned;
+            if (carry == 1) buffer[0] = buffer[aligned];
         }
     }
 
@@ -97,19 +108,19 @@ public sealed class DotsTtsClient : ITtsClient, IDisposable
     /// — audible but easy to misdiagnose. When the service advertises its rate, hold it to
     /// the one the player decodes at.
     /// </summary>
-    private static void EnsureSampleRateMatches(HttpResponseMessage response)
+    private static void EnsureSampleRateMatches(HttpResponseMessage response, int expected)
     {
         if (!response.Headers.TryGetValues("X-Sample-Rate", out var values) &&
             !response.Content.Headers.TryGetValues("X-Sample-Rate", out values))
             return;
 
         var advertised = values.FirstOrDefault();
-        if (!int.TryParse(advertised, out var rate) || rate == AudioPlayer.DefaultSampleRate)
+        if (!int.TryParse(advertised, out var rate) || rate == expected)
             return;
 
         throw new InvalidOperationException(
-            $"dots.tts 返回 {rate}Hz，播放器要求 {AudioPlayer.DefaultSampleRate}Hz。" +
-            $"请把服务端 OUTPUT_SAMPLE_RATE 改为 {AudioPlayer.DefaultSampleRate}。");
+            $"dots.tts 返回 {rate}Hz，播放器要求 {expected}Hz。" +
+            $"请把服务端 OUTPUT_SAMPLE_RATE 改为 {expected}。");
     }
 
     public void Dispose() => _httpClient.Dispose();

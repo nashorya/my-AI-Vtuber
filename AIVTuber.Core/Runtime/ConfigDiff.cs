@@ -59,6 +59,9 @@ public static class ConfigDiff
             a.Tts.Seed != b.Tts.Seed || a.Tts.NumSteps != b.Tts.NumSteps ||
             a.Tts.GuidanceScale != b.Tts.GuidanceScale)
             c |= RuntimeChange.RebuildTts;
+        // The player's WaveFormat and the virtual-mic buffer are built from this rate.
+        if (a.Tts.SampleRate != b.Tts.SampleRate)
+            c |= RuntimeChange.RebuildTts | RuntimeChange.RestartAudio;
 
         if (a.Vts.MouthScale != b.Vts.MouthScale ||
             !DictEqual(a.Vts.EmotionMap, b.Vts.EmotionMap) ||

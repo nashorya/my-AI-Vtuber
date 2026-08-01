@@ -161,6 +161,11 @@ public sealed class TtsConfig
     public string GroupId { get; set; } = string.Empty;
     /// <summary>Synthesis speed multiplier (0.5–2.0).</summary>
     public double Speed { get; set; } = 1.0;
+    /// <summary>PCM sample rate requested from the provider and used by the player.
+    /// 24000 is the safe default: it is the only rate all three cloud providers accept
+    /// (CosyVoice rejects 44100). A self-hosted dots.tts generates 48000 natively, so
+    /// setting 48000 there avoids resampling entirely.</summary>
+    public int SampleRate { get; set; } = AIVTuber.Core.Audio.AudioPlayer.DefaultSampleRate;
     /// <summary>dots.tts only: base URL of the self-hosted service.</summary>
     public string BaseUrl { get; set; } = "http://127.0.0.1:6006";
     /// <summary>dots.tts only: synthesis language code (e.g. "ZH", "EN").</summary>
