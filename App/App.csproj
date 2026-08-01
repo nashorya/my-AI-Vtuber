@@ -24,6 +24,11 @@
 
   <ItemGroup>
     <PackageReference Include="WPF-UI" Version="3.1.1" />
+    <!-- Pinned explicitly because the SDK otherwise derives this from whatever .NET runtime
+         patch happens to be installed. CI's runner image ships a newer runtime than the
+         pinned 10.0.300 SDK, which flipped the requested version to 10.0.10 and broke
+         locked-mode restore. Bumping the lock file each time only defers the next break. -->
+    <PackageReference Include="Microsoft.NET.ILLink.Tasks" Version="10.0.9" />
   </ItemGroup>
 
   <!-- WebRtcVadSharp's native DLL isn't propagated transitively; copy it explicitly. -->
