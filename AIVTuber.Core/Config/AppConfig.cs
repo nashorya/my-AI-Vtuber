@@ -161,6 +161,16 @@ public sealed class TtsConfig
     public string GroupId { get; set; } = string.Empty;
     /// <summary>Synthesis speed multiplier (0.5–2.0).</summary>
     public double Speed { get; set; } = 1.0;
+    /// <summary>dots.tts only: base URL of the self-hosted service.</summary>
+    public string BaseUrl { get; set; } = "http://127.0.0.1:6006";
+    /// <summary>dots.tts only: synthesis language code (e.g. "ZH", "EN").</summary>
+    public string Language { get; set; } = "ZH";
+    /// <summary>dots.tts only: sampling seed; fixed so a line reads the same way twice.</summary>
+    public int Seed { get; set; } = 42;
+    /// <summary>dots.tts only: diffusion steps. Higher is slower and slightly cleaner.</summary>
+    public int NumSteps { get; set; } = 10;
+    /// <summary>dots.tts only: classifier-free guidance scale.</summary>
+    public double GuidanceScale { get; set; } = 1.2;
 }
 
 public sealed class VtsConfig
