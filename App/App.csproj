@@ -42,8 +42,13 @@
     <None Include="..\sidecar\requirements.lock" Link="sidecar\requirements.lock" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\scripts\Test-SidecarPackage.ps1" Link="scripts\Test-SidecarPackage.ps1" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\scripts\Test-G005PublishContract.ps1" Link="scripts\Test-G005PublishContract.ps1" CopyToPublishDirectory="PreserveNewest" />
-    <!-- PNG avatar pack: sprites, stickers, placeholder sheets, avatar.json -->
+    <!-- PNG avatar pack: sprites, poses, stickers, placeholder sheets, avatar.json.
+         layered/ is the abandoned head-rotation approach (avatar.json marks it
+         enabled:false and deprecated; the renderer goes through poses/), and
+         contact_sheet.png is an authoring aid for verifying expression labels by eye.
+         Both stay in the repo for reference but are 22MB of dead weight in a build. -->
     <None Include="..\assets\avatar\**\*"
+          Exclude="..\assets\avatar\layered\**\*;..\assets\avatar\contact_sheet.png"
           Link="assets\avatar\%(RecursiveDir)%(Filename)%(Extension)"
           CopyToOutputDirectory="PreserveNewest"
           CopyToPublishDirectory="PreserveNewest"
