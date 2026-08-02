@@ -10,7 +10,7 @@ public class ConfigDiffContractTests
         "Asr.Provider", "Asr.ApiKey", "Asr.AppId", "Asr.Model", "Asr.LocalAsrUrl", "Asr.PythonPath",
         "Asr.PersistConnection", "Asr.Streaming",
         "Tts.Provider", "Tts.ApiKey", "Tts.VoiceId", "Tts.Model", "Tts.GroupId", "Tts.Speed",
-        "Tts.BaseUrl", "Tts.Language", "Tts.Seed", "Tts.NumSteps", "Tts.GuidanceScale",
+        "Tts.BaseUrl", "Tts.Language", "Tts.Seed", "Tts.NumSteps", "Tts.GuidanceScale", "Tts.SampleRate",
     ];
 
     public static TheoryData<string, Action<AppConfig>, RuntimeChange> AsrAndTtsRuntimeFields => new()
@@ -34,6 +34,7 @@ public class ConfigDiffContractTests
         { "Tts.Seed", c => c.Tts.Seed = 7, RuntimeChange.RebuildTts },
         { "Tts.NumSteps", c => c.Tts.NumSteps = 16, RuntimeChange.RebuildTts },
         { "Tts.GuidanceScale", c => c.Tts.GuidanceScale = 2.0, RuntimeChange.RebuildTts },
+        { "Tts.SampleRate", c => c.Tts.SampleRate = 48000, RuntimeChange.RebuildTts | RuntimeChange.RestartAudio },
     };
 
     [Theory]

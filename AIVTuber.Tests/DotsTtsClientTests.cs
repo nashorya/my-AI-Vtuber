@@ -28,6 +28,9 @@ public sealed class DotsTtsClientTests
 
         public HttpStatusCode Status { get; set; } = HttpStatusCode.OK;
         public byte[] Body { get; set; } = [];
+        /// <summary>Writes the body in pieces of this size, flushing between them, to mimic
+        /// the arbitrary framing a real network connection delivers.</summary>
+        public int WritePieceSize { get; set; }
         public string? SampleRateHeader { get; set; } = AudioPlayer.DefaultSampleRate.ToString();
         /// <summary>Delays the response so cancellation has something to interrupt.</summary>
         public TimeSpan Delay { get; set; } = TimeSpan.Zero;
@@ -72,7 +75,20 @@ public sealed class DotsTtsClientTests
                     ctx.Response.StatusCode = (int)Status;
                     if (SampleRateHeader is not null)
                         ctx.Response.Headers["X-Sample-Rate"] = SampleRateHeader;
-                    await ctx.Response.OutputStream.WriteAsync(Body);
+                    if (WritePieceSize > 0)
+                    {
+                        for (var i = 0; i < Body.Length; i += WritePieceSize)
+                        {
+                            var n = Math.Min(WritePieceSize, Body.Length - i);
+                            await ctx.Response.OutputStream.WriteAsync(Body.AsMemory(i, n));
+                            await ctx.Response.OutputStream.FlushAsync();
+                            await Task.Delay(5);
+                        }
+                    }
+                    else
+                    {
+                        await ctx.Response.OutputStream.WriteAsync(Body);
+                    }
                     ctx.Response.Close();
                 }
                 catch { /* client hung up (cancellation tests) */ }
@@ -176,10 +192,10 @@ public sealed class DotsTtsClientTests
     [Fact]
     public async Task StreamAsync_AcceptsResponseWithoutSampleRateHeader()
     {
-        using var server = new StubServer { Body = [1, 2, 3], SampleRateHeader = null };
+        using var server = new StubServer { Body = [1, 2, 3, 4], SampleRateHeader = null };
         using var client = new DotsTtsClient(Config(server.Url));
 
-        Assert.Equal(new byte[] { 1, 2, 3 }, await CollectAsync(client));
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, await CollectAsync(client));
     }
 
     [Fact]
@@ -262,5 +278,51 @@ public sealed class DotsTtsClientTests
     public void Constructor_RejectsEmptyBaseUrl(string baseUrl)
     {
         Assert.Throws<ArgumentException>(() => new DotsTtsClient(Config(baseUrl)));
+    }
+
+    [Theory]
+    [InlineData(333)]
+    [InlineData(1001)]
+    [InlineData(7)]
+    public async Task StreamAsync_NeverYieldsAnOddLengthChunk(int piece)
+    {
+        // Every chunk is a whole number of 16-bit samples or the consumer's sample
+        // alignment shifts by a byte, turning the rest of the utterance into noise.
+        // Network framing does not respect sample boundaries, so the client must.
+        var payload = new byte[8192];
+        Random.Shared.NextBytes(payload);
+        using var server = new StubServer { Body = payload, WritePieceSize = piece };
+        using var client = new DotsTtsClient(Config(server.Url));
+
+        var sizes = new List<int>();
+        var buffer = new List<byte>();
+        await foreach (var chunk in client.StreamAsync("你好", "", null))
+        {
+            sizes.Add(chunk.Length);
+            buffer.AddRange(chunk);
+        }
+
+        Assert.All(sizes, n => Assert.Equal(0, n % 2));
+        Assert.Equal(payload, buffer.ToArray());
+    }
+
+    [Fact]
+    public async Task StreamAsync_OddTotalLength_DropsTheDanglingByte()
+    {
+        // A trailing half-sample cannot be played; emitting it would misalign nothing
+        // downstream only because there is nothing after it, but it is still not audio.
+        var payload = new byte[1025];
+        Random.Shared.NextBytes(payload);
+        using var server = new StubServer { Body = payload, WritePieceSize = 101 };
+        using var client = new DotsTtsClient(Config(server.Url));
+
+        var total = 0;
+        await foreach (var chunk in client.StreamAsync("你好", "", null))
+        {
+            Assert.Equal(0, chunk.Length % 2);
+            total += chunk.Length;
+        }
+
+        Assert.Equal(1024, total);
     }
 }

@@ -91,7 +91,7 @@ public sealed class MiniMaxWsTtsClient : ITtsClient
             voice_setting = voiceSetting,
             audio_setting = new
             {
-                sample_rate = AudioPlayer.DefaultSampleRate,
+                sample_rate = _config.SampleRate,
                 format = "pcm",
                 channel = 1,
             },
