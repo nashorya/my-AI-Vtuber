@@ -114,7 +114,11 @@ public sealed class AudioConfig
     // VAD parameters
     public int VadAggressiveness { get; set; } = 2; // 0-3
     public int PreSpeechPaddingMs { get; set; } = 200;
-    public int PostSpeechSilenceMs { get; set; } = 500;
+    /// <summary>Silence needed to close a speech segment. 500ms cut people off mid-thought:
+    /// a pause for wording or a breath routinely runs longer than that, and the detector
+    /// only counts silence, it cannot tell "finished" from "thinking". Raising this trades
+    /// reply latency for not being interrupted.</summary>
+    public int PostSpeechSilenceMs { get; set; } = 800;
 }
 
 public sealed class AsrConfig

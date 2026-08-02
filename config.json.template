@@ -10,7 +10,7 @@
     "virtual_mic_device_name": "",
     "vad_aggressiveness": 2,
     "pre_speech_padding_ms": 200,
-    "post_speech_silence_ms": 500
+    "post_speech_silence_ms": 800
   },
   "asr": {
     "provider": "aliyun",
