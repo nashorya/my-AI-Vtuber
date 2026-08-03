@@ -79,7 +79,7 @@
             <TabItem Header="语音">
                 <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel MaxWidth="720">
                     <TextBlock Text="语音" Style="{StaticResource SectionTitle}" />
-                    <TextBlock Text="TTS 提供商" Style="{StaticResource FieldLabel}" /><ComboBox SelectedValue="{Binding Working.Tts.Provider}" SelectedValuePath="Content"><ComboBoxItem Content="fish-audio"/><ComboBoxItem Content="minimax"/><ComboBoxItem Content="aliyun"/><ComboBoxItem Content="dots"/></ComboBox>
+                    <TextBlock Text="TTS 提供商" Style="{StaticResource FieldLabel}" /><ComboBox SelectedValue="{Binding Working.Tts.Provider}" SelectedValuePath="Content"><ComboBoxItem Content="fish-audio"/><ComboBoxItem Content="minimax"/><ComboBoxItem Content="aliyun"/><ComboBoxItem Content="dots"/><ComboBoxItem Content="mimo"/></ComboBox>
                     <TextBlock Text="TTS API Key（留空不修改）" Style="{StaticResource FieldLabel}" /><ui:PasswordBox x:Name="TtsKey" />
                     <TextBlock Text="Voice ID" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Tts.VoiceId, UpdateSourceTrigger=PropertyChanged}" />
                     <TextBlock Text="模型" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Tts.Model, UpdateSourceTrigger=PropertyChanged}" />

@@ -9,8 +9,8 @@ namespace AIVTuber.Core.ViewModels;
 /// <summary>
 /// Monitor tab view-model. UI-agnostic (no WPF types): subscribes to BotRuntime and
 /// exposes bindable properties. All updates are marshalled through the injected
-/// dispatch delegate (the WPF host passes Dispatcher.Invoke; tests pass a synchronous
-/// run-now delegate).
+/// dispatch delegate (the WPF host passes Dispatcher.BeginInvoke; tests pass a synchronous
+/// run-now delegate). Prefer BeginInvoke so config apply cannot deadlock on UI events.
 /// </summary>
 public sealed class MonitorViewModel : INotifyPropertyChanged
 {

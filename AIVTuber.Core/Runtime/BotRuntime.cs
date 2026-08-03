@@ -485,6 +485,7 @@ public sealed class BotRuntime : IAsyncDisposable
             "aliyun" or "cosyvoice" or "dashscope" => new DashScopeTtsClient(tts),
             "minimax" => new MiniMaxWsTtsClient(tts),
             "dots" or "dots-tts" => new DotsTtsClient(tts),
+            "mimo" or "xiaomi" or "xiaomimimo" => new MimoTtsClient(tts),
             _ => new TtsClient(tts),
         };
 
@@ -982,7 +983,7 @@ public sealed class BotRuntime : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(newConfig);
         var candidate = ConfigManager.Clone(newConfig);
 
-        await _configApplyGate.WaitAsync();
+        await _configApplyGate.WaitAsync().ConfigureAwait(false);
         try
         {
             var candidateRevision = Interlocked.Increment(ref _nextRevision);
@@ -994,17 +995,19 @@ public sealed class BotRuntime : IAsyncDisposable
             var previousRevision = ActiveConfigRevision;
             var change = ConfigDiff.Compute(previousActive, candidate);
 
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[配置] 开始应用 revision={candidateRevision} change={change}");
             _config = candidate;
             try
             {
-                await ApplyChangesAsync(change);
+                await ApplyChangesAsync(change).ConfigureAwait(false);
             }
             catch (Exception applyError)
             {
+                AIVTuber.Core.Diagnostics.DebugLog.Write($"[配置] 应用失败，回滚: {applyError.Message}");
                 _config = previousConfig;
                 try
                 {
-                    await ApplyChangesAsync(change);
+                    await ApplyChangesAsync(change).ConfigureAwait(false);
                 }
                 catch (Exception rollbackError)
                 {
@@ -1019,6 +1022,7 @@ public sealed class BotRuntime : IAsyncDisposable
             _activeConfig = ConfigManager.Clone(candidate);
             _config = candidate;
             Interlocked.Exchange(ref _activeRevision, candidateRevision);
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[配置] 应用完成 revision={candidateRevision}");
         }
         finally
         {

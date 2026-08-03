@@ -159,7 +159,7 @@ public sealed class TtsConfig
     public string ApiKey { get; set; } = string.Empty;
     public string VoiceId { get; set; } = string.Empty;
     /// <summary>Model name. Provider-specific; empty = the provider's default
-    /// (fish → s1, minimax → speech-2.8-hd, aliyun → cosyvoice-v3-flash).</summary>
+    /// (fish → s1, minimax → speech-2.8-hd, aliyun → cosyvoice-v3-flash, mimo → mimo-v2.5-tts).</summary>
     public string Model { get; set; } = string.Empty;
     /// <summary>MiniMax only: no longer required — new platform (api.minimaxi.com) uses Bearer-only auth.</summary>
     public string GroupId { get; set; } = string.Empty;

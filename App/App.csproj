@@ -32,10 +32,15 @@
   </ItemGroup>
 
   <!-- WebRtcVadSharp's native DLL isn't propagated transitively; copy it explicitly. -->
-  <Target Name="CopyWebRtcVadNative" AfterTargets="Build">
+  <Target Name="CopyWebRtcVadNative" AfterTargets="Build;Publish">
+    <PropertyGroup>
+      <_WebRtcVadDest Condition="'$(PublishDir)' != ''">$(PublishDir)</_WebRtcVadDest>
+      <_WebRtcVadDest Condition="'$(_WebRtcVadDest)' == ''">$(OutDir)</_WebRtcVadDest>
+    </PropertyGroup>
     <Copy SourceFiles="$(NuGetPackageRoot)webrtcvadsharp\1.1.0\build\x64\WebRtcVad.dll"
-          DestinationFolder="$(OutDir)"
-          SkipUnchangedFiles="true" />
+          DestinationFolder="$(_WebRtcVadDest)"
+          SkipUnchangedFiles="true"
+          Condition="Exists('$(NuGetPackageRoot)webrtcvadsharp\1.1.0\build\x64\WebRtcVad.dll')" />
   </Target>
 
   <ItemGroup>

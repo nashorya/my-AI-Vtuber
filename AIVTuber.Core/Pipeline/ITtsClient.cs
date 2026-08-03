@@ -9,7 +9,7 @@ public interface ITtsClient
     /// Streams audio data for the given text. Yields raw PCM audio chunks.
     /// <paramref name="emotion"/> is the LLM-detected emotion name (e.g. "happy", "sad") or null for neutral.
     /// Each provider applies it differently: MiniMax via voice_setting.emotion, Fish Audio via inline tags,
-    /// DashScope via an instructions string.
+    /// DashScope via an instructions string, MiMo via assistant style tags like (开心).
     /// </summary>
     IAsyncEnumerable<byte[]> StreamAsync(
         string text,
