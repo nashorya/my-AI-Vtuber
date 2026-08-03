@@ -45,6 +45,7 @@ public sealed class BotRuntime : IAsyncDisposable
     private AvatarConfigWatcher? _avatarConfigWatcher;
     private EventHandler<float>? _avatarRmsHandler;
     private EventHandler<string>? _avatarEmotionHandler;
+    private EventHandler<string>? _avatarPoseHandler;
     private ObsClient? _obs;
     private IAsrClient _asr = null!;   // provider-specific (whisper-HTTP or DashScope-WebSocket)
     private LlmClient _llm = null!;
@@ -255,7 +256,7 @@ public sealed class BotRuntime : IAsyncDisposable
     private void BuildMemoryExtractor()
     {
         _memoryLlm?.Dispose();
-        _memoryLlm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, _config.Vts.BuildSystemPrompt(_config.Llm.SystemPrompt));
+        _memoryLlm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, BuildLlmSystemPrompt());
         _memoryExtractor = new MemoryExtractor(_memoryLlm, _factRepo, _config.Memory, _conversation);
     }
 
@@ -293,9 +294,7 @@ public sealed class BotRuntime : IAsyncDisposable
 
         try
         {
-            var assetsDir = Path.IsPathRooted(_config.Avatar.AssetsPath)
-                ? _config.Avatar.AssetsPath
-                : Path.Combine(_baseDir, _config.Avatar.AssetsPath);
+            var assetsDir = AppPaths.ResolveAvatarAssetsDirectory(_config.Avatar.AssetsPath);
 
             if (!Directory.Exists(assetsDir))
             {
@@ -306,19 +305,26 @@ public sealed class BotRuntime : IAsyncDisposable
                 assetsDir = Path.Combine(_baseDir, "assets", "avatar");
             }
 
+            Console.WriteLine($"[Avatar] resolving pack under: {assetsDir}");
             var pack = AvatarConfigLoader.Load(assetsDir);
             var available = AvatarConfigLoader.ResolveAvailableStates(pack, assetsDir);
             if (available.Count == 0 && AvatarConfigLoader.ResolveDevPlaceholderIdle(assetsDir) is not null)
             {
+                var missingHint = pack.States.Count > 0
+                    ? $"avatar.json loaded ({pack.Meta.Name}) but 0/{pack.States.Count} sprite files found under {assetsDir}"
+                    : $"no usable sprites under {assetsDir}";
+                Console.WriteLine($"[Avatar] falling back to dev_placeholder pack — {missingHint}");
+                PipelineError?.Invoke(this, $"[Avatar] {missingHint}");
                 pack = AvatarConfigLoader.CreatePlaceholderPack();
                 available = AvatarConfigLoader.ResolveAvailableStates(pack, assetsDir);
-                Console.WriteLine("[Avatar] falling back to dev_placeholder pack");
             }
 
             _pixelAvatar = new PixelAvatarDriver(pack, assetsDir, available, _config.Avatar.EmotionMap);
-            WirePixelAvatar();
+            // Wire after InitPipeline creates the orchestrator; StartAsync calls InitPipeline first.
+            if (_orchestrator is not null)
+                WirePixelAvatar();
             StartAvatarConfigWatcher(assetsDir);
-            Console.WriteLine($"[Avatar] pixel driver ready ({pack.Meta.Name}) @ {assetsDir}");
+            Console.WriteLine($"[Avatar] pixel driver ready ({pack.Meta.Name}, states={available.Count}) @ {assetsDir}");
         }
         catch (Exception ex)
         {
@@ -370,6 +376,9 @@ public sealed class BotRuntime : IAsyncDisposable
 
         _avatarEmotionHandler = (_, emotion) => _pixelAvatar?.SetEmotion(emotion);
         _orchestrator.OnEmotionDetected += _avatarEmotionHandler;
+
+        _avatarPoseHandler = (_, pose) => _pixelAvatar?.SetPose(pose);
+        _orchestrator.OnPoseDetected += _avatarPoseHandler;
     }
 
     private void UnwirePixelAvatar()
@@ -378,8 +387,11 @@ public sealed class BotRuntime : IAsyncDisposable
             _player.RmsUpdated -= _avatarRmsHandler;
         if (_avatarEmotionHandler is not null && _orchestrator is not null)
             _orchestrator.OnEmotionDetected -= _avatarEmotionHandler;
+        if (_avatarPoseHandler is not null && _orchestrator is not null)
+            _orchestrator.OnPoseDetected -= _avatarPoseHandler;
         _avatarRmsHandler = null;
         _avatarEmotionHandler = null;
+        _avatarPoseHandler = null;
     }
 
     private void InitObs()
@@ -472,6 +484,8 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             "aliyun" or "cosyvoice" or "dashscope" => new DashScopeTtsClient(tts),
             "minimax" => new MiniMaxWsTtsClient(tts),
+            "dots" or "dots-tts" => new DotsTtsClient(tts),
+            "mimo" or "xiaomi" or "xiaomimimo" => new MimoTtsClient(tts),
             _ => new TtsClient(tts),
         };
 
@@ -489,7 +503,7 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             _llm?.Dispose();
             _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model,
-                _config.Vts.BuildSystemPrompt(_config.Llm.SystemPrompt));
+                BuildLlmSystemPrompt());
         }
         if (_tts is null || rebuild.HasFlag(RuntimeChange.RebuildTts))
         {
@@ -498,11 +512,14 @@ public sealed class BotRuntime : IAsyncDisposable
         }
         if (_player is null)
         {
-            _player = new AudioPlayer(deviceIndex: _config.Audio.OutputDeviceIndex);
+            _player = new AudioPlayer(sampleRate: _config.Tts.SampleRate,
+                deviceIndex: _config.Audio.OutputDeviceIndex);
             // Single stable tap: reads _virtualMic field, so mixer restarts pick up automatically.
             _player.PcmChunkPlayed += (_, chunk) => _virtualMic?.WriteTts(chunk);
         }
-        _orchestrator = new BotOrchestrator(_asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts);
+        _orchestrator = new BotOrchestrator(
+            _asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts,
+            ttsEmotionMap: _config.Avatar.EmotionMap);
 
         _orchestrator.OnError += (_, msg) => PipelineError?.Invoke(this, msg);
 
@@ -573,14 +590,51 @@ public sealed class BotRuntime : IAsyncDisposable
             AiStopSpeaking?.Invoke(this, EventArgs.Empty);
         };
 
-        // Orchestrator is recreated here — re-attach pixel avatar emotion hook if active.
+        // Orchestrator is recreated here — re-attach pixel avatar hooks if active.
         if (_pixelAvatar is not null)
         {
             if (_avatarEmotionHandler is not null)
                 _orchestrator.OnEmotionDetected -= _avatarEmotionHandler;
+            if (_avatarPoseHandler is not null)
+                _orchestrator.OnPoseDetected -= _avatarPoseHandler;
             _avatarEmotionHandler = (_, emotion) => _pixelAvatar?.SetEmotion(emotion);
+            _avatarPoseHandler = (_, pose) => _pixelAvatar?.SetPose(pose);
             _orchestrator.OnEmotionDetected += _avatarEmotionHandler;
+            _orchestrator.OnPoseDetected += _avatarPoseHandler;
         }
+    }
+
+    /// <summary>Merges VTS + pixel avatar emotion/pose allow-lists into the LLM system prompt.</summary>
+    private string BuildLlmSystemPrompt()
+    {
+        var extraEmotions = _config.Avatar.EmotionMap.Keys;
+        return _config.Vts.BuildSystemPrompt(
+            _config.Llm.SystemPrompt,
+            extraEmotions,
+            ResolvePoseIdsForPrompt());
+    }
+
+    private IEnumerable<string> ResolvePoseIdsForPrompt()
+    {
+        if (_pixelAvatar?.Pack.Poses?.List is { Count: > 0 } live)
+            return live.Keys;
+
+        if (!_config.Avatar.UsesPixel)
+            return [];
+
+        try
+        {
+            var dir = AppPaths.ResolveAvatarAssetsDirectory(_config.Avatar.AssetsPath);
+            if (AvatarConfigLoader.TryLoad(dir, out var pack)
+                && pack.Poses?.List is { Count: > 0 } poses)
+                return poses.Keys;
+        }
+        catch
+        {
+            // Prompt enrichment is best-effort.
+        }
+
+        return [];
     }
 
     /// <summary>
@@ -698,7 +752,8 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             try
             {
-                _virtualMic = new AIVTuber.Core.Audio.VirtualMicMixer(_config.Audio.VirtualMicDeviceName);
+                _virtualMic = new AIVTuber.Core.Audio.VirtualMicMixer(_config.Audio.VirtualMicDeviceName,
+                    _config.Tts.SampleRate);
                 _virtualMic.Start();
                 // Real mic is intentionally not injected into the virtual cable here. The
                 // cable carries AI TTS only; mic capture remains available for AI listening.
@@ -827,6 +882,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _selector = CreateSelector();
         _danmaku = new BilibiliDanmakuClient(_config.Bilibili);
         _danmaku.OnDanmaku += (_, d) => { _selector?.Enqueue(d); _selector?.TrySelectNext(); };
+        _danmaku.OnPkStarted += (_, pk) => AnnouncePkOpponent(pk);
         // Surface bridge health to the UI error banner, and pipe its stdout/stderr to the debug log.
         _danmaku.OnError += (_, msg) => PipelineError?.Invoke(this, $"[弹幕] {msg}");
         _danmaku.OnProcessExited += (_, msg) => PipelineError?.Invoke(this, $"[弹幕] {msg}");
@@ -841,6 +897,60 @@ public sealed class BotRuntime : IAsyncDisposable
             var msg = $"[弹幕] 启动失败: {ex.Message}";
             Console.WriteLine(msg);
             PipelineError?.Invoke(this, msg);
+        }
+    }
+
+    /// <summary>The opponent of the PK match currently in progress, or null when no match is
+    /// running or the opponent could not be resolved.</summary>
+    public PkOpponent? CurrentPkOpponent { get; private set; }
+
+    /// <summary>
+    /// Announces the opposing streamer when a PK match starts. Deliberately bypasses
+    /// DanmakuSelector: that queue exists to pick one message out of a backlog on a
+    /// SelectionIntervalSec throttle, which would delay or drop a one-shot, time-critical
+    /// event. Fire-and-forget so the HTTP accept loop is never blocked by the pipeline.
+    /// </summary>
+    public void AnnouncePkOpponent(PkOpponent pk)
+    {
+        ArgumentNullException.ThrowIfNull(pk);
+        CurrentPkOpponent = pk;
+        AIVTuber.Core.Diagnostics.DebugLog.Write(
+            $"[PK] 对手 {pk.Username}（{pk.FollowerCount} 粉，房间 {pk.RoomId}）");
+
+        var text = _config.Input.PkTemplate
+            .Replace("{uname}", pk.Username)
+            .Replace("{follower}", pk.FollowerCount.ToString())
+            .Replace("{uid}", pk.Uid)
+            .Replace("{roomid}", pk.RoomId.ToString());
+        FeedPkText(text, pk.Uid);
+    }
+
+    /// <summary>
+    /// Manually marks the start of a new PK match. Exists because auto-detection cannot
+    /// always resolve the opponent (the room id may be absent from the payload, or the
+    /// lookup may fail); without this the AI would keep treating the previous opponent as
+    /// current. Clears the recorded opponent, then tells the AI a fresh match has begun.
+    /// </summary>
+    public void StartNewPk()
+    {
+        CurrentPkOpponent = null;
+        AIVTuber.Core.Diagnostics.DebugLog.Write("[PK] 手动标记新一场 PK");
+        FeedPkText(_config.Input.PkManualTemplate, uid: "pk-manual");
+    }
+
+    /// <summary>Pushes a PK line straight into the pipeline. No-ops before the pipeline is
+    /// initialized, so UI controls stay safe to press while the bot is stopped.</summary>
+    private async void FeedPkText(string text, string uid)
+    {
+        if (_orchestrator is null) return;
+        try
+        {
+            _stateTracker.TextInputStarted(Environment.TickCount64);
+            await _orchestrator.ProcessTextAsync(text, _conversation.BuildMessages(uid));
+        }
+        catch (Exception ex)
+        {
+            PipelineError?.Invoke(this, $"[PK] 播报失败：{ex.Message}");
         }
     }
 
@@ -873,7 +983,7 @@ public sealed class BotRuntime : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(newConfig);
         var candidate = ConfigManager.Clone(newConfig);
 
-        await _configApplyGate.WaitAsync();
+        await _configApplyGate.WaitAsync().ConfigureAwait(false);
         try
         {
             var candidateRevision = Interlocked.Increment(ref _nextRevision);
@@ -885,17 +995,19 @@ public sealed class BotRuntime : IAsyncDisposable
             var previousRevision = ActiveConfigRevision;
             var change = ConfigDiff.Compute(previousActive, candidate);
 
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[配置] 开始应用 revision={candidateRevision} change={change}");
             _config = candidate;
             try
             {
-                await ApplyChangesAsync(change);
+                await ApplyChangesAsync(change).ConfigureAwait(false);
             }
             catch (Exception applyError)
             {
+                AIVTuber.Core.Diagnostics.DebugLog.Write($"[配置] 应用失败，回滚: {applyError.Message}");
                 _config = previousConfig;
                 try
                 {
-                    await ApplyChangesAsync(change);
+                    await ApplyChangesAsync(change).ConfigureAwait(false);
                 }
                 catch (Exception rollbackError)
                 {
@@ -910,6 +1022,7 @@ public sealed class BotRuntime : IAsyncDisposable
             _activeConfig = ConfigManager.Clone(candidate);
             _config = candidate;
             Interlocked.Exchange(ref _activeRevision, candidateRevision);
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[配置] 应用完成 revision={candidateRevision}");
         }
         finally
         {

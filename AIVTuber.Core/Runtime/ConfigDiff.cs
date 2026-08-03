@@ -54,8 +54,14 @@ public static class ConfigDiff
 
         if (a.Tts.Provider != b.Tts.Provider || a.Tts.ApiKey != b.Tts.ApiKey ||
             a.Tts.VoiceId != b.Tts.VoiceId || a.Tts.Model != b.Tts.Model ||
-            a.Tts.GroupId != b.Tts.GroupId || a.Tts.Speed != b.Tts.Speed)
+            a.Tts.GroupId != b.Tts.GroupId || a.Tts.Speed != b.Tts.Speed ||
+            a.Tts.BaseUrl != b.Tts.BaseUrl || a.Tts.Language != b.Tts.Language ||
+            a.Tts.Seed != b.Tts.Seed || a.Tts.NumSteps != b.Tts.NumSteps ||
+            a.Tts.GuidanceScale != b.Tts.GuidanceScale)
             c |= RuntimeChange.RebuildTts;
+        // The player's WaveFormat and the virtual-mic buffer are built from this rate.
+        if (a.Tts.SampleRate != b.Tts.SampleRate)
+            c |= RuntimeChange.RebuildTts | RuntimeChange.RestartAudio;
 
         if (a.Vts.MouthScale != b.Vts.MouthScale ||
             !DictEqual(a.Vts.EmotionMap, b.Vts.EmotionMap) ||
@@ -77,7 +83,7 @@ public static class ConfigDiff
         if (a.Bilibili.Enable != b.Bilibili.Enable || a.Bilibili.RoomId != b.Bilibili.RoomId ||
             a.Bilibili.Sessdata != b.Bilibili.Sessdata || a.Bilibili.BiliJct != b.Bilibili.BiliJct ||
             a.Bilibili.Buvid3 != b.Bilibili.Buvid3 || a.Bilibili.PushPort != b.Bilibili.PushPort ||
-            a.Bilibili.PythonPath != b.Bilibili.PythonPath)
+            a.Bilibili.PythonPath != b.Bilibili.PythonPath || a.Bilibili.PkNotice != b.Bilibili.PkNotice)
             c |= RuntimeChange.RestartDanmaku;
 
         if (a.Memory.ExtractEveryNTurns != b.Memory.ExtractEveryNTurns)

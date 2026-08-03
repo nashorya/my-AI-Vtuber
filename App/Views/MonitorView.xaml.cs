@@ -52,6 +52,12 @@ public partial class MonitorView : UserControl
             vm.StopSpeaking();
     }
 
+    private void OnNewPkClicked(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is MonitorViewModel vm)
+            vm.StartNewPk();
+    }
+
     private void OnRestartLocalAsr(object sender, RoutedEventArgs e)
     {
         if (DataContext is MonitorViewModel vm)
@@ -97,6 +103,13 @@ public partial class MonitorView : UserControl
         vm.TriggerAvatarListening(_avatarListeningOn);
         if (AvatarListeningButton is not null)
             AvatarListeningButton.Content = _avatarListeningOn ? "倾听 OFF" : "倾听 ON";
+    }
+
+    private void OnAvatarPose(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MonitorViewModel vm) return;
+        if (sender is FrameworkElement { Tag: string poseId })
+            vm.TriggerAvatarPose(poseId);
     }
 
     private void OnOperationalEventScrollChanged(object sender, ScrollChangedEventArgs e)

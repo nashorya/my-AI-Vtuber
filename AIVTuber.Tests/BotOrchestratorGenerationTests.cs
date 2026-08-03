@@ -75,6 +75,7 @@ public sealed class BotOrchestratorGenerationTests
         public event EventHandler<string>? OnEmotionDetected;
         public event EventHandler<string>? OnActionDetected;
 
+        public event EventHandler<string>? OnPoseDetected;
         public TaskCompletionSource OldStarted { get; } = NewSignal();
         public TaskCompletionSource ReleaseOld { get; } = NewSignal();
         public TaskCompletionSource NewStarted { get; } = NewSignal();

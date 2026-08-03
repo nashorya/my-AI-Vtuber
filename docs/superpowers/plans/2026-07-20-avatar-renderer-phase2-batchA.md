@@ -25,4 +25,4 @@
 
 ## 风险（手测）
 
-- 头层位移：`HeadTranslate.Y = -(canvasH - neckPivotY) * (scaleY - 1)`，WPF Y 向下，务必在 Windows 上肉眼确认无穿帮
+- 头层位移：`HeadTranslate.Y = -(pivot_y - cut_y) × (scaleY - 1)`（按切口高度，不是身体层顶端 / `canvasH - neckPivotY`）；羽化在头层 PNG（y535~545），代码不做边缘处理。WPF Y 向下，务必在 Windows 上肉眼确认无穿帮

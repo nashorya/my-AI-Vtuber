@@ -11,8 +11,8 @@ public sealed class AudioPlayer : IDisposable
     /// <summary>
     /// Sample rate (Hz) the player assumes for incoming raw PCM. TTS clients must
     /// produce PCM at this rate (see TtsClient) or playback will be pitch/speed shifted.
-    /// 24000 Hz is supported by all three TTS providers (Fish Audio, MiniMax, DashScope
-    /// CosyVoice); 44100 is not in the CosyVoice spec and causes pitch-shifted audio.
+    /// 24000 Hz is supported by Fish Audio, MiniMax, DashScope CosyVoice, Dots, and MiMo TTS;
+    /// 44100 is not in the CosyVoice spec and causes pitch-shifted audio.
     /// </summary>
     public const int DefaultSampleRate = 24000;
 
@@ -28,6 +28,9 @@ public sealed class AudioPlayer : IDisposable
         _deviceIndex = deviceIndex;
     }
 
+    /// <summary>Rate this player decodes raw PCM at. Providers must deliver audio at it.</summary>
+    public int SampleRate => _sampleRate;
+
 /// <summary>
     /// Fired every ~30ms during playback with the RMS value (0.0 - 1.0 range typically).
     /// Used for lip sync (VTS mouth parameter).
@@ -40,8 +43,8 @@ public sealed class AudioPlayer : IDisposable
     public event EventHandler? PlaybackFinished;
 
     /// <summary>
-    /// Fired for every raw PCM chunk that passes through PlayChunksAsync, at the original
-    /// TTS sample rate (<see cref="DefaultSampleRate"/>). Used by VirtualMicMixer to tap the
+    /// Fired for every raw PCM chunk that passes through PlayChunksAsync, at this player's
+    /// <see cref="SampleRate"/>. Used by VirtualMicMixer to tap the
     /// audio stream without interfering with normal playback.
     /// </summary>
     public event EventHandler<byte[]>? PcmChunkPlayed;
@@ -291,6 +294,16 @@ public sealed class AudioPlayer : IDisposable
                         totalRead += toRead;
                         _readOffset += toRead;
                         if (_readOffset >= chunk.Length) { _chunkIndex++; _readOffset = 0; }
+                    }
+                    // NAudio treats each returned count as a whole number of frames. Returning
+                    // an odd byte count under a 16-bit format shifts every later sample by one
+                    // byte, which plays as noise and screeching. Hold the dangling byte back
+                    // until its partner arrives.
+                    if ((totalRead & 1) != 0)
+                    {
+                        if (_readOffset > 0) _readOffset--;
+                        else _readOffset = _chunks[--_chunkIndex].Length - 1;
+                        totalRead--;
                     }
                     if (totalRead > 0) return totalRead;
                     if (_writingComplete) return 0;

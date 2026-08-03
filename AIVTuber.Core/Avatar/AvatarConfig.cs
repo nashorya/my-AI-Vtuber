@@ -22,10 +22,13 @@ public sealed class AvatarPackConfig
     [JsonPropertyName("stickers")]
     public StickersConfig Stickers { get; set; } = new();
 
-    /// <summary>Optional head/body layer split for head-tilt support (v0.2+). When null or
-    /// Enabled=false, the renderer falls back to the single-sprite mode from v0.1.</summary>
+    /// <summary>Optional head/body layer split (deprecated). Prefer <see cref="Poses"/>.</summary>
     [JsonPropertyName("layers")]
     public LayersConfig? Layers { get; set; }
+
+    /// <summary>Whole-image pose switch (v0.6+). Replaces layered head-tilt.</summary>
+    [JsonPropertyName("poses")]
+    public PosesConfig? Poses { get; set; }
 }
 
 public sealed class AvatarMeta
@@ -252,7 +255,7 @@ public sealed class SwayConfig
 public sealed class ListeningConfig
 {
     [JsonPropertyName("tilt_deg")]
-    public float TiltDeg { get; set; } = 5;
+    public float TiltDeg { get; set; } = 12;
 
     [JsonPropertyName("blink_interval_scale")]
     public float BlinkIntervalScale { get; set; } = 0.7f;
@@ -315,10 +318,23 @@ public sealed class LayersConfig
     [JsonPropertyName("head_dir")]
     public string HeadDir { get; set; } = "layered/head/";
 
-    /// <summary>Y coordinate (in pack canvas space) where the head was cut from the body.
-    /// Informational; the rendering uses <see cref="NeckPivot"/> for the rotation anchor.</summary>
+    /// <summary>Y coordinate (in pack canvas space) of the head/body cut.
+    /// Used with <c>meta.pivot.y</c> for breath follow:
+    /// <c>HeadTranslate.Y = -(pivot_y - cut_y) × (scaleY - 1)</c>.
+    /// Soft edge / feather lives in the head PNG (<c>feather_to_y</c> is documentation only).</summary>
     [JsonPropertyName("cut_y")]
     public int CutY { get; set; }
+
+    /// <summary>Optional pack note: head PNG alpha fades through this Y (inclusive soft edge).
+    /// Not consumed by the renderer — feathering must already be baked into the PNG.</summary>
+    [JsonPropertyName("feather_to_y")]
+    public int FeatherToY { get; set; }
+
+    /// <summary>Lowest canvas Y included in the rotating head (exclusive bottom). Rows at/below
+    /// this stay on the static body so shoulder wings do not tilt. 0 = use cut_y (legacy).
+    /// Whale maid v0.5: shoulder flare starts ~516 → use 515.</summary>
+    [JsonPropertyName("head_rotate_bottom_y")]
+    public int HeadRotateBottomY { get; set; }
 
     /// <summary>Pivot (pack canvas space) the head rotates about. Typically the neck center.</summary>
     [JsonPropertyName("neck_pivot")]
@@ -331,12 +347,95 @@ public sealed class LayersConfig
     public string? Note { get; set; }
 }
 
-/// <summary>Head-tilt spring parameters (v0.2+). Drives a second-order spring on the head layer.</summary>
+/// <summary>Whole-image pose switch (v0.6). Distorts nothing — each pose is a full standee.</summary>
+public sealed class PosesConfig
+{
+    [JsonPropertyName("dir")]
+    public string Dir { get; set; } = "poses/";
+
+    [JsonPropertyName("default")]
+    public string Default { get; set; } = "front";
+
+    [JsonPropertyName("foot_baseline_y")]
+    public int FootBaselineY { get; set; }
+
+    [JsonPropertyName("list")]
+    public Dictionary<string, PoseDef> List { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    [JsonPropertyName("transition")]
+    public TransitionDef Transition { get; set; } = new() { Type = "fade", Ms = 180 };
+
+    [JsonPropertyName("triggers")]
+    public PoseTriggersConfig Triggers { get; set; } = new();
+
+    [JsonPropertyName("comment")]
+    public string? Comment { get; set; }
+
+    [JsonPropertyName("note")]
+    public string? Note { get; set; }
+}
+
+public sealed class PoseDef
+{
+    [JsonPropertyName("file")]
+    public string File { get; set; } = "";
+
+    [JsonPropertyName("full_expression")]
+    public bool FullExpression { get; set; }
+
+    /// <summary>"none" = freeze mouth on non-front poses.</summary>
+    [JsonPropertyName("mouth")]
+    public string? Mouth { get; set; }
+}
+
+public sealed class PoseTriggersConfig
+{
+    [JsonPropertyName("idle_random")]
+    public IdleRandomPoseTrigger IdleRandom { get; set; } = new();
+
+    [JsonPropertyName("manual")]
+    public object? Manual { get; set; }
+
+    [JsonPropertyName("emotion_hint")]
+    public EmotionHintTrigger EmotionHint { get; set; } = new();
+}
+
+/// <summary>Optional: map LLM emotion words → whole-image pose ids.</summary>
+public sealed class EmotionHintTrigger
+{
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; }
+
+    /// <summary>Emotion word (as in [emotion:x]) → pose id (tilt_left, …).</summary>
+    [JsonPropertyName("map")]
+    public Dictionary<string, string> Map { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    [JsonPropertyName("comment")]
+    public string? Comment { get; set; }
+}
+
+public sealed class IdleRandomPoseTrigger
+{
+    [JsonPropertyName("enabled")]
+    public bool Enabled { get; set; }
+
+    [JsonPropertyName("interval_ms")]
+    public int[] IntervalMs { get; set; } = [45000, 90000];
+
+    /// <summary>Idle pool. Empty = tilt_left / tilt_right only (never side poses).</summary>
+    [JsonPropertyName("poses")]
+    public string[] Poses { get; set; } = ["tilt_left", "tilt_right"];
+
+    [JsonPropertyName("comment")]
+    public string? Comment { get; set; }
+}
+
+/// <summary>Head-tilt spring parameters (v0.2+, legacy layered path).</summary>
 public sealed class TiltConfig
 {
     /// <summary>Soft cap on tilt magnitude (degrees). Spring target is clamped to +-this.</summary>
     [JsonPropertyName("max_deg")]
-    public float MaxDeg { get; set; } = 6f;
+    public float MaxDeg { get; set; } = 20f;
 
     /// <summary>Spring stiffness (omega^2). Higher = snappier. ~120 feels natural.</summary>
     [JsonPropertyName("stiffness")]
@@ -380,14 +479,26 @@ public static class AvatarConfigLoader
 
         try
         {
-            var json = File.ReadAllText(path);
-            var parsed = JsonSerializer.Deserialize<AvatarPackConfig>(json, JsonOptions);
+            // Utf8JsonReader rejects a leading UTF-8 BOM (EF BB BF). Prefer raw bytes + skip
+            // so we never depend on whether ReadAllText left U+FEFF in the string.
+            var bytes = File.ReadAllBytes(path);
+            var offset = 0;
+            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+                offset = 3;
+            var parsed = JsonSerializer.Deserialize<AvatarPackConfig>(
+                bytes.AsSpan(offset), JsonOptions);
             if (parsed is null)
                 return false;
 
             // Dictionaries deserialize without ordinal-ignore comparer; rebuild for safe lookups.
             parsed.States = new Dictionary<string, AvatarStateDef>(parsed.States, StringComparer.OrdinalIgnoreCase);
             parsed.Stickers.Items = new Dictionary<string, StickerItemDef>(parsed.Stickers.Items, StringComparer.OrdinalIgnoreCase);
+            if (parsed.Poses is not null)
+            {
+                parsed.Poses.List = new Dictionary<string, PoseDef>(parsed.Poses.List, StringComparer.OrdinalIgnoreCase);
+                parsed.Poses.Triggers.EmotionHint.Map = new Dictionary<string, string>(
+                    parsed.Poses.Triggers.EmotionHint.Map, StringComparer.OrdinalIgnoreCase);
+            }
 
             // Refuse the synthetic placeholder identity if somehow present — hot-reload must
             // never clobber a real pack with the empty fallback.

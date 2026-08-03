@@ -350,6 +350,57 @@
 - AI TTS、系统提示音和对方主播声音均不会通过麦克风路径触发新的回复或抢占正确输入。
 - 使用耳机、按进程内录、全局内录、无 AEC 降级和设备切换录制确定性双通道 fixtures；CI 重放无网络、无真实设备、无 flaky。
 
+### [ ] LIVE-01 让 AI 主播感知 PK 对手
+
+设计文档：[`docs/superpowers/specs/2026-07-31-pk-opponent-context-design.md`](docs/superpowers/specs/2026-07-31-pk-opponent-context-design.md)
+
+**证据**
+
+- `danmaku_bridge.py` 只注册了 `DANMU_MSG`，PK 相关 cmd 全部被丢弃；AI 主播对"正在和谁 PK"没有任何感知。
+- 粉丝数挂在用户维度而非房间维度，PK 推送只给 room_id，因此需要 `room_init` 换 uid 后再查 `Master/info`，两跳串行。
+- `getInfoByRoom` 这类"一次拿全"的接口已风控（返回 `-352`，补 Referer 无效），不能依赖。
+- bridge 每条消息新建 `httpx.AsyncClient`，不复用连接，每次都重新握手 TLS。
+
+**实施**
+
+- bridge 注册 `PK_BATTLE_PRE(_NEW)`（倒计时阶段，早于开打）、`PK_BATTLE_START(_NEW)`（兜底）和四个结束 cmd。
+- 对手 room_id 用 init/match 比对法判定；解析拆成无 IO 的纯函数以便单测。
+- 以对手 room_id 为键做 60 秒去重，避免 PRE 与 START 对同一场 PK 重复触发发言。
+- `BilibiliDanmakuClient` 增加 `/pk/` 端点与 `OnPkStarted` 事件；`BotRuntime` 填充 `Input.PkTemplate` 后直连 `ProcessTextAsync`，不经 `DanmakuSelector`（其 8s 节流与排队会延迟或吞掉时效性事件）。
+- 新增 `BilibiliConfig.PkNotice`，默认 `false`，不改变现有部署行为。
+- bridge 子进程显式设置 `no_proxy=*`：`UseShellExecute=false` 会继承宿主终端的代理变量，实测会把 B站 API 从 0.10s 劣化到 3.69s。
+- PK 链路全程异常隔离，任何失败只导致"这次没播报"。
+
+**验收**
+
+- `PkNotice=false` 时行为与当前完全一致，bridge 不注册 PK handler。
+- 真实开一场 PK：AI 主播在开场说出含对手昵称的发言，且只说一次。
+- 对手 room_id 判定的五种输入（init 是自己 / match 是自己 / 都不是 / 字段缺失 / 空 payload）有确定性单测覆盖。
+- `/pk/` 端点收到畸形 JSON 时返回 200 且不触发事件；弹幕与 PK 两条路径互不串扰。
+- 断网或 B站 API 失败时弹幕回复不受影响，bridge 不退出。
+
+### [ ] LIVE-02 把 PK 对手做成长期记忆
+
+**证据**
+
+- `LIVE-01` 只在 PK 开场把对手信息喂给 LLM 一次，`CurrentPkOpponent` 在下一场开始时即被清空，跨场次没有任何留存。
+- 观众侧已有成熟范式：`ViewerRepository` 以 `(uid, platform)` 为键维护 `FirstSeen` / `LastSeen` / `InteractionCount` / `Notes`，并用 `IsRegularAsync` 判定熟客。对手主播缺少等价物。
+- 对手主播天然是重复出现的实体（同一批人反复匹配），"上次和你 PK 过""这是第三次遇到"这类反应需要历史才能产生。
+
+**实施**
+
+- 复用 `MemoryDb`，新增对手表：uid、房间号、昵称、粉丝数快照、首次/最近 PK 时间、PK 次数。粉丝数按次留快照而非只存最新，才能表达"涨了多少"。
+- 在 `AnnouncePkOpponent` 落库；模板增加可选占位符（如遭遇次数、上次时间），无历史时渲染为空而不是字面大括号。
+- 手动"新 PK"路径没有对手身份，不落库，但不能因此写入空记录污染表。
+- 记忆页需要能查看和删除对手记录，与观众记录同等的隐私处理。
+
+**验收**
+
+- 同一对手第二次 PK 时，注入 LLM 的文本包含遭遇次数与上次时间。
+- 手动标记的 PK 不产生数据库记录。
+- 对手记录可在记忆页查看和删除，删除后不再影响后续注入。
+- 数据库升级路径有 fixture 测试，与既有 SQLite 升级测试同套路。
+
 ## P1：UI/UX 重做
 
 ### [ ] UX-01 建立应用级设计 token 和主题

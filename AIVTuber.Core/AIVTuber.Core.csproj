@@ -6,6 +6,9 @@
     <Nullable>enable</Nullable>
     <RootNamespace>AIVTuber</RootNamespace>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <!-- WebRtcVadSharp.targets copies build\$(PlatformTarget)\WebRtcVad.dll; empty PlatformTarget
+         resolves to build\*.* and copies the .targets file instead of the native DLL. -->
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
 
   <ItemGroup>
@@ -14,11 +17,25 @@
 
   <ItemGroup>
     <PackageReference Include="NAudio" Version="2.2.1" />
-    <PackageReference Include="WebRtcVadSharp" Version="1.1.0" />
+    <PackageReference Include="WebRtcVadSharp" Version="1.1.0" GeneratePathProperty="true" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.3" />
     <PackageReference Include="Websocket.Client" Version="3.0.15" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.21.0" />
   </ItemGroup>
+
+  <!-- Keep the native DLL in Core output and flow it to App/Tests via CopyToOutputDirectory. -->
+  <ItemGroup Condition="'$(PkgWebRtcVadSharp)' != ''">
+    <None Include="$(PkgWebRtcVadSharp)\build\x64\WebRtcVad.dll"
+          Link="WebRtcVad.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" />
+  </ItemGroup>
+
+  <Target Name="EnsureWebRtcVadNative" AfterTargets="Build">
+    <Error Condition="!Exists('$(OutDir)WebRtcVad.dll')"
+           Text="WebRtcVad.dll was not copied to $(OutDir). Check WebRtcVadSharp package restore and PlatformTarget=x64." />
+  </Target>
 
 </Project>

@@ -22,7 +22,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         _monitorView = new MonitorView();
         _monitorView.DataContext = new MonitorViewModel(
-            runtime, action => Dispatcher.Invoke(action));
+            runtime, action => Dispatcher.BeginInvoke(action));
 
         _configView = new ConfigView();
         _configView.DataContext = new ConfigViewModel(
@@ -34,7 +34,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 
         _memoryView = new MemoryView();
         _memoryView.DataContext = new MemoryViewModel(
-            runtime, action => Dispatcher.Invoke(action));
+            runtime, action => Dispatcher.BeginInvoke(action));
 
         _firstRunView = new FirstRunView();
         _firstRunView.ConfigureSectionRequested += (_, section) => ShowConfigPage(section);

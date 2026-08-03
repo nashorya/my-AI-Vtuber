@@ -114,7 +114,11 @@ public sealed class AudioConfig
     // VAD parameters
     public int VadAggressiveness { get; set; } = 2; // 0-3
     public int PreSpeechPaddingMs { get; set; } = 200;
-    public int PostSpeechSilenceMs { get; set; } = 500;
+    /// <summary>Silence needed to close a speech segment. 500ms cut people off mid-thought:
+    /// a pause for wording or a breath routinely runs longer than that, and the detector
+    /// only counts silence, it cannot tell "finished" from "thinking". Raising this trades
+    /// reply latency for not being interrupted.</summary>
+    public int PostSpeechSilenceMs { get; set; } = 800;
 }
 
 public sealed class AsrConfig
@@ -144,7 +148,8 @@ public sealed class LlmConfig
     public string BaseUrl { get; set; } = "https://api.deepseek.com";
     public string ApiKey { get; set; } = string.Empty;
     public string Model { get; set; } = "deepseek-chat";
-    public string SystemPrompt { get; set; } = "你是一个VTuber...";
+    public string SystemPrompt { get; set; } =
+        "你是直播中的 AI VTuber。口语短句回答，正文不超过80字（控制标记不计入），一句顶十句，别啰嗦、别列点。";
     public int MaxHistoryTokens { get; set; } = 4096;
 }
 
@@ -154,12 +159,27 @@ public sealed class TtsConfig
     public string ApiKey { get; set; } = string.Empty;
     public string VoiceId { get; set; } = string.Empty;
     /// <summary>Model name. Provider-specific; empty = the provider's default
-    /// (fish → s1, minimax → speech-2.8-hd, aliyun → cosyvoice-v3-flash).</summary>
+    /// (fish → s1, minimax → speech-2.8-hd, aliyun → cosyvoice-v3-flash, mimo → mimo-v2.5-tts).</summary>
     public string Model { get; set; } = string.Empty;
     /// <summary>MiniMax only: no longer required — new platform (api.minimaxi.com) uses Bearer-only auth.</summary>
     public string GroupId { get; set; } = string.Empty;
     /// <summary>Synthesis speed multiplier (0.5–2.0).</summary>
     public double Speed { get; set; } = 1.0;
+    /// <summary>PCM sample rate requested from the provider and used by the player.
+    /// 24000 is the safe default: it is the only rate all three cloud providers accept
+    /// (CosyVoice rejects 44100). A self-hosted dots.tts generates 48000 natively, so
+    /// setting 48000 there avoids resampling entirely.</summary>
+    public int SampleRate { get; set; } = AIVTuber.Core.Audio.AudioPlayer.DefaultSampleRate;
+    /// <summary>dots.tts only: base URL of the self-hosted service.</summary>
+    public string BaseUrl { get; set; } = "http://127.0.0.1:6006";
+    /// <summary>dots.tts only: synthesis language code (e.g. "ZH", "EN").</summary>
+    public string Language { get; set; } = "ZH";
+    /// <summary>dots.tts only: sampling seed; fixed so a line reads the same way twice.</summary>
+    public int Seed { get; set; } = 42;
+    /// <summary>dots.tts only: diffusion steps. Higher is slower and slightly cleaner.</summary>
+    public int NumSteps { get; set; } = 10;
+    /// <summary>dots.tts only: classifier-free guidance scale.</summary>
+    public double GuidanceScale { get; set; } = 1.2;
 }
 
 public sealed class VtsConfig
@@ -175,22 +195,57 @@ public sealed class VtsConfig
     public Dictionary<string, string> ActionMap { get; set; } = new();
 
     /// <summary>
-    /// Appends an auto-generated "[emotion:word]" vocabulary hint built from EmotionMap's keys,
-    /// so the prompt always advertises exactly the emotion words that are actually wired to a
-    /// VTS hotkey — no need to hand-edit the system prompt every time a mapping is added.
+    /// Appends auto-generated control-tag vocabulary so the LLM emits exactly the
+    /// [emotion:] / [pose:] / [action:] tokens we can parse. Extra emotion/pose lists
+    /// (pixel avatar pack) merge with VTS maps.
+    /// Prefer short replies: one spoken sentence keeps one emotion/pose naturally aligned with TTS.
     /// </summary>
-    public string BuildSystemPrompt(string basePrompt)
+    public string BuildSystemPrompt(
+        string basePrompt,
+        IEnumerable<string>? extraEmotions = null,
+        IEnumerable<string>? poses = null)
     {
         var instructions = new List<string>();
-        if (EmotionMap.Count > 0)
+
+        instructions.Add(
+            "回复要短：正文（去掉所有 [emotion:]/[pose:]/[action:] 标记后）尽量不超过 80 个字；" +
+            "默认一句说完，最多两句。标记紧挨句末写，不计入字数。");
+
+        var emotionWords = EmotionMap.Keys
+            .Concat(extraEmotions ?? [])
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (emotionWords.Count > 0)
         {
-            var words = string.Join("、", EmotionMap.Keys);
-            instructions.Add($"你可以在合适的时候插入 [emotion:词] 来切换表情。可用的情绪词只有：{words}。每句话最多一个，不要创造列表外的词。标记不会被读出或显示。");
+            var words = string.Join("、", emotionWords);
+            instructions.Add(
+                "需要换表情时，在该句句号前插入 [emotion:词]（驱动立绘/VTS）。" +
+                $"可用情绪词只有：{words}。每句最多一个，不要列表外的词。" +
+                "用户点名要表情/情绪时必须带标记，不要只写文字描述。" +
+                "标记不会被读出；TTS 只念正文，情绪另传参数。");
         }
+
+        var poseWords = (poses ?? [])
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (poseWords.Count > 0)
+        {
+            var words = string.Join("、", poseWords);
+            instructions.Add(
+                "需要换整图姿态时，在该句句号前插入 [pose:姿态名]。" +
+                $"可用姿态名只有：{words}。每句最多一个。" +
+                "有 [emotion:] 时不要同时写 side_*/tilt_*（会盖住表情）；示例：好呀[emotion:shy]。" +
+                "单独侧身示例：[pose:side_right]。");
+        }
+
         if (ActionMap.Count > 0)
         {
             var actions = string.Join("、", ActionMap.Keys);
-            instructions.Add($"你可以在动作应该开始的位置插入 [action:动作名] 来触发模型动作。可用的动作名只有：{actions}。只在语义合适时使用，每句话最多一个，不要创造列表外的动作。标记不会被读出或显示。");
+            instructions.Add(
+                $"需要动作时在该句句号前插入 [action:动作名]。可用：{actions}。" +
+                "每句最多一个，不要列表外的动作。标记不会被读出。");
         }
 
         if (instructions.Count == 0) return basePrompt;
@@ -226,6 +281,11 @@ public sealed class InputTemplateConfig
     public string LoopbackTemplate { get; set; } = "（你听到对面说：{text}）";
     /// <summary>Wraps danmaku. Use {username} and {content} as placeholders.</summary>
     public string DanmakuTemplate { get; set; } = "（弹幕 {username}：{content}）";
+    /// <summary>Wraps a PK match start. Use {uname}, {follower}, {uid} and {roomid} as placeholders.</summary>
+    public string PkTemplate { get; set; } = "（PK 开始了，对手是 {uname}，有 {follower} 个粉丝）";
+    /// <summary>Wraps a manually announced PK match, used when the opponent could not be
+    /// resolved. No opponent placeholders are available on this path.</summary>
+    public string PkManualTemplate { get; set; } = "（新的一场 PK 开始了，还不知道对手是谁）";
 }
 
 public sealed class BilibiliConfig
@@ -241,4 +301,7 @@ public sealed class BilibiliConfig
     public int SelectionIntervalSec { get; set; } = 8;
     /// <summary>Python executable path. Defaults to "python".</summary>
     public string PythonPath { get; set; } = "python";
+    /// <summary>Announce the opposing streamer when a PK match starts. Read by the bridge
+    /// at startup, so changing it respawns the bridge process.</summary>
+    public bool PkNotice { get; set; } = false;
 }

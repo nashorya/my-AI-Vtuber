@@ -152,6 +152,27 @@ public class AvatarStateMachineTests
     }
 
     [Fact]
+    public void Emotion_HoldLocksOutMouthForWallClockDuration()
+    {
+        var sm = new AvatarStateMachine(SamplePack(), rng: new Random(1));
+        sm.SetEmotion("happy", TimeSpan.FromMilliseconds(200));
+        sm.OnRms(0.9f);
+
+        // Through the hold, body stays happy despite open mouth RMS.
+        for (var t = 0; t < 180; t += 20)
+        {
+            var frame = sm.Tick(20);
+            Assert.Equal("happy", frame.BodyState);
+            Assert.True(frame.EmotionActive);
+        }
+
+        // After hold expires, lip-sync may take the body.
+        var after = sm.Tick(40);
+        Assert.False(after.EmotionActive);
+        Assert.Equal("mouth_open", after.BodyState);
+    }
+
+    [Fact]
     public void Blink_IntervalRespectsConfiguredRange()
     {
         // Fixed RNG + fixed interval [1000,1000] → blink after 1000ms cooldown.

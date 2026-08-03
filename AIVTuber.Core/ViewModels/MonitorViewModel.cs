@@ -9,8 +9,8 @@ namespace AIVTuber.Core.ViewModels;
 /// <summary>
 /// Monitor tab view-model. UI-agnostic (no WPF types): subscribes to BotRuntime and
 /// exposes bindable properties. All updates are marshalled through the injected
-/// dispatch delegate (the WPF host passes Dispatcher.Invoke; tests pass a synchronous
-/// run-now delegate).
+/// dispatch delegate (the WPF host passes Dispatcher.BeginInvoke; tests pass a synchronous
+/// run-now delegate). Prefer BeginInvoke so config apply cannot deadlock on UI events.
 /// </summary>
 public sealed class MonitorViewModel : INotifyPropertyChanged
 {
@@ -220,6 +220,10 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
     /// <summary>Interrupts the AI immediately — stops current speech/generation and playback.</summary>
     public void StopSpeaking() => _runtime.StopSpeaking();
 
+    /// <summary>Manually marks a new PK match, for when the opponent could not be
+    /// auto-detected. Clears the previous opponent and tells the AI a fresh match began.</summary>
+    public void StartNewPk() => _runtime.StartNewPk();
+
     /// <summary>
     /// Manual test: drive the in-process PNG avatar to an emotion face.
     /// No-ops with a log line when backend is not pixel/both.
@@ -302,6 +306,22 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
 
         driver.SetListening(on);
         _dispatch(() => AddOperationalEvent("形象", on ? "倾听 → ON" : "倾听 → OFF"));
+    }
+
+    /// <summary>Manual QA: switch whole-image pose (v0.6).</summary>
+    public void TriggerAvatarPose(string poseId)
+    {
+        if (string.IsNullOrWhiteSpace(poseId)) return;
+        var driver = _runtime.PixelAvatar;
+        if (driver is null)
+        {
+            _dispatch(() => AddOperationalEvent(
+                "形象", $"未启用（backend 需 pixel/both）: pose {poseId}", isError: true));
+            return;
+        }
+
+        driver.SetPose(poseId);
+        _dispatch(() => AddOperationalEvent("形象", $"姿态 → {poseId}"));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

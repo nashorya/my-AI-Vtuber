@@ -38,6 +38,33 @@ public class AvatarConfigLoaderTests
         Assert.Contains("neutral", pack.States.Keys);
     }
 
+    [Fact]
+    public void TryLoad_AcceptsUtf8BomPrefixedJson()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "avatar-bom-" + Guid.NewGuid());
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var json = """
+                {"meta":{"name":"bom-pack","canvas":{"width":1,"height":1},"pivot":{"x":0,"y":0}},
+                 "states":{"neutral":{"file":"sprites/n.png","category":"base"}}}
+                """;
+            var utf8 = System.Text.Encoding.UTF8.GetBytes(json);
+            var withBom = new byte[3 + utf8.Length];
+            withBom[0] = 0xEF; withBom[1] = 0xBB; withBom[2] = 0xBF;
+            Buffer.BlockCopy(utf8, 0, withBom, 3, utf8.Length);
+            File.WriteAllBytes(Path.Combine(dir, "avatar.json"), withBom);
+
+            Assert.True(AvatarConfigLoader.TryLoad(dir, out var pack));
+            Assert.Equal("bom-pack", pack.Meta.Name);
+            Assert.Contains("neutral", pack.States.Keys);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* ignore */ }
+        }
+    }
+
     private static string FindAvatarAssets()
     {
         // Test host cwd is typically bin/Debug/net10.0 — walk up to repo root.

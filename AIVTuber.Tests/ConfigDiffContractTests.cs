@@ -10,6 +10,7 @@ public class ConfigDiffContractTests
         "Asr.Provider", "Asr.ApiKey", "Asr.AppId", "Asr.Model", "Asr.LocalAsrUrl", "Asr.PythonPath",
         "Asr.PersistConnection", "Asr.Streaming",
         "Tts.Provider", "Tts.ApiKey", "Tts.VoiceId", "Tts.Model", "Tts.GroupId", "Tts.Speed",
+        "Tts.BaseUrl", "Tts.Language", "Tts.Seed", "Tts.NumSteps", "Tts.GuidanceScale", "Tts.SampleRate",
     ];
 
     public static TheoryData<string, Action<AppConfig>, RuntimeChange> AsrAndTtsRuntimeFields => new()
@@ -28,6 +29,12 @@ public class ConfigDiffContractTests
         { "Tts.Model", c => c.Tts.Model = "speech-2.8-hd", RuntimeChange.RebuildTts },
         { "Tts.GroupId", c => c.Tts.GroupId = "new-group", RuntimeChange.RebuildTts },
         { "Tts.Speed", c => c.Tts.Speed = 1.25, RuntimeChange.RebuildTts },
+        { "Tts.BaseUrl", c => c.Tts.BaseUrl = "http://127.0.0.1:7000", RuntimeChange.RebuildTts },
+        { "Tts.Language", c => c.Tts.Language = "EN", RuntimeChange.RebuildTts },
+        { "Tts.Seed", c => c.Tts.Seed = 7, RuntimeChange.RebuildTts },
+        { "Tts.NumSteps", c => c.Tts.NumSteps = 16, RuntimeChange.RebuildTts },
+        { "Tts.GuidanceScale", c => c.Tts.GuidanceScale = 2.0, RuntimeChange.RebuildTts },
+        { "Tts.SampleRate", c => c.Tts.SampleRate = 48000, RuntimeChange.RebuildTts | RuntimeChange.RestartAudio },
     };
 
     [Theory]
