@@ -6,6 +6,8 @@
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <!-- Required by WebRtcVadSharp.targets (build\$(PlatformTarget)\WebRtcVad.dll). -->
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
 
   <ItemGroup>
@@ -28,11 +30,19 @@
     <None Include="Fixtures\Memory\legacy-memory-v9.db" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <!-- WebRtcVadSharp's native DLL is not propagated transitively to test output. -->
-  <Target Name="CopyWebRtcVadNative" AfterTargets="Build">
-    <Copy SourceFiles="$(NuGetPackageRoot)webrtcvadsharp\1.1.0\build\x64\WebRtcVad.dll"
-          DestinationFolder="$(OutDir)"
-          SkipUnchangedFiles="true" />
+  <ItemGroup>
+    <PackageReference Include="WebRtcVadSharp" Version="1.1.0" GeneratePathProperty="true" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(PkgWebRtcVadSharp)' != ''">
+    <None Include="$(PkgWebRtcVadSharp)\build\x64\WebRtcVad.dll"
+          Link="WebRtcVad.dll"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <Target Name="EnsureWebRtcVadNative" AfterTargets="Build">
+    <Error Condition="!Exists('$(OutDir)WebRtcVad.dll')"
+           Text="WebRtcVad.dll was not copied to $(OutDir)." />
   </Target>
 
 </Project>

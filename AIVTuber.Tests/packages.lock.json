@@ -18,6 +18,12 @@
           "Microsoft.TestPlatform.TestHost": "17.14.1"
         }
       },
+      "WebRtcVadSharp": {
+        "type": "Direct",
+        "requested": "[1.1.0, )",
+        "resolved": "1.1.0",
+        "contentHash": "NkvbIcmNv/ldNQtpYNraDWV/uQhshMlaajM0S3fb4PeeI+UkJJHbr0QKiTeB1swf6oN2EtToFm0hHxsiRg3KHg=="
+      },
       "xunit": {
         "type": "Direct",
         "requested": "[2.9.3, )",
@@ -209,11 +215,6 @@
         "type": "Transitive",
         "resolved": "2.6.68",
         "contentHash": "5mZ+aXsYQnr3Wxz5O2tmbgPaa5kn9R+ZlfnPyGBogXI2sh4uTiHtvU++N4bURtn9vmDYIu2Zu323K9hFz9poXQ=="
-      },
-      "WebRtcVadSharp": {
-        "type": "Transitive",
-        "resolved": "1.1.0",
-        "contentHash": "NkvbIcmNv/ldNQtpYNraDWV/uQhshMlaajM0S3fb4PeeI+UkJJHbr0QKiTeB1swf6oN2EtToFm0hHxsiRg3KHg=="
       },
       "Websocket.Client": {
         "type": "Transitive",
