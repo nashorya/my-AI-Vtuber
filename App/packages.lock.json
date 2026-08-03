@@ -8,6 +8,12 @@
         "resolved": "10.0.9",
         "contentHash": "4Iw41e2h7I4t70SJcX2GCmbyKJIlA273Cfm9RJMM050/3VBejGAG1KcthP5Z2L6SQcbfbf6BhNWO26+ZG+GzMg=="
       },
+      "WebRtcVadSharp": {
+        "type": "Direct",
+        "requested": "[1.1.0, )",
+        "resolved": "1.1.0",
+        "contentHash": "NkvbIcmNv/ldNQtpYNraDWV/uQhshMlaajM0S3fb4PeeI+UkJJHbr0QKiTeB1swf6oN2EtToFm0hHxsiRg3KHg=="
+      },
       "WPF-UI": {
         "type": "Direct",
         "requested": "[3.1.1, )",
@@ -158,11 +164,6 @@
         "type": "Transitive",
         "resolved": "4.3.0",
         "contentHash": "J4GUi3xZQLUBasNwZnjrffN8i5wpHrBtZoLG+OhRyGo/+YunMRWWtwoMDlUAIdmX0uRfpHIBDSV6zyr3yf00TA=="
-      },
-      "WebRtcVadSharp": {
-        "type": "Transitive",
-        "resolved": "1.1.0",
-        "contentHash": "NkvbIcmNv/ldNQtpYNraDWV/uQhshMlaajM0S3fb4PeeI+UkJJHbr0QKiTeB1swf6oN2EtToFm0hHxsiRg3KHg=="
       },
       "Websocket.Client": {
         "type": "Transitive",

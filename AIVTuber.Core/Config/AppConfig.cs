@@ -159,7 +159,7 @@ public sealed class TtsConfig
     public string ApiKey { get; set; } = string.Empty;
     public string VoiceId { get; set; } = string.Empty;
     /// <summary>Model name. Provider-specific; empty = the provider's default
-    /// (fish → s1, minimax → speech-2.8-hd, aliyun → cosyvoice-v3-flash).</summary>
+    /// (fish → s1, minimax → speech-2.8-hd, aliyun → cosyvoice-v3-flash, mimo → mimo-v2.5-tts).</summary>
     public string Model { get; set; } = string.Empty;
     /// <summary>MiniMax only: no longer required — new platform (api.minimaxi.com) uses Bearer-only auth.</summary>
     public string GroupId { get; set; } = string.Empty;
@@ -209,8 +209,7 @@ public sealed class VtsConfig
 
         instructions.Add(
             "回复要短：正文（去掉所有 [emotion:]/[pose:]/[action:] 标记后）尽量不超过 80 个字；" +
-            "默认一句说完，最多两句。标记紧挨该句句号前写，不计入字数。" +
-            "若超长会在 。！？ 处截断，保证念完完整一句。");
+            "默认一句说完，最多两句。标记紧挨句末写，不计入字数。");
 
         var emotionWords = EmotionMap.Keys
             .Concat(extraEmotions ?? [])
@@ -223,6 +222,7 @@ public sealed class VtsConfig
             instructions.Add(
                 "需要换表情时，在该句句号前插入 [emotion:词]（驱动立绘/VTS）。" +
                 $"可用情绪词只有：{words}。每句最多一个，不要列表外的词。" +
+                "用户点名要表情/情绪时必须带标记，不要只写文字描述。" +
                 "标记不会被读出；TTS 只念正文，情绪另传参数。");
         }
 
@@ -236,7 +236,8 @@ public sealed class VtsConfig
             instructions.Add(
                 "需要换整图姿态时，在该句句号前插入 [pose:姿态名]。" +
                 $"可用姿态名只有：{words}。每句最多一个。" +
-                "示例：好呀[emotion:shy][pose:tilt_left]。");
+                "有 [emotion:] 时不要同时写 side_*/tilt_*（会盖住表情）；示例：好呀[emotion:shy]。" +
+                "单独侧身示例：[pose:side_right]。");
         }
 
         if (ActionMap.Count > 0)

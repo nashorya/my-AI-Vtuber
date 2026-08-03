@@ -45,6 +45,19 @@ public class LlmClientTests
     }
 
     [Fact]
+    public void IsSpeakableText_RejectsPunctuationOnly()
+    {
+        Assert.False(LlmClient.IsSpeakableText("."));
+        Assert.False(LlmClient.IsSpeakableText("..."));
+        Assert.False(LlmClient.IsSpeakableText("！"));
+        Assert.False(LlmClient.IsSpeakableText("  "));
+        Assert.False(LlmClient.IsSpeakableText(null));
+        Assert.True(LlmClient.IsSpeakableText("你好。"));
+        Assert.True(LlmClient.IsSpeakableText("Hi."));
+        Assert.True(LlmClient.IsSpeakableText("42"));
+    }
+
+    [Fact]
     public void StripEmotionTags_RemovesCompleteTag()
     {
         // Emotion tags must never reach TTS.

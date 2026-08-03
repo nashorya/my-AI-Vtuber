@@ -340,14 +340,15 @@ public sealed class AvatarStateMachine
         if (_specialState is not null && IsKnownState(_specialState))
             return _specialState;
 
-        if (_emotionState is not null && _emotionRemainingMs > 0 && IsKnownState(_emotionState))
+        // Emotion hold (default 1.5s wall-clock): lock the face so mouth_half/open
+        // whole-image sprites cannot interrupt for that window.
+        if (_emotionState is not null && _emotionRemainingMs > 0)
             return _emotionState;
 
         // Blink temporarily above mouth so speaking still blinks.
         if (_blinkRemainingMs > 0 && IsKnownState(Blink))
             return Blink;
 
-        // During emotion we never reach here; mouth only when face unlocked.
         if (!string.Equals(_heldMouthState, Neutral, StringComparison.OrdinalIgnoreCase)
             && IsKnownState(_heldMouthState))
             return _heldMouthState;

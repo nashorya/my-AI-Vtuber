@@ -21,12 +21,12 @@ public sealed class Message
 
 /// <summary>
 /// Streaming LLM interface. Returns tokens as they arrive and fires
-/// OnSentenceReady when a complete sentence is detected.
+/// OnSentenceReady once per turn with the full speakable reply.
 /// </summary>
 public interface ILlmClient
 {
     /// <summary>
-    /// Fires when a complete sentence is ready (terminated by sentence-ending punctuation).
+    /// Fires when the turn's speakable text is ready (tags stripped).
     /// </summary>
     event EventHandler<string>? OnSentenceReady;
 

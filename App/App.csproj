@@ -11,6 +11,7 @@
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PlatformTarget>x64</PlatformTarget>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <!-- Do NOT set IncludeAllContentForSelfExtract: it bundles CopyToPublishDirectory
          content into the exe and leaves publish/ without sidecar/config/assets, which
@@ -31,11 +32,30 @@
     <PackageReference Include="Microsoft.NET.ILLink.Tasks" Version="10.0.9" />
   </ItemGroup>
 
-  <!-- WebRtcVadSharp's native DLL isn't propagated transitively; copy it explicitly. -->
-  <Target Name="CopyWebRtcVadNative" AfterTargets="Build">
-    <Copy SourceFiles="$(NuGetPackageRoot)webrtcvadsharp\1.1.0\build\x64\WebRtcVad.dll"
-          DestinationFolder="$(OutDir)"
-          SkipUnchangedFiles="true" />
+  <!-- WebRtcVadSharp is referenced by Core; native DLL does not flow through ProjectReference
+       publish reliably for single-file apps. Copy via package path property + fail loud. -->
+  <ItemGroup>
+    <PackageReference Include="WebRtcVadSharp" Version="1.1.0" GeneratePathProperty="true" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(PkgWebRtcVadSharp)' != ''">
+    <None Include="$(PkgWebRtcVadSharp)\build\x64\WebRtcVad.dll"
+          Link="WebRtcVad.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" />
+  </ItemGroup>
+
+  <!-- Check OutDir/PublishDir separately: RID projects often define PublishDir even on
+       plain Build, and the old AfterTargets copy preferred PublishDir — leaving OutDir
+       (where the exe actually runs) without WebRtcVad.dll. -->
+  <Target Name="EnsureWebRtcVadNative" AfterTargets="Build">
+    <Error Condition="!Exists('$(OutDir)WebRtcVad.dll')"
+           Text="WebRtcVad.dll missing from $(OutDir). WebRtcVadSharp native asset failed to copy." />
+  </Target>
+  <Target Name="EnsureWebRtcVadNativePublished" AfterTargets="Publish">
+    <Error Condition="'$(PublishDir)' != '' AND !Exists('$(PublishDir)WebRtcVad.dll')"
+           Text="WebRtcVad.dll missing from $(PublishDir). WebRtcVadSharp native asset failed to publish." />
   </Target>
 
   <ItemGroup>

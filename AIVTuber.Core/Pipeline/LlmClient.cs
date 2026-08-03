@@ -60,7 +60,11 @@ public sealed class LlmClient : ILlmClient, IDisposable
             // Must stay wide enough that a normal short reply finishes naturally (EOS) WITH its
             // trailing [emotion:xxx] tag intact; a tight cap (e.g. 128) hard-truncates mid-sentence
             // and drops the emotion tag that drives VTS expression + TTS emotion.
-            max_tokens = 256
+            max_tokens = 256,
+            // DeepSeek V4 enables thinking by default (effort=high). CoT arrives as
+            // delta.reasoning_content, which this client ignores; with max_tokens=256 the
+            // budget is often spent entirely on thinking so content never appears → no TTS.
+            thinking = new { type = "disabled" },
         };
 
         var json = JsonSerializer.Serialize(requestBody, JsonOptions);
@@ -107,24 +111,10 @@ public sealed class LlmClient : ILlmClient, IDisposable
             var delta = chunk.Choices[0].Delta;
             if (delta?.Content is null) continue;
 
-                var token = controlTags.Consume(delta.Content);
+            var token = controlTags.Consume(delta.Content);
             if (token.Length == 0) continue;
             buffer.Append(token);
             yield return token;
-
-            // Check for sentence boundaries and emit complete sentences
-            var currentText = buffer.ToString();
-            if (ContainsSentenceBoundary(currentText, out var sentence, out var remainder))
-            {
-                var trimmed = LimitSpokenText(
-                    StripActionText(StripControlTags(sentence)).Trim());
-                if (!string.IsNullOrWhiteSpace(trimmed))
-                {
-                    OnSentenceReady?.Invoke(this, trimmed);
-                }
-                buffer.Clear();
-                buffer.Append(remainder);
-            }
         }
 
         var parserRemainder = controlTags.Complete();
@@ -134,13 +124,10 @@ public sealed class LlmClient : ILlmClient, IDisposable
             yield return parserRemainder;
         }
 
-        // Emit any remaining text as a sentence
-        var remaining = LimitSpokenText(
-            StripActionText(StripControlTags(buffer.ToString())).Trim());
-        if (!string.IsNullOrWhiteSpace(remaining))
-        {
+        // One UI/OBS caption per turn (TTS also speaks the full turn as one utterance).
+        var remaining = StripActionText(StripControlTags(buffer.ToString())).Trim();
+        if (IsSpeakableText(remaining))
             OnSentenceReady?.Invoke(this, remaining);
-        }
     }
 
     private List<object> BuildMessages(List<Message> history, string userInput)
@@ -249,6 +236,21 @@ public sealed class LlmClient : ILlmClient, IDisposable
         }
 
         sentence = remainder = string.Empty;
+        return false;
+    }
+
+    /// <summary>
+    /// True when text has at least one letter/digit (incl. CJK). Pure punctuation like
+    /// "." / "..." / "！" is not speakable — CosyVoice rejects it with "input text is valid".
+    /// </summary>
+    internal static bool IsSpeakableText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        foreach (var c in text)
+        {
+            if (char.IsLetterOrDigit(c)) return true;
+        }
+
         return false;
     }
 

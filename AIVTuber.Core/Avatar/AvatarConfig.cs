@@ -479,10 +479,14 @@ public static class AvatarConfigLoader
 
         try
         {
-            // Utf8JsonReader rejects a leading UTF-8 BOM (0xEF); TrimStart covers ReadAllText
-            // leaving U+FEFF when the on-disk file was saved with a BOM.
-            var json = File.ReadAllText(path).TrimStart('\uFEFF');
-            var parsed = JsonSerializer.Deserialize<AvatarPackConfig>(json, JsonOptions);
+            // Utf8JsonReader rejects a leading UTF-8 BOM (EF BB BF). Prefer raw bytes + skip
+            // so we never depend on whether ReadAllText left U+FEFF in the string.
+            var bytes = File.ReadAllBytes(path);
+            var offset = 0;
+            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+                offset = 3;
+            var parsed = JsonSerializer.Deserialize<AvatarPackConfig>(
+                bytes.AsSpan(offset), JsonOptions);
             if (parsed is null)
                 return false;
 

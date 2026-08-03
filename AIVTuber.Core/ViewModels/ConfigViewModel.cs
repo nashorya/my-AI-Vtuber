@@ -394,7 +394,10 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsDirty)));
             try
             {
-                await _applyAsync(runtimeCandidate);
+                // Apply off the UI/sync context. Hot-apply may dispose audio/ASR/orchestrator and
+                // fire runtime events; those events marshal to the WPF dispatcher. Running apply on
+                // the UI thread with a synchronous Dispatcher.Invoke used to deadlock ("保存卡住").
+                await Task.Run(() => _applyAsync(runtimeCandidate)).ConfigureAwait(true);
                 Status = $"已保存并应用 · {DateTime.Now:HH:mm}";
                 SaveState = ConfigSaveState.Applied;
             }

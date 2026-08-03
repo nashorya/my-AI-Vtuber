@@ -63,17 +63,22 @@ public sealed class PixelAvatarDriver : IAvatarController
         var mapped = MapEmotion(emotion);
         _lastOverrideKey = null;
         _sm.SetEmotion(mapped, hold);
+        DebugLog.Write($"[Avatar] SetEmotion({emotion}→{mapped})");
 
-        // Optional emotion → whole-image pose (v0.6 emotion_hint).
+        // Optional emotion → whole-image pose (v0.6 emotion_hint). Prefer front so
+        // expression sprites remain visible (tilt/side poses set full_expression=false).
         var hint = _pack.Poses?.Triggers.EmotionHint;
-        if (hint is { Enabled: true } && hint.Map.Count > 0)
-        {
-            if (hint.Map.TryGetValue(emotion, out var poseId)
+        if (hint is { Enabled: true } && hint.Map.Count > 0
+            && (hint.Map.TryGetValue(emotion, out var poseId)
                 || hint.Map.TryGetValue(mapped, out poseId))
-            {
-                if (!string.IsNullOrWhiteSpace(poseId))
-                    SetPose(poseId);
-            }
+            && !string.IsNullOrWhiteSpace(poseId))
+        {
+            SetPose(poseId);
+        }
+        else if (_poses.HasPoses && !_poses.FullExpression)
+        {
+            // Idle/listening may leave us on tilt_left; snap back so the face can change.
+            SetPose(PoseController.Front);
         }
     }
 
@@ -111,6 +116,15 @@ public sealed class PixelAvatarDriver : IAvatarController
             DebugLog.Write($"[Avatar] SetPose ignored (no poses): {poseId}");
             return;
         }
+
+        // side_*/tilt_* use full_expression=false — they replace the whole standee and
+        // hide emotion sprites. While an emotion hold is active, keep front.
+        if (_sm.EmotionActive && !PoseAllowsExpression(poseId))
+        {
+            DebugLog.Write($"[Avatar] SetPose({poseId}) ignored — emotion hold needs front");
+            return;
+        }
+
         _poses.SetPose(poseId);
         DebugLog.Write($"[Avatar] SetPose({poseId})");
     }
@@ -133,11 +147,19 @@ public sealed class PixelAvatarDriver : IAvatarController
     public AvatarRenderSample Sample(double deltaMs)
     {
         var speaking = IsAvatarSpeaking();
+        var frame = _sm.Tick(deltaMs);
+
+        // Idle-random / listening can SetPose inside PoseController.Tick and bypass
+        // SetPose() above — snap back so emotion sprites stay visible.
+        if (_poses.HasPoses && frame.EmotionActive && !_poses.FullExpression)
+        {
+            DebugLog.Write($"[Avatar] emotion active — forcing front over {_poses.CurrentId}");
+            _poses.SetPose(PoseController.Front);
+        }
+
         var pose = _poses.HasPoses
             ? _poses.Tick(deltaMs, speaking)
             : new PoseFrame(PoseController.Front, FullExpression: true, null, 1f);
-
-        var frame = _sm.Tick(deltaMs);
 
         if (pose.FullExpression && frame.EmotionActive)
         {
@@ -158,6 +180,15 @@ public sealed class PixelAvatarDriver : IAvatarController
 
         var motion = _motion.Tick(deltaMs);
         return new AvatarRenderSample(frame, motion, pose);
+    }
+
+    private bool PoseAllowsExpression(string poseId)
+    {
+        if (string.Equals(poseId, PoseController.Front, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (_pack.Poses?.List.TryGetValue(poseId, out var def) == true)
+            return def.FullExpression;
+        return false;
     }
 
     private bool IsAvatarSpeaking()

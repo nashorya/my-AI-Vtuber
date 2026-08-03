@@ -11,8 +11,8 @@ public sealed class AudioPlayer : IDisposable
     /// <summary>
     /// Sample rate (Hz) the player assumes for incoming raw PCM. TTS clients must
     /// produce PCM at this rate (see TtsClient) or playback will be pitch/speed shifted.
-    /// 24000 Hz is supported by all three TTS providers (Fish Audio, MiniMax, DashScope
-    /// CosyVoice); 44100 is not in the CosyVoice spec and causes pitch-shifted audio.
+    /// 24000 Hz is supported by Fish Audio, MiniMax, DashScope CosyVoice, Dots, and MiMo TTS;
+    /// 44100 is not in the CosyVoice spec and causes pitch-shifted audio.
     /// </summary>
     public const int DefaultSampleRate = 24000;
 
