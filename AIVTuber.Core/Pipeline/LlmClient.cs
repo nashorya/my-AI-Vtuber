@@ -111,24 +111,10 @@ public sealed class LlmClient : ILlmClient, IDisposable
             var delta = chunk.Choices[0].Delta;
             if (delta?.Content is null) continue;
 
-                var token = controlTags.Consume(delta.Content);
+            var token = controlTags.Consume(delta.Content);
             if (token.Length == 0) continue;
             buffer.Append(token);
             yield return token;
-
-            // Check for sentence boundaries and emit complete sentences
-            var currentText = buffer.ToString();
-            if (ContainsSentenceBoundary(currentText, out var sentence, out var remainder))
-            {
-                var trimmed = LimitSpokenText(
-                    StripActionText(StripControlTags(sentence)).Trim());
-                if (IsSpeakableText(trimmed))
-                {
-                    OnSentenceReady?.Invoke(this, trimmed);
-                }
-                buffer.Clear();
-                buffer.Append(remainder);
-            }
         }
 
         var parserRemainder = controlTags.Complete();
@@ -138,13 +124,10 @@ public sealed class LlmClient : ILlmClient, IDisposable
             yield return parserRemainder;
         }
 
-        // Emit any remaining text as a sentence
-        var remaining = LimitSpokenText(
-            StripActionText(StripControlTags(buffer.ToString())).Trim());
+        // One UI/OBS caption per turn (TTS also speaks the full turn as one utterance).
+        var remaining = StripActionText(StripControlTags(buffer.ToString())).Trim();
         if (IsSpeakableText(remaining))
-        {
             OnSentenceReady?.Invoke(this, remaining);
-        }
     }
 
     private List<object> BuildMessages(List<Message> history, string userInput)

@@ -10,7 +10,7 @@ public interface IAvatarController : IAsyncDisposable
     /// <summary>Lip-sync RMS sample (typically ~30ms). Thread-safe; may be called from audio thread.</summary>
     void OnRms(float rms);
 
-    /// <summary>Switch to an emotion face for <paramref name="hold"/> (default 4s).</summary>
+    /// <summary>Switch to an emotion face for <paramref name="hold"/> (default 1500ms).</summary>
     void SetEmotion(string emotion, TimeSpan? hold = null);
 
     /// <summary>Reserved: Realtime VAD listening pose. No-op in v0.1.</summary>

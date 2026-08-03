@@ -493,46 +493,27 @@ public sealed class BotOrchestrator : IDisposable
         var producerTask = Task.Run(async () =>
         {
             var rawAll = new StringBuilder();
-            int sentencesEmitted = 0;
             var previousContext = _eventContext.Value;
             _eventContext.Value = context;
             try
             {
+                // One TTS utterance per turn — do not split on punctuation (。，. etc.).
                 var buffer = new StringBuilder();
                 await foreach (var token in _llm.StreamAsync(history, userInput, ct))
                 {
                     if (!IsCurrent(envelope, ct)) break;
                     rawAll.Append(token);
                     buffer.Append(token);
-                    var raw = buffer.ToString();
-                    var cleaned = LlmClient.StripActionText(LlmClient.StripControlTags(raw));
-                    if (cleaned.Length != raw.Length) { buffer.Clear(); buffer.Append(cleaned); }
-                    if (LlmClient.ContainsSentenceBoundary(buffer.ToString(), out var sentence, out var remainder))
-                    {
-                        var trimmed = LlmClient.LimitSpokenText(
-                            LlmClient.StripActionText(
-                                LlmClient.StripControlTags(
-                                    LlmClient.StripPartialTags(sentence))).Trim());
-                        if (LlmClient.IsSpeakableText(trimmed))
-                        {
-                            sentencesEmitted++;
-                            if (!IsCurrent(envelope, ct)) break;
-                            await sentenceChannel.Writer.WriteAsync(trimmed, ct);
-                        }
-                        buffer.Clear();
-                        buffer.Append(remainder);
-                    }
                 }
-                var remaining = LlmClient.LimitSpokenText(
-                    LlmClient.StripActionText(
-                        LlmClient.StripControlTags(
-                            LlmClient.StripPartialTags(buffer.ToString()))).Trim());
-                if (IsCurrent(envelope, ct) && LlmClient.IsSpeakableText(remaining))
+
+                var spoken = LlmClient.StripActionText(
+                    LlmClient.StripControlTags(
+                        LlmClient.StripPartialTags(buffer.ToString()))).Trim();
+                if (IsCurrent(envelope, ct) && LlmClient.IsSpeakableText(spoken))
                 {
-                    sentencesEmitted++;
-                    await sentenceChannel.Writer.WriteAsync(remaining, ct);
+                    await sentenceChannel.Writer.WriteAsync(spoken, ct);
                 }
-                if (IsCurrent(envelope, ct) && sentencesEmitted == 0 && !string.IsNullOrWhiteSpace(rawAll.ToString()))
+                else if (IsCurrent(envelope, ct) && !string.IsNullOrWhiteSpace(rawAll.ToString()))
                 {
                     var preview = rawAll.ToString().Trim();
                     if (preview.Length > 80) preview = preview[..80] + "…";
@@ -547,8 +528,7 @@ public sealed class BotOrchestrator : IDisposable
             }
         }, ct);
 
-        // Stream TTS chunks from all sentences into one continuous IAsyncEnumerable.
-        // WaveOut is created once in PlayChunksAsync — no re-init between sentences.
+        // Stream TTS for the (usually single) utterance. WaveOut stays open for the turn.
         bool ttsStarted = false;
         async IAsyncEnumerable<byte[]> TtsChunks([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken streamCt = default)
         {
