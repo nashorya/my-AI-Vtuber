@@ -17,6 +17,20 @@ public sealed class DashScopeTtsClient : ITtsClient
 
     public DashScopeTtsClient(TtsConfig config) => _config = config;
 
+    /// <summary>Surface Aliyun 418 (voice/model mismatch) with an actionable hint.</summary>
+    internal static string FormatTaskFailed(string? err, string model, string voiceId)
+    {
+        var detail = string.IsNullOrWhiteSpace(err) ? "(no detail)" : err;
+        if (detail.Contains("418", StringComparison.Ordinal))
+        {
+            return $"DashScope TTS failed: {detail} — voice '{voiceId}' 与 model '{model}' 不匹配。"
+                   + " cosyvoice-v3.5-* 无系统音色，需用声音复刻/设计返回的 voice_id；"
+                   + "系统音色请改用 cosyvoice-v3-flash/plus + longanyang 等。";
+        }
+
+        return $"DashScope TTS failed: {detail}";
+    }
+
     private static string? MapToDashScopeInstruction(string? emotion) => emotion?.ToLowerInvariant() switch
     {
         "happy"     => "用开心愉悦的语气说话",
@@ -82,7 +96,7 @@ public sealed class DashScopeTtsClient : ITtsClient
 
                 case "task-failed":
                     await DashScopeSocket.CloseAsync(ws);
-                    throw new InvalidOperationException($"DashScope TTS failed: {err}");
+                    throw new InvalidOperationException(FormatTaskFailed(err, model, voiceId));
             }
         }
     }

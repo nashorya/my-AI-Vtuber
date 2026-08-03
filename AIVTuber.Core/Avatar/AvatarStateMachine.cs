@@ -11,7 +11,8 @@ public sealed class AvatarStateMachine
 {
     public const string Neutral = "neutral";
     public const string Blink = "blink";
-    public static readonly TimeSpan DefaultEmotionHold = TimeSpan.FromMilliseconds(1500);
+    /// <summary>Default face hold after [emotion:]. Long enough to read during a short TTS line.</summary>
+    public static readonly TimeSpan DefaultEmotionHold = TimeSpan.FromSeconds(4);
 
     private AvatarPackConfig _pack;
     private readonly HashSet<string> _available;

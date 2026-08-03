@@ -223,6 +223,7 @@ public sealed class VtsConfig
             instructions.Add(
                 "需要换表情时，在该句句号前插入 [emotion:词]（驱动立绘/VTS）。" +
                 $"可用情绪词只有：{words}。每句最多一个，不要列表外的词。" +
+                "用户点名要表情/情绪时必须带标记，不要只写文字描述。" +
                 "标记不会被读出；TTS 只念正文，情绪另传参数。");
         }
 

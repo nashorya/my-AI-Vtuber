@@ -267,8 +267,8 @@
       "emotion_hint": {
         "enabled": true,
         "map": {
-          "shy": "tilt_left",
-          "害羞": "tilt_left",
+          "shy": "front",
+          "害羞": "front",
           "sad": "front",
           "难过": "front",
           "surprised": "front",
@@ -280,7 +280,7 @@
           "upset": "front",
           "无语": "front"
         },
-        "comment": "LLM [emotion:] 时顺带切姿态；难过/惊讶等走表情精灵留 front，歪头请用 [pose:] 或害羞 hint；显式 [pose:] 可覆盖"
+        "comment": "LLM [emotion:] 时回到 front 以便显示表情精灵；tilt/side 的 full_expression=false 会吞掉表情。歪头请用显式 [pose:]"
       }
     },
     "note": "非front姿态期间:呼吸/漂移/摆动运动层照常作用于整图;口型和情绪表情暂停;姿态切回front恢复全部功能。歪头/侧身本身已画在图里,不再做分层旋转"

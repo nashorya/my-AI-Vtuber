@@ -513,7 +513,7 @@ public sealed class BotOrchestrator : IDisposable
                             LlmClient.StripActionText(
                                 LlmClient.StripControlTags(
                                     LlmClient.StripPartialTags(sentence))).Trim());
-                        if (!string.IsNullOrWhiteSpace(trimmed))
+                        if (LlmClient.IsSpeakableText(trimmed))
                         {
                             sentencesEmitted++;
                             if (!IsCurrent(envelope, ct)) break;
@@ -527,7 +527,7 @@ public sealed class BotOrchestrator : IDisposable
                     LlmClient.StripActionText(
                         LlmClient.StripControlTags(
                             LlmClient.StripPartialTags(buffer.ToString()))).Trim());
-                if (IsCurrent(envelope, ct) && !string.IsNullOrWhiteSpace(remaining))
+                if (IsCurrent(envelope, ct) && LlmClient.IsSpeakableText(remaining))
                 {
                     sentencesEmitted++;
                     await sentenceChannel.Writer.WriteAsync(remaining, ct);
@@ -555,7 +555,7 @@ public sealed class BotOrchestrator : IDisposable
             await foreach (var sentence in sentenceChannel.Reader.ReadAllAsync(streamCt))
             {
                 if (!IsCurrent(envelope, streamCt)) yield break;
-                if (string.IsNullOrWhiteSpace(sentence)) continue;
+                if (!LlmClient.IsSpeakableText(sentence)) continue;
                 if (!ttsStarted)
                 {
                     if (!IsCurrent(envelope, streamCt)) yield break;

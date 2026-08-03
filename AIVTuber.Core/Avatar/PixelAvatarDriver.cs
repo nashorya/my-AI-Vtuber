@@ -63,17 +63,22 @@ public sealed class PixelAvatarDriver : IAvatarController
         var mapped = MapEmotion(emotion);
         _lastOverrideKey = null;
         _sm.SetEmotion(mapped, hold);
+        DebugLog.Write($"[Avatar] SetEmotion({emotion}→{mapped})");
 
-        // Optional emotion → whole-image pose (v0.6 emotion_hint).
+        // Optional emotion → whole-image pose (v0.6 emotion_hint). Prefer front so
+        // expression sprites remain visible (tilt/side poses set full_expression=false).
         var hint = _pack.Poses?.Triggers.EmotionHint;
-        if (hint is { Enabled: true } && hint.Map.Count > 0)
-        {
-            if (hint.Map.TryGetValue(emotion, out var poseId)
+        if (hint is { Enabled: true } && hint.Map.Count > 0
+            && (hint.Map.TryGetValue(emotion, out var poseId)
                 || hint.Map.TryGetValue(mapped, out poseId))
-            {
-                if (!string.IsNullOrWhiteSpace(poseId))
-                    SetPose(poseId);
-            }
+            && !string.IsNullOrWhiteSpace(poseId))
+        {
+            SetPose(poseId);
+        }
+        else if (_poses.HasPoses && !_poses.FullExpression)
+        {
+            // Idle/listening may leave us on tilt_left; snap back so the face can change.
+            SetPose(PoseController.Front);
         }
     }
 
