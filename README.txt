@@ -58,6 +58,18 @@ B站弹幕设置
    pip install bilibili-api-python httpx
 4. 在 config.json 中设置 bilibili.enable = true 并填入房间号和 Cookie
 
+CosyVoice 复刻音色配置
+---------------------
+使用 Python 3.10+ 查询当前百炼账号下可调用的 CosyVoice 自定义音色，并将音色与绑定模型一起写入运行配置：
+
+  $env:DASHSCOPE_API_KEY = "<your-api-key>"
+  python scripts/find_cosyvoice_voices.py
+
+脚本会优先显示今天上午复刻的音色，选择并确认后同时更新 tts.provider、tts.voice_id 和 tts.model。
+默认更新 App/bin/Debug/net10.0-windows/win-x64/config.json，也可使用 --config 指定其他运行配置。
+可用 --prefix 筛选复刻前缀、用 --voice-id 精确选择完整音色 ID，或用 --all 显示全部可用音色。
+写入前的配置保存在同目录 config.json.bak。
+
 向量记忆（可选）
 --------------
 如需向量语义检索功能，下载 bge-small-zh-v1.5 到 models/bge-small-zh/ 目录:
