@@ -1,4 +1,4 @@
-using AIVTuber.Core.Config;
+﻿using AIVTuber.Core.Config;
 using AIVTuber.Core.Runtime;
 
 namespace AIVTuber.Tests;
@@ -8,6 +8,7 @@ public class ConfigDiffContractTests
     private static readonly string[] RegisteredRuntimeFields =
     [
         "Asr.Provider", "Asr.ApiKey", "Asr.AppId", "Asr.Model", "Asr.LocalAsrUrl", "Asr.PythonPath",
+        "Asr.PersistConnection", "Asr.Streaming",
         "Tts.Provider", "Tts.ApiKey", "Tts.VoiceId", "Tts.Model", "Tts.GroupId", "Tts.Speed",
     ];
 
@@ -19,6 +20,8 @@ public class ConfigDiffContractTests
         { "Asr.Model", c => c.Asr.Model = "qwen3-asr-flash", RuntimeChange.RebuildAsr },
         { "Asr.LocalAsrUrl", c => c.Asr.LocalAsrUrl = "http://localhost:9876", RuntimeChange.RebuildAsr },
         { "Asr.PythonPath", c => c.Asr.PythonPath = "python3", RuntimeChange.RebuildAsr },
+        { "Asr.PersistConnection", c => c.Asr.PersistConnection = false, RuntimeChange.RebuildAsr },
+        { "Asr.Streaming", c => c.Asr.Streaming = false, RuntimeChange.RebuildAsr | RuntimeChange.RestartAudio },
         { "Tts.Provider", c => c.Tts.Provider = "minimax", RuntimeChange.RebuildTts },
         { "Tts.ApiKey", c => c.Tts.ApiKey = "new-tts-key", RuntimeChange.RebuildTts },
         { "Tts.VoiceId", c => c.Tts.VoiceId = "new-voice", RuntimeChange.RebuildTts },
@@ -50,6 +53,6 @@ public class ConfigDiffContractTests
         var actual = ConfigDiff.Compute(active, candidate);
 
         Assert.True(actual == expected, $"{property} mapped to {actual}, expected exactly {expected}.");
-        Assert.False(ConfigDiff.IsHeavy(actual));
+        Assert.Equal(ConfigDiff.IsHeavy(expected), ConfigDiff.IsHeavy(actual));
     }
 }

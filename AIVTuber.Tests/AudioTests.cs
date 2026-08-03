@@ -1,4 +1,4 @@
-using AIVTuber.Core.Audio;
+﻿using AIVTuber.Core.Audio;
 using System.Runtime.InteropServices;
 
 namespace AIVTuber.Tests;
@@ -116,6 +116,34 @@ public class VadDetectorTests
 
         vad.Flush();
         Assert.False(fired);
+    }
+
+    [SkippableFact]
+    public void Feed_WithSilence_DoesNotFireSpeechFrame()
+    {
+        // SpeechFrame must only fire while a speech segment is in progress. Feeding pure silence
+        // (which VAD classifies as non-speech) must not trigger it.
+        Skip.IfNot(RuntimeInformation.IsOSPlatform(OSPlatform.Windows),
+            "WebRtcVadSharp native DLL requires Windows");
+        using var vad = new VadDetector(aggressiveness: 3);
+        var frameCount = 0;
+        vad.SpeechFrame += (_, _) => frameCount++;
+
+        var silenceFrame = new byte[960]; // 16kHz * 16bit * 30ms
+        for (int i = 0; i < 33; i++)
+            vad.Feed(silenceFrame);
+
+        Assert.Equal(0, frameCount);
+    }
+
+    [SkippableFact]
+    public void Reset_ClearsInProgressSpeechFrameChannel()
+    {
+        // Reset must not throw even with no subscribers / no in-progress segment.
+        Skip.IfNot(RuntimeInformation.IsOSPlatform(OSPlatform.Windows),
+            "WebRtcVadSharp native DLL requires Windows");
+        using var vad = new VadDetector();
+        vad.Reset(); // should be a no-op, no exceptions
     }
 }
 

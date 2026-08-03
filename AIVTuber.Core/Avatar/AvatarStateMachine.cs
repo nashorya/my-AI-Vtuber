@@ -13,7 +13,7 @@ public sealed class AvatarStateMachine
     public const string Blink = "blink";
     public static readonly TimeSpan DefaultEmotionHold = TimeSpan.FromMilliseconds(1500);
 
-    private readonly AvatarPackConfig _pack;
+    private AvatarPackConfig _pack;
     private readonly HashSet<string> _available;
     private readonly Random _rng;
     private readonly object _lock = new();
@@ -36,6 +36,8 @@ public sealed class AvatarStateMachine
     private double _blinkCooldownMs;
     private double _blinkRemainingMs;
     private bool _pendingDoubleBlink;
+    // v0.2: scales the blink interval (e.g. 0.7 while listening → blinks more often).
+    private double _blinkIntervalScale = 1.0;
 
     // Fade
     private string _currentState = Neutral;
@@ -81,6 +83,38 @@ public sealed class AvatarStateMachine
 
     /// <summary>Thread-safe RMS ingest.</summary>
     public void OnRms(float rms) => Volatile.Write(ref _latestRms, Math.Clamp(rms, 0f, 2f));
+
+    /// <summary>Scales the random blink interval (v0.2). 1.0 = default; 0.7 = blink more often
+    /// (listening pose). Affects the NEXT scheduled blink, not the current countdown.</summary>
+    public void SetBlinkIntervalScale(double scale)
+    {
+        var clamped = Math.Clamp(scale, 0.1, 5.0);
+        lock (_lock) _blinkIntervalScale = clamped;
+    }
+
+    /// <summary>Hot-reload pack definition. Preserves current state, blink timers, emotion hold.</summary>
+    public void UpdatePack(AvatarPackConfig pack, IEnumerable<string>? availableStates = null)
+    {
+        ArgumentNullException.ThrowIfNull(pack);
+        lock (_lock)
+        {
+            _pack = pack;
+            _available.Clear();
+            if (availableStates is null)
+            {
+                foreach (var k in pack.States.Keys)
+                    _available.Add(k);
+            }
+            else
+            {
+                foreach (var k in availableStates)
+                    _available.Add(k);
+            }
+
+            if (!_available.Contains(Neutral) && pack.States.ContainsKey(Neutral))
+                _available.Add(Neutral);
+        }
+    }
 
     public void SetEmotion(string emotion, TimeSpan? hold = null)
     {
@@ -398,6 +432,18 @@ public sealed class AvatarStateMachine
         return new StickerFrame(s.Id, scale, alpha, _pack.Stickers.Anchor.X, _pack.Stickers.Anchor.Y);
     }
 
+    /// <summary>Test seam: remaining ms until next blink fires (0 while blinking).</summary>
+    internal double BlinkCooldownMs
+    {
+        get { lock (_lock) return _blinkCooldownMs; }
+    }
+
+    /// <summary>Test seam: remaining ms of the active blink (0 when not blinking).</summary>
+    internal double BlinkRemainingMs
+    {
+        get { lock (_lock) return _blinkRemainingMs; }
+    }
+
     private void ScheduleNextBlink(bool immediate)
     {
         var (min, max) = BlinkIntervalMs();
@@ -412,8 +458,8 @@ public sealed class AvatarStateMachine
     private (int min, int max) BlinkIntervalMs()
     {
         if (_pack.States.TryGetValue(Blink, out var def) && def.Auto?.IntervalMs is { Length: >= 2 } iv)
-            return (iv[0], iv[1]);
-        return (2000, 6000);
+            return ((int)(iv[0] * _blinkIntervalScale), (int)(iv[1] * _blinkIntervalScale));
+        return ((int)(2000 * _blinkIntervalScale), (int)(6000 * _blinkIntervalScale));
     }
 
     private int BlinkDurationMs()

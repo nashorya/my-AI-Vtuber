@@ -8,7 +8,7 @@ namespace AIVTuber.Core.Avatar;
 /// </summary>
 public sealed class PixelAvatarDriver : IAvatarController
 {
-    private readonly AvatarPackConfig _pack;
+    private AvatarPackConfig _pack;
     private readonly string _assetsDirectory;
     private readonly AvatarStateMachine _sm;
     private readonly MotionEngine _motion;
@@ -38,6 +38,9 @@ public sealed class PixelAvatarDriver : IAvatarController
     public AvatarStateMachine StateMachine => _sm;
     public MotionEngine Motion => _motion;
 
+    /// <summary>Raised after <see cref="ReloadConfig"/> swaps pack/motion config (UI should refresh).</summary>
+    public event EventHandler? AvatarConfigReloaded;
+
     public Task StartAsync(CancellationToken ct = default)
     {
         Interlocked.Exchange(ref _started, 1);
@@ -61,13 +64,30 @@ public sealed class PixelAvatarDriver : IAvatarController
 
     public void SetListening(bool userSpeaking)
     {
-        // Reserved for Realtime VAD listening pose — intentionally empty in v0.1.
-        _ = userSpeaking;
+        // v0.2 listening pose: tilt the head toward the configured listening angle and blink
+        // more frequently (concentration cue). Spring back + normal blink rate on release.
+        var listening = _pack.MotionLayer.Listening;
+        _motion.SetListeningTilt(userSpeaking ? listening.TiltDeg : 0f);
+        _sm.SetBlinkIntervalScale(userSpeaking ? listening.BlinkIntervalScale : 1.0);
     }
 
     public void ShowSticker(string stickerId) => _sm.ShowSticker(stickerId);
 
     public void SetIdleState(string state) => _sm.SetIdleState(state);
+
+    /// <summary>
+    /// Hot-reload pack + motion config without restarting the driver. Preserves SM timers
+    /// and motion spring state. Raises <see cref="AvatarConfigReloaded"/> for the UI.
+    /// </summary>
+    public void ReloadConfig(AvatarPackConfig newPack, IEnumerable<string>? availableStates = null)
+    {
+        ArgumentNullException.ThrowIfNull(newPack);
+        _pack = newPack;
+        _sm.UpdatePack(newPack, availableStates);
+        _motion.UpdateConfig(newPack.MotionLayer);
+        DebugLog.Write($"[Avatar] PixelAvatarDriver reloaded ({newPack.Meta.Name})");
+        AvatarConfigReloaded?.Invoke(this, EventArgs.Empty);
+    }
 
     /// <summary>
     /// Advance logic by <paramref name="deltaMs"/> and return a render snapshot.

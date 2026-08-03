@@ -88,6 +88,17 @@ public partial class MonitorView : UserControl
             vm.TriggerAvatarRms(rms);
     }
 
+    private bool _avatarListeningOn;
+
+    private void OnAvatarListening(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MonitorViewModel vm) return;
+        _avatarListeningOn = !_avatarListeningOn;
+        vm.TriggerAvatarListening(_avatarListeningOn);
+        if (AvatarListeningButton is not null)
+            AvatarListeningButton.Content = _avatarListeningOn ? "倾听 OFF" : "倾听 ON";
+    }
+
     private void OnOperationalEventScrollChanged(object sender, ScrollChangedEventArgs e)
     {
         if (_followLatestScrollPolicy.ShouldPauseFollowing(e.VerticalChange) &&

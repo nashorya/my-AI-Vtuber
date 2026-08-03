@@ -99,6 +99,15 @@ public class MonitorViewModelTests
     }
 
     [Fact]
+    public void TriggerAvatarListening_WithoutPixelBackend_LogsErrorEvent()
+    {
+        var (_, vm) = Make();
+        vm.TriggerAvatarListening(true);
+        Assert.True(vm.OperationalEvents[0].IsError);
+        Assert.Contains("listening", vm.OperationalEvents[0].Message);
+    }
+
+    [Fact]
     public void OperationalEvents_RenderErrorsWithErrorSource()
     {
         var (_, vm) = Make();

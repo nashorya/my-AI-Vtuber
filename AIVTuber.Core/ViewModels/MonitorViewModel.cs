@@ -289,6 +289,21 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
         _dispatch(() => AddOperationalEvent("形象", $"RMS → {rms:0.00}"));
     }
 
+    /// <summary>Manual test: toggle listening pose (head tilt + faster blink).</summary>
+    public void TriggerAvatarListening(bool on)
+    {
+        var driver = _runtime.PixelAvatar;
+        if (driver is null)
+        {
+            _dispatch(() => AddOperationalEvent(
+                "形象", "未启用（backend 需 pixel/both）: listening", isError: true));
+            return;
+        }
+
+        driver.SetListening(on);
+        _dispatch(() => AddOperationalEvent("形象", on ? "倾听 → ON" : "倾听 → OFF"));
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
 
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)

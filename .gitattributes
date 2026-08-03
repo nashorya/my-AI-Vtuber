@@ -1,3 +1,23 @@
+# Default: normalize all text files to LF in the repo and on checkout.
+# Required for .NET 10 SDK 10.0.302 whose Utf8JsonReader / WPF MarkupCompiler choke on CRLF
+# in global.json, csproj, xaml (MC3000 / 0xEF invalid start of value).
+* text=auto eol=lf
+
+# Explicit overrides (kept for clarity).
 asr_server.py text eol=lf
 sidecar/asr-sidecar.manifest.json text eol=lf
 sidecar/requirements.lock text eol=lf
+
+# Binary files — never normalize.
+*.wav binary
+*.dll binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.onnx binary
+*.wav binary
+*.mp3 binary

@@ -169,6 +169,15 @@
                                            Padding="10,0" Click="OnAvatarEmotion" Tag="sad"
                                            ToolTip="SetEmotion(sad) + sink" AutomationProperties.Name="测表情难过" />
                             </WrapPanel>
+                            <TextBlock Text="倾听" FontSize="{StaticResource FontSizeCaption}"
+                                       Foreground="{DynamicResource AppTextSecondaryBrush}" Margin="0,4,0,4" />
+                            <WrapPanel>
+                                <ui:Button x:Name="AvatarListeningButton" Content="倾听 ON" Appearance="Secondary"
+                                           Height="32" Margin="0,0,6,6" Padding="10,0"
+                                           Click="OnAvatarListening" Tag="listening"
+                                           ToolTip="SetListening(true) — 头部歪 + 眨眼变勤"
+                                           AutomationProperties.Name="测倾听姿态" />
+                            </WrapPanel>
                             <TextBlock Text="挂机 / 贴纸" FontSize="{StaticResource FontSizeCaption}"
                                        Foreground="{DynamicResource AppTextSecondaryBrush}" Margin="0,4,0,4" />
                             <WrapPanel>
