@@ -1,7 +1,7 @@
 # AIVTuber 项目背景与 Agent 交接说明
 
 > 面向准备继续分析或实现本项目的 Agent。
-> 功能基线：`main@b83adf4`，2026-07-10。
+> 功能基线：`main@b83adf4`，2026-07-10；**re-baseline：`main@0890cc5`，2026-08-06** —— Avatar 主线已从 VTube Studio 转为进程内 PNG 渲染器，见第 6 节修订说明。
 > 任务清单与优先级以 [`TODO.md`](TODO.md) 为准；本文负责解释背景、现状、已定决策和工作边界。
 
 ## 1. 项目一句话说明
@@ -15,6 +15,8 @@ AIVTuber 是一个 Windows 桌面 AI 虚拟主播后端：接收麦克风、系�
 ## 2. 当前最重要的产品目标
 
 ### 2.1 让 Avatar 不再僵硬
+
+> **2026-08-06 更新**：本节写作时以 VTS/Live2D 模型为前提。7 月中旬起主线已切换为进程内 PNG 立绘渲染（整图姿态切换 + 表情/口型/眨眼贴图 + 程序化运动层，素材包 v0.6）。「不再僵硬」的目标不变，手段以 [`AVATAR_RENDERER_PLAN_PHASE2_REV.md`](AVATAR_RENDERER_PLAN_PHASE2_REV.md) 为准。
 
 当前模型本身已经制作了对应 Motion/Expression，但原实现主要只有：
 
@@ -56,7 +58,7 @@ AIVTuber 是一个 Windows 桌面 AI 虚拟主播后端：接收麦克风、系�
                   ↓
              AudioPlayer
         ↙           ↓            ↘
-   VTS 口型/动作   OBS 字幕    虚拟音频设备
+ Avatar(PNG窗口/VTS)  OBS 字幕   虚拟音频设备
 ```
 
 当前 `BotRuntime` 是总 composition root，负责创建、连接、热更新和释放绝大多数模块；`BotOrchestrator` 负责单轮 ASR -> LLM -> TTS 编排。两者职责都偏重，生命周期和并发问题已经列入 TODO。
@@ -73,8 +75,8 @@ AIVTuber 是一个 Windows 桌面 AI 虚拟主播后端：接收麦克风、系�
 | 数据 | Microsoft.Data.Sqlite | 保留，立即修复高危传递依赖和文件锁 |
 | 本地推理 | ONNX Runtime | 保留，用于向量记忆等能力 |
 | WebSocket | `ClientWebSocket` | VTS/自定义协议继续使用；OBS 可另评估成熟 v5 SDK |
-| Avatar 后端 | VTube Studio Plugin API | 第一阶段唯一主路线 |
-| 直接 Cubism | 暂缓 | 只有 VTS 明确无法满足渲染级需求时再评估 |
+| Avatar 后端 | 进程内 PNG 渲染器为主线；VTS 保留为可选后端（`avatar.backend`: `pixel`/`vts`/`both`） | 2026-07 决策变更：分层歪头方案作废，改整图姿态切换 |
+| 直接 Cubism | 暂缓 | PNG 主线下触发条件更远；只有明确渲染级需求时再评估 |
 | Python | ASR/弹幕 sidecar | 能力保留，但不能依赖用户随意安装的系统 Python |
 
 ### UI 组件方向
@@ -98,6 +100,9 @@ AIVTuber 是一个 Windows 桌面 AI 虚拟主播后端：接收麦克风、系�
 | `AIVTuber.Core/Pipeline/` | LLM、ASR、TTS provider 与协议实现 |
 | `AIVTuber.Core/Audio/` | 麦克风、回环、VAD、播放和待移除的虚拟麦克风实现 |
 | `AIVTuber.Core/Vts/` | VTube Studio WebSocket 客户端、协议和 DTO |
+| `AIVTuber.Core/Avatar/` | PNG 渲染器逻辑：`IAvatarController`、状态机、运动层、姿态切换、配置热重载 |
+| `App/Views/AvatarWindow.xaml.cs` | PNG 立绘渲染窗口（WPF 无边框窗口，OBS 按窗口采集） |
+| `assets/avatar/` | 立绘素材包与 `avatar.json`（当前 v0.6，整图姿态） |
 | `AIVTuber.Core/Obs/` | OBS WebSocket 字幕客户端 |
 | `AIVTuber.Core/LiveStream/` | B站弹幕入口与选择器 |
 | `AIVTuber.Core/Memory/` | SQLite、事实/观众仓库、向量检索和记忆提取 |
@@ -117,7 +122,9 @@ AIVTuber 是一个 Windows 桌面 AI 虚拟主播后端：接收麦克风、系�
 
 ## 6. Avatar 技术决策
 
-### 6.1 为什么继续使用 VTube Studio
+> **2026-08-06 修订**：6.1 的结论已被实际演进取代——主线渲染后端是进程内 PNG 渲染器（`AIVTuber.Core/Avatar/` + `App/Views/AvatarWindow.xaml.cs`），VTS 降级为可选后端。分层头身方案已作废（头发撕裂、切口接缝无法解决），采用整图姿态切换，现行方案见 [`AVATAR_RENDERER_PLAN_PHASE2_REV.md`](AVATAR_RENDERER_PLAN_PHASE2_REV.md)。6.2「LLM 负责语义、不负责逐帧参数」的原则不变，PNG 路线继续沿用（`[emotion:]`/`[pose:]`/`[action:]` 白名单标签）。6.3 仅在启用 VTS 后端时相关。
+
+### 6.1 为什么继续使用 VTube Studio（已被取代，仅存档）
 
 当前僵硬不是 VTS 的能力上限，而是项目还没有动作导演层。VTS API 已能提供：
 
@@ -339,6 +346,15 @@ C:\Users\wan.kangping\anything\.dotnet\dotnet.exe
 
 这些信息仅用于当前交接环境：
 
+**macOS 开发机（当前，2026-08-06）**
+
+- 仓库目录：`/Users/juejuezi/my-AI-Vtuber`
+- .NET SDK 10.0.301（与 `global.json` 的 `rollForward: latestPatch` 兼容）
+- Core 测试可在 macOS 运行：`dotnet build AIVTuber.Tests/AIVTuber.Tests.csproj /t:Rebuild /p:PlatformTarget=AnyCPU` 后 `dotnet test --no-build /p:PlatformTarget=AnyCPU`（绕过 WebRtcVad 的 x64 限定；Windows 专属测试自动 Skip）
+- WPF `App/` 无法在 macOS 构建，UI 改动依赖 Windows CI 门禁验证
+
+**Windows 工作机（信息可能过期）**
+
 - 仓库目录：`C:\Users\wan.kangping\anything\my-AI-Vtuber`
 - 当前分支：`main`
 - GitHub remote：`origin = https://github.com/nashorya/my-AI-Vtuber.git`
@@ -355,7 +371,8 @@ git -c http.proxy=http://127.0.0.1:7890 fetch origin main
 ## 15. 参考资料
 
 - 项目任务清单：[`TODO.md`](TODO.md)
-- 旧实现计划：[`AIVTuber_Implementation_Plan.md`](AIVTuber_Implementation_Plan.md)
+- Avatar 渲染现行计划：[`AVATAR_RENDERER_PLAN_PHASE2_REV.md`](AVATAR_RENDERER_PLAN_PHASE2_REV.md)（取代 `docs/superpowers/plans/` 下两份旧 phase2 文档）
+- 旧实现计划：[`AIVTuber_Implementation_Plan.md`](AIVTuber_Implementation_Plan.md)（描述的控制台架构已不存在，仅历史背景）
 - 当前用户文档：[`README.txt`](README.txt)
 - VTube Studio Plugin API：<https://github.com/DenchiSoft/VTubeStudio#api-details>
 - ZerolanLiveRobot：<https://github.com/AkagawaTsurunaki/ZerolanLiveRobot>
