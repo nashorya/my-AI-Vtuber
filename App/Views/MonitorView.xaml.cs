@@ -46,6 +46,12 @@ public partial class MonitorView : UserControl
             vm.ToggleMicMute();
     }
 
+    private void OnLoopbackMuteClicked(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is MonitorViewModel vm)
+            vm.ToggleLoopbackMute();
+    }
+
     private void OnStopSpeakingClicked(object sender, RoutedEventArgs e)
     {
         if (DataContext is MonitorViewModel vm)

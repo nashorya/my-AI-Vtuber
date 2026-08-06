@@ -44,6 +44,33 @@ public class MonitorViewModelTests
     }
 
     [Fact]
+    public void ToggleLoopbackMute_TogglesRuntimeAndViewModel()
+    {
+        var (rt, vm) = Make();
+        var changed = new List<string>();
+        vm.PropertyChanged += (_, e) => changed.Add(e.PropertyName!);
+
+        vm.ToggleLoopbackMute();
+        Assert.True(rt.LoopbackMuted);
+        Assert.True(vm.LoopbackMuted);
+        Assert.Contains(nameof(MonitorViewModel.LoopbackMuted), changed);
+
+        vm.ToggleLoopbackMute();
+        Assert.False(rt.LoopbackMuted);
+        Assert.False(vm.LoopbackMuted);
+    }
+
+    [Fact]
+    public void SetLoopbackMuted_IsSafeWithoutAudioStarted()
+    {
+        var rt = new BotRuntime(new AppConfig(), Path.GetTempPath());
+        rt.SetLoopbackMuted(true);   // no VAD/capture exists yet — must not throw
+        Assert.True(rt.LoopbackMuted);
+        rt.SetLoopbackMuted(false);
+        Assert.False(rt.LoopbackMuted);
+    }
+
+    [Fact]
     public void ConnectionFlags_DefaultFalse_WhenNotStarted()
     {
         var (_, vm) = Make();

@@ -126,6 +126,19 @@ public sealed class BotRuntime : IAsyncDisposable
     // True while AI is speaking — loopback VAD feed is paused to prevent self-hearing.
     private volatile bool _loopbackVadMuted;
 
+    // User-requested 对面麦 mute: the streamer can stop the AI from hearing the opponent's
+    // audio without disabling loopback capture (level meter keeps working). Independent of
+    // the AI-speaking auto-mute above; either flag pauses the VAD feed.
+    private volatile bool _loopbackMuted;
+    public bool LoopbackMuted => _loopbackMuted;
+    public void SetLoopbackMuted(bool muted)
+    {
+        _loopbackMuted = muted;
+        // Drop any half-open segment on both edges so audio cannot merge across the mute gap.
+        _loopbackVad?.Reset();
+        AbandonLoopbackSpeechChannel();
+    }
+
     // Streaming-ASR channels: when AsrConfig.Streaming is true, each in-progress speech segment
     // pushes its frames into one of these channels; the ASR client reads them as an
     // IAsyncEnumerable. Lazily created on the first SpeechFrame, completed on SpeechDetected.
@@ -155,11 +168,11 @@ public sealed class BotRuntime : IAsyncDisposable
     }
 
     /// <summary>Feeds a loopback frame to its VAD unless the AI itself is speaking (which would
-    /// otherwise feed the AI's own TTS back into the 对面 channel).</summary>
+    /// otherwise feed the AI's own TTS back into the 对面 channel) or the user muted 对面麦.</summary>
     private void FeedLoopback(byte[] buf)
     {
         if (_loopbackVad is null) return;
-        if (_loopbackVadMuted)
+        if (_loopbackVadMuted || _loopbackMuted)
         {
             _loopbackVad.Reset(); // drop any half-open segment so it can't merge across the gap
             AbandonLoopbackSpeechChannel();
@@ -780,7 +793,7 @@ public sealed class BotRuntime : IAsyncDisposable
                 {
                     _loopbackVad.SpeechFrame += (_, frame) =>
                     {
-                        if (_loopbackVadMuted) return;
+                        if (_loopbackVadMuted || _loopbackMuted) return;
                         _loopbackSpeechChannel ??= NewSpeechChannel();
                         _loopbackSpeechChannel.Writer.TryWrite(frame);
                     };
@@ -789,10 +802,11 @@ public sealed class BotRuntime : IAsyncDisposable
                         var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
                         AIVTuber.Core.Diagnostics.DebugLog.Write(
                             $"[内录段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
-                            $"峰值={peak:F3} loopbackMuted={_loopbackVadMuted} streaming=true");
+                            $"峰值={peak:F3} loopbackMuted={_loopbackVadMuted} userMuted={_loopbackMuted} streaming=true");
                         var channel = _loopbackSpeechChannel;
                         _loopbackSpeechChannel = null;
                         channel?.Writer.TryComplete();
+                        if (_loopbackMuted) return;
                         if (peak < LoopbackAsrMinPeak)
                         {
                             AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
@@ -819,7 +833,8 @@ public sealed class BotRuntime : IAsyncDisposable
                         var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
                         AIVTuber.Core.Diagnostics.DebugLog.Write(
                             $"[内录段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
-                            $"峰值={peak:F3} loopbackMuted={_loopbackVadMuted}");
+                            $"峰值={peak:F3} loopbackMuted={_loopbackVadMuted} userMuted={_loopbackMuted}");
+                        if (_loopbackMuted) return;
                         // Energy gate: the local ASR (Qwen) hallucinates plausible Chinese from silence/
                         // near-silent noise. Real speech peaks ~0.4+, hallucination-prone segments ≤0.02.
                         // Drop low-energy segments so they never reach ASR and get mislabeled as 对面.
