@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using AIVTuber.Core.Audio;
+using AIVTuber.Core.Avatar;
 using AIVTuber.Core.Bot;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Pipeline;
@@ -15,29 +16,15 @@ public sealed class BotOrchestratorGenerationTests
         var tts = new FakeTts();
         using var player = new AudioPlayer();
         var played = new List<string>();
-        var actions = new List<string>();
-        var actionCompleted = NewSignal();
-        var config = new VtsConfig
-        {
-            ActionMap = new Dictionary<string, string>
-            {
-                ["old-action"] = "old-hotkey",
-                ["new-action"] = "new-hotkey",
-            },
-        };
+        var avatar = new RecordingAvatar();
         using var orchestrator = new BotOrchestrator(
-            new FakeAsr(), llm, tts, player, new TtsConfig(), null, config,
+            new FakeAsr(), llm, tts, player, new TtsConfig(), avatar,
             async (chunks, ct) =>
             {
                 await foreach (var chunk in chunks.WithCancellation(ct))
                     played.Add(System.Text.Encoding.UTF8.GetString(chunk));
             },
-            () => { },
-            async (hotkey, ct) =>
-            {
-                if (hotkey == "new-hotkey") await actionCompleted.Task.WaitAsync(ct);
-                actions.Add(hotkey);
-            });
+            () => { });
         var sentences = new List<string>();
         var emotions = new List<string>();
         var starts = 0;
@@ -54,13 +41,14 @@ public sealed class BotOrchestratorGenerationTests
         await llm.NewStarted.Task;
 
         Assert.False(newTurn.IsCompleted);
-        actionCompleted.TrySetResult();
+        avatar.NewActionGate.TrySetResult();
         await Task.WhenAll(oldTurn, newTurn);
 
         Assert.Equal(["new sentence."], sentences);
         Assert.Equal(["happy"], emotions);
         Assert.Equal(["new sentence."], played);
-        Assert.Equal(["new-hotkey"], actions);
+        Assert.Equal(["new-action"], avatar.Actions);
+        Assert.Equal(["happy"], avatar.Emotions);
         Assert.Equal(1, starts);
         Assert.Equal(1, stops);
         Assert.False(orchestrator.IsProcessing);
@@ -68,6 +56,37 @@ public sealed class BotOrchestratorGenerationTests
 
     private static TaskCompletionSource NewSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Records avatar intents; "new-action" blocks on <see cref="NewActionGate"/> so the
+    /// test can prove the turn awaits its generation-managed commands before completing.</summary>
+    private sealed class RecordingAvatar : IAvatarController
+    {
+        public List<string> Actions { get; } = [];
+        public List<string> Emotions { get; } = [];
+        public TaskCompletionSource NewActionGate { get; } = NewSignal();
+
+        public Task StartAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public void OnRms(float rms) { }
+
+        public Task SetEmotionAsync(string emotion, TimeSpan? hold = null, CancellationToken ct = default)
+        {
+            Emotions.Add(emotion);
+            return Task.CompletedTask;
+        }
+
+        public async Task TriggerActionAsync(string action, CancellationToken ct = default)
+        {
+            if (action == "new-action") await NewActionGate.Task.WaitAsync(ct);
+            Actions.Add(action);
+        }
+
+        public void SetPose(string pose) { }
+        public Task CloseMouthAsync(CancellationToken ct = default) => Task.CompletedTask;
+        public void SetListening(bool userSpeaking) { }
+        public void ShowSticker(string stickerId) { }
+        public void SetIdleState(string state) { }
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
 
     private sealed class ControlledLlm : ILlmClient
     {

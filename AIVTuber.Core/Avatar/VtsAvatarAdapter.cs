@@ -5,9 +5,11 @@ using AIVTuber.Core.Vts;
 namespace AIVTuber.Core.Avatar;
 
 /// <summary>
-/// Adapts the existing <see cref="VtsClient"/> path to <see cref="IAvatarController"/>.
-/// Lip-sync → mouth parameter; emotion → hotkey via <see cref="VtsConfig.EmotionMap"/>.
-/// Stickers / idle states are no-ops (VTS has no sticker channel).
+/// Adapts the <see cref="VtsClient"/> path to <see cref="IAvatarController"/>.
+/// Lip-sync → mouth parameter (fire-safe, hot path); emotion/action → hotkey via
+/// <see cref="VtsConfig.EmotionMap"/>/<see cref="VtsConfig.ActionMap"/>, throwing on unknown
+/// names so the orchestrator's command queue reports them. Poses / stickers / idle states are
+/// no-ops (VTS has no such channels).
 /// </summary>
 public sealed class VtsAvatarAdapter : IAvatarController
 {
@@ -31,24 +33,23 @@ public sealed class VtsAvatarAdapter : IAvatarController
     public void OnRms(float rms)
     {
         if (Volatile.Read(ref _started) == 0) return;
-        // Fire-and-forget; VtsClient serializes sends internally.
+        // Fire-and-forget; VtsClient serializes sends internally. Must never throw at ~30ms.
         _ = SetMouthSafeAsync(rms);
     }
 
-    public void SetEmotion(string emotion, TimeSpan? hold = null)
+    public Task SetEmotionAsync(string emotion, TimeSpan? hold = null, CancellationToken ct = default)
     {
-        _ = hold;
-        if (Volatile.Read(ref _started) == 0) return;
-        if (string.IsNullOrWhiteSpace(emotion)) return;
-
-        if (!TryMapHotkey(_config.EmotionMap, emotion, out var hotkeyId))
-        {
-            DebugLog.Write($"[Avatar/VTS] unknown emotion hotkey mapping: {emotion}");
-            return;
-        }
-
-        _ = TriggerHotkeySafeAsync(hotkeyId);
+        _ = hold; // VTS hotkeys carry their own duration; hold is a pixel-backend concept.
+        return TriggerMappedHotkeyAsync(_config.EmotionMap, emotion, "emotion", ct);
     }
+
+    public Task TriggerActionAsync(string action, CancellationToken ct = default) =>
+        TriggerMappedHotkeyAsync(_config.ActionMap, action, "action", ct);
+
+    public void SetPose(string pose)
+        => DebugLog.Write($"[Avatar/VTS] SetPose('{pose}') ignored (no VTS pose channel)");
+
+    public Task CloseMouthAsync(CancellationToken ct = default) => _vts.CloseMouthAsync();
 
     public void SetListening(bool userSpeaking) => _ = userSpeaking;
 
@@ -57,6 +58,15 @@ public sealed class VtsAvatarAdapter : IAvatarController
 
     public void SetIdleState(string state)
         => DebugLog.Write($"[Avatar/VTS] SetIdleState('{state}') ignored");
+
+    private Task TriggerMappedHotkeyAsync(
+        IReadOnlyDictionary<string, string> map, string name, string kind, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return Task.CompletedTask;
+        if (!TryMapHotkey(map, name, out var hotkeyId))
+            throw new InvalidOperationException($"[VTS] unknown {kind}: {name}");
+        return _vts.TriggerHotkeyAsync(hotkeyId, ct);
+    }
 
     private async Task SetMouthSafeAsync(float rms)
     {
@@ -67,23 +77,12 @@ public sealed class VtsAvatarAdapter : IAvatarController
         }
         catch (Exception ex)
         {
+            // Log only the first failure per outage to avoid spamming the ~30ms RMS loop.
             if (!_rmsErrorLogged)
             {
                 _rmsErrorLogged = true;
                 DebugLog.Write($"[Avatar/VTS] mouth inject failed: {ex.Message}");
             }
-        }
-    }
-
-    private async Task TriggerHotkeySafeAsync(string hotkeyId)
-    {
-        try
-        {
-            await _vts.TriggerHotkeyAsync(hotkeyId).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            DebugLog.Write($"[Avatar/VTS] hotkey failed: {ex.Message}");
         }
     }
 

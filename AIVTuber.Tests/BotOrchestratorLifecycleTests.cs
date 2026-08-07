@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using AIVTuber.Core.Audio;
+using AIVTuber.Core.Avatar;
 using AIVTuber.Core.Bot;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Pipeline;
@@ -26,14 +27,15 @@ public sealed class BotOrchestratorLifecycleTests
     }
 
     [Fact]
-    public void Dispose_detaches_audio_player_handlers_when_vts_is_present()
+    public void Dispose_detaches_audio_player_handlers_when_avatar_is_present()
     {
         var llm = new RecordingLlmClient();
         using var player = new AudioPlayer();
         using var vts = new VtsClient(new VtsConfig());
+        var avatar = new VtsAvatarAdapter(vts, new VtsConfig());
         var rmsBefore = HandlerCount(player, "RmsUpdated");
         var finishedBefore = HandlerCount(player, "PlaybackFinished");
-        var orchestrator = CreateOrchestrator(llm, player, vts);
+        var orchestrator = CreateOrchestrator(llm, player, avatar);
 
         Assert.Equal(rmsBefore + 1, HandlerCount(player, "RmsUpdated"));
         Assert.Equal(finishedBefore + 1, HandlerCount(player, "PlaybackFinished"));
@@ -95,8 +97,8 @@ public sealed class BotOrchestratorLifecycleTests
     private static BotOrchestrator CreateOrchestrator(
         RecordingLlmClient llm,
         AudioPlayer player,
-        VtsClient? vts = null)
-        => new(new NoopAsrClient(), llm, new NoopTtsClient(), player, new TtsConfig(), vts);
+        IAvatarController? avatar = null)
+        => new(new NoopAsrClient(), llm, new NoopTtsClient(), player, new TtsConfig(), avatar);
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static WeakReference CreateDisposedWeakReference(RecordingLlmClient llm, AudioPlayer player)
