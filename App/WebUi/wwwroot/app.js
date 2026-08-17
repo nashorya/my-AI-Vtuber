@@ -284,18 +284,24 @@
     const d = data || {};
     $("factsLoading").hidden = !d.factsLoading;
     $("viewersLoading").hidden = !d.viewersLoading;
+    $("pkLoading").hidden = !d.pkLoading;
     $("factsEmpty").hidden = !d.factsEmpty;
     $("viewersEmpty").hidden = !d.viewersEmpty;
+    $("pkEmpty").hidden = !d.pkEmpty;
     $("factsError").hidden = !d.factsError;
     $("factsError").textContent = d.factsError || "";
     $("viewersError").hidden = !d.viewersError;
     $("viewersError").textContent = d.viewersError || "";
+    $("pkError").hidden = !d.pkError;
+    $("pkError").textContent = d.pkError || "";
     $("memStatus").textContent = d.statusMessage || "";
     $("btnMemExtract").disabled = !!d.extracting;
     if (typeof d.factSearch === "string" && document.activeElement !== $("factSearch"))
       $("factSearch").value = d.factSearch;
     if (typeof d.viewerSearch === "string" && document.activeElement !== $("viewerSearch"))
       $("viewerSearch").value = d.viewerSearch;
+    if (typeof d.pkSearch === "string" && document.activeElement !== $("pkSearch"))
+      $("pkSearch").value = d.pkSearch;
 
     $("factRows").innerHTML = (d.facts || [])
       .map(
@@ -323,6 +329,19 @@
           `</tr>`
       )
       .join("");
+
+    $("pkRows").innerHTML = (d.pkTurns || [])
+      .map(
+        (t) =>
+          `<tr>` +
+          `<td>${esc(t.opponentName || "—")}<div class="mem-uid">${esc(t.opponentUid || "")}</div></td>` +
+          `<td class="fact-content">${esc(t.opponentText || "")}</td>` +
+          `<td class="fact-content">${esc(t.assistantText || "")}</td>` +
+          `<td>${esc(t.ts || "—")}</td>` +
+          `<td><button type="button" class="btn ghost sm" data-del-pk="${esc(t.id || "")}">删</button></td>` +
+          `</tr>`
+      )
+      .join("");
   }
 
   document.querySelectorAll("[data-mem-tab]").forEach((btn) => {
@@ -330,6 +349,7 @@
       const tab = btn.dataset.memTab;
       document.querySelectorAll("[data-mem-tab]").forEach((b) => b.classList.remove("active"));
       btn.classList.add("active");
+      $("mem-pk").classList.toggle("active", tab === "pk");
       $("mem-facts").classList.toggle("active", tab === "facts");
       $("mem-viewers").classList.toggle("active", tab === "viewers");
       send("memoryTab", { tab });
@@ -342,6 +362,7 @@
   });
   let factSearchTimer = 0;
   let viewerSearchTimer = 0;
+  let pkSearchTimer = 0;
   $("factSearch").addEventListener("input", () => {
     clearTimeout(factSearchTimer);
     factSearchTimer = setTimeout(
@@ -355,6 +376,21 @@
       () => send("setViewerSearch", { query: $("viewerSearch").value }),
       275
     );
+  });
+  $("pkSearch").addEventListener("input", () => {
+    clearTimeout(pkSearchTimer);
+    pkSearchTimer = setTimeout(
+      () => send("setPkSearch", { query: $("pkSearch").value }),
+      275
+    );
+  });
+  $("pkRows").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-del-pk]");
+    if (!btn) return;
+    const id = btn.getAttribute("data-del-pk");
+    if (!id) return;
+    if (!confirm("删除这条对话？")) return;
+    send("deletePkTurn", { id });
   });
   $("factRows").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-del-fact]");

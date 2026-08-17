@@ -197,6 +197,12 @@ async def main():
 
     async def on_pk_end(event):
         pk_dedupe.clear()
+        # Notify the host so it can curate/persist dialogue pairs for this match.
+        try:
+            print("[PK] match ended", flush=True)
+            await _post(PK_PUSH_URL, {"type": "end"})
+        except Exception as e:
+            print(f"[PK] end notify error: {e}", flush=True)
 
     if PK_NOTICE and PK_PUSH_URL:
         for cmd in PK_START_CMDS:

@@ -5,7 +5,7 @@ namespace AIVTuber.Core.Memory;
 /// <summary>
 /// SQLite database manager for the memory system.
 /// Automatically creates tables on first connection.
-/// Tables: viewers, facts, sessions, conversations.
+/// Tables: viewers, facts, sessions, conversations, pk_matches, pk_turns.
 /// </summary>
 public sealed class MemoryDb : IDisposable
 {
@@ -102,13 +102,50 @@ CREATE TABLE IF NOT EXISTS conversations (
     timestamp TEXT
 );
 
+CREATE TABLE IF NOT EXISTS pk_matches (
+    match_id TEXT PRIMARY KEY,
+    opponent_uid TEXT,
+    opponent_name TEXT,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    status TEXT NOT NULL DEFAULT 'active'
+);
+
+CREATE TABLE IF NOT EXISTS pk_turns (
+    id TEXT PRIMARY KEY,
+    match_id TEXT NOT NULL,
+    opponent_uid TEXT,
+    opponent_name TEXT,
+    opponent_text TEXT NOT NULL,
+    assistant_text TEXT NOT NULL,
+    source TEXT NOT NULL,
+    ts TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject_uid);
 CREATE INDEX IF NOT EXISTS idx_facts_importance ON facts(importance);
 CREATE INDEX IF NOT EXISTS idx_conversations_session ON conversations(session_id);
+CREATE INDEX IF NOT EXISTS idx_pk_turns_opponent ON pk_turns(opponent_uid);
+CREATE INDEX IF NOT EXISTS idx_pk_turns_match ON pk_turns(match_id);
 ";
         using var cmd = _connection!.CreateCommand();
         cmd.CommandText = sql;
         await cmd.ExecuteNonQueryAsync().ConfigureAwait(false);
+
+        // Standalone FTS for later BM25-style recall (kept in sync by PkTurnRepository).
+        try
+        {
+            using var fts = _connection.CreateCommand();
+            fts.CommandText = @"
+CREATE VIRTUAL TABLE IF NOT EXISTS pk_turns_fts USING fts5(
+    turn_id UNINDEXED, opponent_text, assistant_text, opponent_name
+);";
+            await fts.ExecuteNonQueryAsync().ConfigureAwait(false);
+        }
+        catch (SqliteException ex)
+        {
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[Memory] pk_turns_fts unavailable: {ex.Message}");
+        }
     }
 
     public void Dispose()

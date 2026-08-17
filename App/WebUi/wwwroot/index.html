@@ -427,11 +427,32 @@
           </div>
         </div>
         <div class="mem-tabs" role="tablist">
-          <button type="button" class="active" data-mem-tab="facts">使用者</button>
+          <button type="button" class="active" data-mem-tab="pk">对手</button>
+          <button type="button" data-mem-tab="facts">使用者</button>
           <button type="button" data-mem-tab="viewers">观众</button>
         </div>
         <div class="mem-body">
-          <div class="mem-pane active" id="mem-facts">
+          <div class="mem-pane active" id="mem-pk">
+            <input id="pkSearch" type="search" placeholder="搜索对手名、UID 或说过的话" />
+            <div class="mem-table-wrap">
+              <table class="mem-table">
+                <thead>
+                  <tr>
+                    <th>对手</th>
+                    <th>对面说</th>
+                    <th>我说</th>
+                    <th>时间</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="pkRows"></tbody>
+              </table>
+              <p class="mem-empty" id="pkEmpty" hidden>还没有对手对话</p>
+              <p class="mem-error" id="pkError" hidden></p>
+              <p class="mem-loading" id="pkLoading" hidden>加载中…</p>
+            </div>
+          </div>
+          <div class="mem-pane" id="mem-facts">
             <input id="factSearch" type="search" placeholder="搜索使用者记忆或 UID" />
             <div class="mem-table-wrap">
               <table class="mem-table">

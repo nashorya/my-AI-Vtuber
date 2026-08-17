@@ -24,6 +24,8 @@ public sealed class BilibiliDanmakuClient : IDisposable
     /// <summary>Raised when a PK match starts and the opposing streamer has been resolved.
     /// Only fires when <see cref="BilibiliConfig.PkNotice"/> is enabled.</summary>
     public event EventHandler<PkOpponent>? OnPkStarted;
+    /// <summary>Raised when the bridge reports the current PK match ended.</summary>
+    public event EventHandler? OnPkEnded;
     public event EventHandler<string>? OnProcessExited;
     public event EventHandler<string>? OnError;
     /// <summary>Raised for each stdout/stderr line emitted by the Python bridge (for diagnostics).</summary>
@@ -89,7 +91,9 @@ public sealed class BilibiliDanmakuClient : IDisposable
             var path = ctx.Request.Url?.AbsolutePath ?? string.Empty;
             if (path.StartsWith("/pk", StringComparison.OrdinalIgnoreCase))
             {
-                if (PkOpponent.TryParse(body, out var opponent))
+                if (PkOpponent.IsEndPush(body))
+                    OnPkEnded?.Invoke(this, EventArgs.Empty);
+                else if (PkOpponent.TryParse(body, out var opponent))
                     OnPkStarted?.Invoke(this, opponent!);
             }
             else

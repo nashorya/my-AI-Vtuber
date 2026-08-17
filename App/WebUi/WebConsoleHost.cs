@@ -31,6 +31,7 @@ public sealed class WebConsoleHost : IDisposable
     private readonly NotifyCollectionChangedEventHandler _eventsChanged;
     private readonly NotifyCollectionChangedEventHandler _memoryFactsChanged;
     private readonly NotifyCollectionChangedEventHandler _memoryViewersChanged;
+    private readonly NotifyCollectionChangedEventHandler _memoryPkChanged;
     private bool _ready;
     private bool _disposed;
     private long _lastLevelPushMs;
@@ -51,12 +52,14 @@ public sealed class WebConsoleHost : IDisposable
         _eventsChanged = (_, _) => PushMonitorState();
         _memoryFactsChanged = (_, _) => PushMemory();
         _memoryViewersChanged = (_, _) => PushMemory();
+        _memoryPkChanged = (_, _) => PushMemory();
         _monitor.PropertyChanged += OnMonitorPropertyChanged;
         _monitor.OperationalEvents.CollectionChanged += _eventsChanged;
         _config.PropertyChanged += OnConfigPropertyChanged;
         _memory.PropertyChanged += OnMemoryPropertyChanged;
         _memory.Facts.CollectionChanged += _memoryFactsChanged;
         _memory.Viewers.CollectionChanged += _memoryViewersChanged;
+        _memory.PkTurns.CollectionChanged += _memoryPkChanged;
     }
 
     public async Task InitializeAsync()
@@ -194,10 +197,26 @@ public sealed class WebConsoleHost : IDisposable
                 case "setViewerSearch":
                     _memory.ViewerSearch = ReadString(data, "query") ?? ReadString(data) ?? "";
                     break;
+                case "setPkSearch":
+                    _memory.PkSearch = ReadString(data, "query") ?? ReadString(data) ?? "";
+                    break;
                 case "memoryTab":
                 {
-                    var tab = ReadString(data, "tab") ?? ReadString(data) ?? "facts";
-                    await _memory.ActivateTabAsync(tab == "viewers" ? MemoryTab.Viewers : MemoryTab.Facts);
+                    var tab = ReadString(data, "tab") ?? ReadString(data) ?? "pk";
+                    await _memory.ActivateTabAsync(tab switch
+                    {
+                        "viewers" => MemoryTab.Viewers,
+                        "pk" => MemoryTab.PkTurns,
+                        _ => MemoryTab.Facts,
+                    });
+                    PushMemory();
+                    break;
+                }
+                case "deletePkTurn":
+                {
+                    var pkId = ReadString(data, "id") ?? ReadString(data);
+                    if (!string.IsNullOrEmpty(pkId))
+                        await _memory.DeletePkTurnByIdAsync(pkId);
                     PushMemory();
                     break;
                 }
@@ -275,7 +294,11 @@ public sealed class WebConsoleHost : IDisposable
             or nameof(MemoryViewModel.Extracting)
             or nameof(MemoryViewModel.StatusMessage)
             or nameof(MemoryViewModel.FactSearch)
-            or nameof(MemoryViewModel.ViewerSearch))
+            or nameof(MemoryViewModel.ViewerSearch)
+            or nameof(MemoryViewModel.PkLoading)
+            or nameof(MemoryViewModel.PkEmpty)
+            or nameof(MemoryViewModel.PkError)
+            or nameof(MemoryViewModel.PkSearch))
             PushMemory();
     }
 
@@ -427,6 +450,7 @@ public sealed class WebConsoleHost : IDisposable
         _memory.PropertyChanged -= OnMemoryPropertyChanged;
         _memory.Facts.CollectionChanged -= _memoryFactsChanged;
         _memory.Viewers.CollectionChanged -= _memoryViewersChanged;
+        _memory.PkTurns.CollectionChanged -= _memoryPkChanged;
         if (_webView.CoreWebView2 is not null)
             _webView.CoreWebView2.WebMessageReceived -= OnWebMessageReceived;
     }
