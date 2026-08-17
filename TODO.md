@@ -1,6 +1,6 @@
 # AIVTuber 工程 TODO
 
-> 审查基线：`main@7cd4908`，2026-07-13。P0 发布门禁已完成；后续按 P1/P2/UX/Avatar 依赖顺序推进。
+> 审查基线：`main@7cd4908`，2026-07-13；**re-baseline：`main@0890cc5`，2026-08-06** —— Avatar 主线已从 VTube Studio 转为进程内 PNG 渲染器（PR #5–#9，素材包 v0.6）。各受影响条目下方以引用块标注了当前判定：仍有效 / 仅 VTS 后端适用 / 部分被 PNG 实现取代。P0 发布门禁已完成。
 > 项目背景、架构现状和 Agent 交接边界见 [`AGENT_CONTEXT.md`](AGENT_CONTEXT.md)。
 > 每项完成时必须同时提交自动化测试或可复现的验收记录，不能只以“本机能运行”作为完成标准。
 
@@ -38,6 +38,8 @@
 - 需要工业级 DataGrid、Docking 或图表：再评估 DevExpress/Telerik/Syncfusion；当前三页工具不需要。
 
 ## 当前质量基线
+
+> **Re-baseline 2026-08-06**：以下数字为 2026-07-13 快照；测试规模已增长，当前全量为 387 通过 / 13 skip（macOS 本机，Windows 专属用例自动 Skip）。
 
 - [x] Windows 发布门禁已自动生成并设为 `main` required status check。
 - `dotnet restore --locked-mode` 与 Release build：成功，0 warnings / 0 errors。
@@ -352,6 +354,8 @@
 
 ### [ ] LIVE-01 让 AI 主播感知 PK 对手
 
+> **Re-baseline 2026-08-06**：实现已合入 main（PR #11「announce PK opponent to the LLM」+ 手动「新 PK」按钮）。验收清单未逐条确认；确认后即可勾选。
+
 设计文档：[`docs/superpowers/specs/2026-07-31-pk-opponent-context-design.md`](docs/superpowers/specs/2026-07-31-pk-opponent-context-design.md)
 
 **证据**
@@ -404,6 +408,8 @@
 ## P1：UI/UX 重做
 
 ### [ ] UX-01 建立应用级设计 token 和主题
+
+> **Re-baseline 2026-08-06**：部分完成——2026-07-17 control deck 改版后 Monitor 页已使用 Deck 资源体系（`FontSize*`、`DeckToolHeight`、语义 Brush）；Config/Memory 页未核对，亮暗主题跟随与对比度检查未做。
 
 **证据**
 
@@ -472,6 +478,8 @@
 - 连接测试不持久化草稿、不污染正式客户端，并能取消和防止重复触发。
 
 ### [ ] UX-05 将监控页改为稳定的直播运行台
+
+> **Re-baseline 2026-08-06**：部分完成——已改为 OBS 风格控制台，固定命令条含截停、麦克风静音、对面麦静音、新 PK；具名连接状态、五态区分（Disabled/Connecting/Online/Degraded/Failed）与窄窗行为未逐条核对。
 
 **证据**
 
@@ -557,6 +565,8 @@
 
 ### [ ] UX-10 增加现代“角色与动作”编辑器
 
+> **Re-baseline 2026-08-06**：需按双后端改写——pixel 主线下「能力发现/hotkey 映射」换成素材包姿态/表情映射、`emotion_map` 校验与逐项预览（Monitor 页已有手动测试按钮可作雏形）；VTS 专属部分仅在启用 VTS 时相关。
+
 **实施**
 
 - 使用 `DataGrid`/`TabView` 管理 Emotion、Gesture、Motion 和参数映射，支持搜索、类型过滤、排序、批量导入和空状态。
@@ -574,10 +584,10 @@
 
 ## P1：Avatar 动作与表现力
 
-> 选型：第一阶段继续使用 VTube Studio Plugin API，不直接集成 Cubism SDK。
+> **选型（2026-08-06 修订）**：主线渲染后端已是进程内 PNG 渲染器（`avatar.backend`: `pixel`/`vts`/`both`）；VTS 为可选后端。原「第一阶段唯一 VTS 主路线」表述作废，仍不直接集成 Cubism SDK。
 > 当前工作树保留了一个最小 POC：`action_map`、`[action:动作名]` 标签、TriggerAnimation 热键导入和白名单触发。它只证明“LLM 能选择并触发已有 VTS 动作”，不代表下面的动作系统已经完成。
 
-**当前 POC 的发布阻塞**
+**当前 POC 的发布阻塞**（P0-02/P0-05 已完成，前两条已解除）
 
 - 必须先完成 `P0-02`：首次保存后 UI 草稿与 Runtime 配置发生引用别名，第二次修改 `ActionMap` 可能不产生 diff，LLM 提示词和动作映射不会刷新。
 - 必须先完成 `P0-05`：`ActionMap` 变化会重建 `BotOrchestrator`，旧实例未解除 `AudioPlayer` 事件订阅，连续保存会让口型/闭嘴调用倍增并泄漏实例。
@@ -585,6 +595,8 @@
 - 当前“导入动画热键”依赖最近一次查询结果；正式版本必须处理模型切换、热键变化和陈旧缓存。
 
 ### [ ] AVATAR-01 定义 Avatar 后端边界和能力模型
+
+> **Re-baseline 2026-08-06**：仍有效，且是当前杠杆最高的重构。`IAvatarController` 已存在但只有 `PixelAvatarDriver` 实现；VTS 路径绕过接口直连 `BotOrchestrator`；`VtsAvatarAdapter`/`CompositeAvatarController` 为零引用死代码。本条改写为：把 pixel 与 VTS 统一收敛到 `IAvatarController` 后面，编排层不得依赖具体后端类型，清理或启用死代码。
 
 **实施**
 
@@ -599,6 +611,8 @@
 - 未来增加 Unity/Cubism renderer 时无需修改 LLM 动作协议。
 
 ### [ ] AVATAR-02 自动发现并缓存当前模型能力
+
+> **Re-baseline 2026-08-06**：仅 VTS 后端适用，降级暂缓。pixel 主线的能力由素材包 `avatar.json` 静态声明，无需运行时发现。
 
 **实施**
 
@@ -616,6 +630,8 @@
 
 ### [ ] AVATAR-03 用结构化动作协议替代自由文本舞台描述
 
+> **Re-baseline 2026-08-06**：仍有效（跨后端）。现状：流式 `[emotion:]`/`[pose:]`/`[action:]` 标签 + 白名单已实现（`StreamingControlTagParser`）；structured output 协议与不可变 `UtterancePlan` 未做，与 AVATAR-09 合并推进。
+
 **实施**
 
 - 正式协议包含 `speech`、`emotion`、`gestures[]`、`at_ms`、`duration_ms`、`intensity`、`priority`。
@@ -631,6 +647,8 @@
 - LLM 不需要知道 hotkey ID、文件路径或 Live2D 参数 ID。
 
 ### [ ] AVATAR-04 实现 `AvatarMotionDirector` 和分层混合
+
+> **Re-baseline 2026-08-06**：部分被 PNG 实现取代——`MotionEngine`（呼吸/弹跳/摆动/Spring 歪头）、`AvatarStateMachine`（special>emotion>blink>mouth>neutral 优先级）、`PoseController`（整图姿态）已覆盖 pixel 侧分层混合；剩余「与真实播放时间轴对齐的调度」并入 AVATAR-09。VTS 侧导演层未做，仅在启用 VTS 后端时恢复本条原文。
 
 **实施**
 
@@ -648,6 +666,8 @@
 
 ### [ ] AVATAR-05 增加自然 Idle 行为
 
+> **Re-baseline 2026-08-06**：pixel 侧已基本实现（呼吸、眨眼、待机随机姿态、说话中抑制切换）；剩余：强度/开关的 UI 入口与一键恢复默认。VTS 侧未做。
+
 **实施**
 
 - 呼吸、随机眨眼、微眼动、视线停留和轻微身体摆动由本地确定性行为生成。
@@ -663,6 +683,8 @@
 
 ### [ ] AVATAR-06 完整管理 Expression 生命周期
 
+> **Re-baseline 2026-08-06**：pixel 侧表情已有 hold（默认 1500ms）与回中；本条的 `.exp3.json` Expression 生命周期仅 VTS 后端适用，暂缓。
+
 **实施**
 
 - 查询可用 `.exp3.json`，语义情绪映射到 Expression，而不是所有内容都用热键 Toggle。
@@ -677,6 +699,8 @@
 
 ### [ ] AVATAR-07 将口型从线性 RMS 升级为平滑语音驱动
 
+> **Re-baseline 2026-08-06**：仍有效（跨后端）。pixel 当前为 3 档 RMS 阈值切贴图；noise gate/attack-release/静音归零与播放时钟对齐仍是改进方向，验收不变。
+
 **实施**
 
 - 第一阶段增加 noise gate、归一化、attack/release、动态范围压缩和静音归零。
@@ -689,6 +713,8 @@
 - 不同 TTS 音量下观感一致，音画偏差可测且稳定。
 
 ### [ ] AVATAR-08 建立模型制作与 VTS 配置契约
+
+> **Re-baseline 2026-08-06**：需改写。VTS 映射向导部分仅 VTS 后端适用；pixel 主线的等价物是素材包契约文档化（画布尺寸、pivot、姿态/表情/口型命名、`avatar.json` schema——事实标准已到 v0.6 但无规范文档）。
 
 **实施**
 
@@ -703,6 +729,8 @@
 - 测试面板能逐个触发动作、表情和参数，并显示真实 API 错误。
 
 ### [ ] AVATAR-09 建立语句计划与真实播放时间轴
+
+> **Re-baseline 2026-08-06**：仍有效，**当前 Avatar 轨道优先级最高**（跨后端）。近期 `ff7024c`「keep emotions over mouth/side poses; speak TTS as one utterance」属症状级修补；情绪/姿态/口型与 `AudioPlayer` 真实时钟对齐（本条 + AVATAR-03 的 `UtterancePlan`）才是根治。
 
 **实施**
 
@@ -719,6 +747,8 @@
 
 ### [ ] AVATAR-10 将简单映射升级为按模型保存的富动作绑定
 
+> **Re-baseline 2026-08-06**：仅 VTS 后端适用（按 `modelID` 绑定），暂缓。pixel 的对应物是按素材包版本校验 `emotion_map`/姿态映射，规模小得多，随 AVATAR-08 契约一起做。
+
 **实施**
 
 - 将 `Dictionary<string,string>` 演进为版本化 `ActionBinding`：`alias`、`backend`、`kind`、`targetId`、`modelId`、`duration`、`cooldown`、`priority`、`interruptible`、`returnToNeutral`。
@@ -732,6 +762,8 @@
 - 旧配置升级后现有动作仍可触发，未知字段不丢失，重复迁移不改变结果。
 
 ### [ ] AVATAR-11 强化 VTS 连接生命周期、鉴权和注入吞吐
+
+> **Re-baseline 2026-08-06**：仅 VTS 后端适用；VTS 降为可选后端后暂缓，重新启用 VTS 时恢复。
 
 **证据**
 
@@ -754,6 +786,8 @@
 
 ### [ ] AVATAR-12 定义 VTS 参数所有权和 tracking/physics 混合规则
 
+> **Re-baseline 2026-08-06**：仅 VTS 后端适用（pixel 渲染器不存在参数抢占问题），暂缓。
+
 **实施**
 
 - 为头、身体、眼睛、眉毛、嘴型和呼吸定义 AIVTuber 自建 tracking parameters，并在 VTS 中映射到模型参数。
@@ -767,6 +801,8 @@
 - 任一轨道崩溃或停止后，所有被注入参数在限定时间内回到 neutral/交还 tracking。
 
 ### [ ] AVATAR-13 管理 Motion 的可取消能力与断线恢复
+
+> **Re-baseline 2026-08-06**：仅 VTS 后端适用（pixel 的姿态/贴图切换本地完全可控、可即时取消），暂缓。
 
 **实施**
 
@@ -782,6 +818,8 @@
 
 ### [ ] AVATAR-14 增加本地动作策略与安全降级
 
+> **Re-baseline 2026-08-06**：仍有效（跨后端），与渲染后端无关的本地策略层；在 AVATAR-09 时间轴之后做。
+
 **实施**
 
 - LLM 只负责高层语义意图；说话微点头、句尾回中、倾听、思考和轻微视线变化由本地策略生成。
@@ -795,6 +833,8 @@
 - 固定种子回放结果确定；一小时运行中动作频率、重复率和强度不超过配置预算。
 
 ### [ ] AVATAR-15 评估 Cubism renderer 第二后端（暂缓）
+
+> **Re-baseline 2026-08-06**：维持暂缓；PNG 主线成立后，本条触发条件更远。
 
 仅在明确要求“不安装 VTS、应用内渲染、Drawable/物理/合成级控制”时启动。
 
@@ -813,6 +853,8 @@
 
 ### [ ] P2-01 固定 SDK 和全部包版本
 
+> **Re-baseline 2026-08-06**：部分完成——`global.json` 已存在（10.0.300，`rollForward: latestPatch`），lock file 已启用；WPF-UI 固定版本与包集中管理未核对。
+
 - 新增 `global.json` 固定 .NET 10 feature band。
 - 使用精确版本或 `Directory.Packages.props` 集中管理；禁止 `WPF-UI 3.*` 这类浮动版本。
 - 在完成 UI 回归后升级并固定 WPF-UI 4.3.0；评估 NAudio 2.3.0、WebRtcVadSharp 1.3.2 和新 ONNX Runtime。
@@ -820,6 +862,8 @@
 - **验收：**干净机器与 CI 还原到相同依赖图，lock file 无意外变化。
 
 ### [ ] P2-02 修复并强化测试套件
+
+> **Re-baseline 2026-08-06**：证据部分已在 P0 门禁工作中完成（240/240 → 当前 387 通过/13 skip，VAD DLL 由门禁解析校验）。剩余核心缺口：`App.Tests` 未加入 `AIVTuber.slnx`（仅 1 个冒烟测试且 CI 不跑）、`AvatarWindow.xaml.cs`（1021 行）零测试。
 
 - 将 WebRtcVad 原生 DLL 可靠复制到测试和发布目录，不依赖手工修正搜索路径。
 - 修复 SQLite teardown 锁并消除 14 个失败；测试连续运行 10 次。
@@ -862,6 +906,8 @@
 
 ### [ ] P2-06 建立 Avatar 集成测试与确定性回放基座
 
+> **Re-baseline 2026-08-06**：fake VTS server 部分降级为「仅 VTS 后端适用」。pixel 主线改为 fake clock 驱动 `PixelAvatarDriver`/`MotionEngine`/`PoseController`，逐帧记录 (pose, expression, mouth, transform) 的 golden trace 做比对——同样的验收目标，成本低一个量级；与 P2-07 合并推进。
+
 - 实现 fake VTS WebSocket server，覆盖授权、APIError、乱序/超时响应、超过 8KB 的分片消息、慢消费、断线重连、模型切换和 hotkey/参数请求记录。
 - 使用录制 SSE 分块、fake TTS、fake `AudioPlayer` clock 和可控随机源，端到端验证计划、顺序、取消、exactly-once 和回中。
 - 为模型 profile、ActionBinding 迁移、能力缓存失效和参数仲裁建立契约测试。
@@ -876,15 +922,32 @@
 - 设定表现预算而非只看“能触发”：大动作频率、重复率、最大头部幅度、表情滞留时间和嘴型音画偏差。
 - **验收：**动作系统改动能自动比较 trace，并由人工只审查有限录屏差异；性能/自然度退化有明确阈值。
 
+## 候选新任务（2026-08-06 re-baseline 提出，待作者确认后转正式条目）
+
+### SAFE-01 直播内容安全与合规门禁
+
+- LLM 输出直接成为直播间语音，当前没有任何输出侧防护。真实开播前需要：违禁词/敏感话题拦截层、回复频率上限、弹幕 prompt 注入防护（弹幕以数据而非指令身份进入上下文，「无视之前的指令」类弹幕必须无效）、平台对 AI 内容的标识要求核对。
+- 验收：注入类弹幕不改变行为；拦截命中产生结构化日志且不朗读原文；频控可配置。
+
+### PROD-01 注意力策略（turn-taking）
+
+- `RequestCoordinator` 的优先级枚举目前只有「忙时丢弃 loopback」一条生效，弹幕/麦克风/手动互相无条件抢占——弹幕会把 AI 对主播的回复拦腰打断。
+- 把打断规则做成显式策略：麦克风最高优可打断一切；弹幕仅在空闲进入或排队；PK 事件可插队但等当前句结束；策略参数进设置页。
+- 验收：AI 回复主播期间到达的弹幕不打断当前输出；三源并发压力回放确定性通过。
+
 ## 推荐执行顺序
 
-1. P0-01 至 P0-07：先恢复发布安全、运行时正确性和当前 Action POC 的可控性。
-2. AVATAR-01 至 AVATAR-03、AVATAR-09 至 AVATAR-11：先建立后端边界、能力清单、回复计划、富绑定和可靠 VTS 通道。
-3. UX-01 + UX-10：建立设计 token，并先交付作者真正需要的角色与动作编辑器。
-4. AVATAR-04 至 AVATAR-08、AVATAR-12 至 AVATAR-14：完成自然动作、表情、口型、参数混合和本地降级策略。
-5. UX-02 至 UX-09：重做设置页、直播运行台、记忆页、首次启动和可访问性。
-6. P1-01 至 P1-08：并行收敛记忆、连接、隐私、配置、生命周期和双通道音源归属。
-7. P2：把前述验收固化到 CI、发布包、fake VTS、确定性回放和文档；AVATAR-15 保持暂缓。
+> **2026-08-06 修订**（原顺序以 VTS 主线为前提，已作废）：
+
+1. ~~P0-01 至 P0-07~~：已完成。
+2. AVATAR-01：统一 `IAvatarController` 双后端边界、清理死代码，顺带修编排层 sync-over-async 阻塞点。
+3. P1-01 + LIVE-02：修通长期记忆读取链路（当前只写不读），把 PK 对手做进记忆。
+4. AVATAR-03 + AVATAR-09：结构化协议与 `UtterancePlan`/真实播放时钟，根治情绪、姿态、口型、字幕对齐的整类问题。
+5. SAFE-01 + PROD-01：开播前门禁——内容安全与注意力策略。
+6. P1-06 拆 `BotRuntime`/引入 DI；随后按需收敛 P1-02/03/04/05/07/08。
+7. UX-05 运行台补完 → UX-10（按双后端改写）→ UX-01 至 UX-09 其余项。
+8. AVATAR-04/05/07/14 剩余打磨；P2-06/07 golden trace 回放基座与自然度指标。
+9. AVATAR-02/06/10/11/12/13 仅在重新启用 VTS 后端时恢复；AVATAR-15 维持暂缓。
 
 ## 参考
 

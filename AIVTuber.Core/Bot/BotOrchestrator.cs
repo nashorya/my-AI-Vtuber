@@ -1,17 +1,18 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
 using AIVTuber.Core.Audio;
+using AIVTuber.Core.Avatar;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Pipeline;
-using AIVTuber.Core.Vts;
 using System.Text;
 
 namespace AIVTuber.Core.Bot;
 
 /// <summary>
-/// Coordinates the full pipeline: VAD -> ASR -> LLM -> TTS -> AudioPlayer -> VTS lip-sync.
+/// Coordinates the full pipeline: VAD -> ASR -> LLM -> TTS -> AudioPlayer -> avatar lip-sync.
 /// Uses a bounded channel (capacity 3) for sentence-level backpressure.
-/// Integrates with VTS for lip-sync (RMS -> ParamMouthOpenY) and expressions (emotion -> hotkey).
+/// All avatar output (lip-sync RMS, emotion, action, pose) goes through
+/// <see cref="IAvatarController"/> — this class knows nothing about concrete backends.
 /// </summary>
 public sealed class BotOrchestrator : IDisposable
 {
@@ -20,8 +21,7 @@ public sealed class BotOrchestrator : IDisposable
     private readonly ITtsClient _tts;
     private readonly AudioPlayer _player;
     private readonly TtsConfig _ttsConfig;
-    private readonly VtsClient? _vts;
-    private readonly VtsConfig _vtsConfig;
+    private readonly IAvatarController? _avatar;
     private readonly EventHandler<string> _sentenceReadyHandler;
     private readonly EventHandler<string> _emotionDetectedHandler;
     private readonly EventHandler<string> _actionDetectedHandler;
@@ -36,7 +36,6 @@ public sealed class BotOrchestrator : IDisposable
     private readonly SemaphoreSlim _commandGate = new(1, 1);
     private readonly Func<IAsyncEnumerable<byte[]>, CancellationToken, Task> _playChunksAsync;
     private readonly Action _stopPlayback;
-    private readonly Func<string, CancellationToken, Task>? _triggerHotkeyAsync;
     private Func<string, CancellationToken, Task>? _assistantOutputCommand;
     private Func<string, CancellationToken, Task>? _userOutputCommand;
     private long _nextCommandId;
@@ -61,11 +60,10 @@ public sealed class BotOrchestrator : IDisposable
     public BotOrchestrator(
         IAsrClient asr, ILlmClient llm, ITtsClient tts,
         AudioPlayer player, TtsConfig ttsConfig,
-        VtsClient? vts = null, VtsConfig? vtsConfig = null,
+        IAvatarController? avatar = null,
         IReadOnlyDictionary<string, string>? ttsEmotionMap = null)
-        : this(asr, llm, tts, player, ttsConfig, vts, vtsConfig,
+        : this(asr, llm, tts, player, ttsConfig, avatar,
             player.PlayChunksAsync, player.Stop,
-            vts is null ? null : vts.TriggerHotkeyAsync,
             ttsEmotionMap)
     {
     }
@@ -73,10 +71,9 @@ public sealed class BotOrchestrator : IDisposable
     internal BotOrchestrator(
         IAsrClient asr, ILlmClient llm, ITtsClient tts,
         AudioPlayer player, TtsConfig ttsConfig,
-        VtsClient? vts, VtsConfig? vtsConfig,
+        IAvatarController? avatar,
         Func<IAsyncEnumerable<byte[]>, CancellationToken, Task> playChunksAsync,
         Action stopPlayback,
-        Func<string, CancellationToken, Task>? triggerHotkeyAsync,
         IReadOnlyDictionary<string, string>? ttsEmotionMap = null)
     {
         _asr = asr;
@@ -84,14 +81,12 @@ public sealed class BotOrchestrator : IDisposable
         _tts = tts;
         _player = player;
         _ttsConfig = ttsConfig;
-        _vts = vts;
-        _vtsConfig = vtsConfig ?? new VtsConfig();
+        _avatar = avatar;
         _ttsEmotionMap = ttsEmotionMap
             ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         _coordinator = new RequestCoordinator();
         _playChunksAsync = playChunksAsync;
         _stopPlayback = stopPlayback;
-        _triggerHotkeyAsync = triggerHotkeyAsync;
 
         // Keep publisher subscriptions as named delegates so Dispose can detach them
         // symmetrically. The LLM and AudioPlayer may outlive this orchestrator during rewire.
@@ -110,36 +105,43 @@ public sealed class BotOrchestrator : IDisposable
             if (context is null) return;
             _currentEmotion = emotion;
             OnEmotionDetected?.Invoke(this, emotion);
-            QueueMappedHotkey(context, _vtsConfig.EmotionMap, emotion, "emotion");
+            if (_avatar is not null)
+                QueueCommand(context, "[Avatar] emotion",
+                    ct => _avatar.SetEmotionAsync(emotion, null, ct));
         };
         _actionDetectedHandler = (_, action) =>
         {
             var context = CurrentEventContext();
             if (context is null) return;
             OnActionDetected?.Invoke(this, action);
-            QueueMappedHotkey(context, _vtsConfig.ActionMap, action, "action");
+            if (_avatar is not null)
+                QueueCommand(context, "[Avatar] action",
+                    ct => _avatar.TriggerActionAsync(action, ct));
         };
         _poseDetectedHandler = (_, pose) =>
         {
             var context = CurrentEventContext();
             if (context is null) return;
             OnPoseDetected?.Invoke(this, pose);
+            // Instant, local-only — same generation gate as the event, no queue needed.
+            _avatar?.SetPose(pose);
         };
         _llm.OnSentenceReady += _sentenceReadyHandler;
         _llm.OnEmotionDetected += _emotionDetectedHandler;
         _llm.OnActionDetected += _actionDetectedHandler;
         _llm.OnPoseDetected += _poseDetectedHandler;
 
-        // Wire up RMS -> VTS lip-sync
-        if (_vts is not null)
+        // Wire up RMS -> avatar lip-sync. OnRms is a synchronous hot-path contract; backends
+        // that need I/O (VTS) handle their own fire-safety internally.
+        if (_avatar is not null)
         {
             _rmsUpdatedHandler = (_, rms) =>
             {
-                if (!_disposed) HandleRmsAsync(rms);
+                if (!_disposed) _avatar.OnRms(rms);
             };
             _playbackFinishedHandler = (_, _) =>
             {
-                if (!_disposed) TryCloseMouthAsync();
+                if (!_disposed) _ = CloseMouthQuietlyAsync();
             };
             _player.RmsUpdated += _rmsUpdatedHandler;
             _player.PlaybackFinished += _playbackFinishedHandler;
@@ -158,21 +160,6 @@ public sealed class BotOrchestrator : IDisposable
     {
         _assistantOutputCommand = assistantOutputCommand;
         _userOutputCommand = userOutputCommand;
-    }
-
-    private void QueueMappedHotkey(
-        RequestContext context,
-        IReadOnlyDictionary<string, string> map,
-        string name,
-        string kind)
-    {
-        if (_triggerHotkeyAsync is null) return;
-        if (!TryGetHotkeyId(map, name, out var hotkeyId))
-        {
-            ReportCurrentError(context.Generation, $"[VTS] unknown {kind}: {name}");
-            return;
-        }
-        QueueCommand(context, $"[VTS] {kind} hotkey", ct => _triggerHotkeyAsync(hotkeyId, ct));
     }
 
     private void QueueCommand(
@@ -230,54 +217,27 @@ public sealed class BotOrchestrator : IDisposable
 
     private sealed record RequestContext(RequestGeneration Generation, CancellationToken CancellationToken);
 
-    private static bool TryGetHotkeyId(
-        IReadOnlyDictionary<string, string> map, string name, out string hotkeyId)
+    /// <summary>Best-effort mouth close on playback end; never throws.</summary>
+    private async Task CloseMouthQuietlyAsync()
     {
-        if (map.TryGetValue(name, out hotkeyId!) && !string.IsNullOrWhiteSpace(hotkeyId))
-            return true;
-
-        foreach (var pair in map)
-        {
-            if (pair.Key.Equals(name, StringComparison.OrdinalIgnoreCase) &&
-                !string.IsNullOrWhiteSpace(pair.Value))
-            {
-                hotkeyId = pair.Value;
-                return true;
-            }
-        }
-
-        hotkeyId = string.Empty;
-        return false;
+        if (_avatar is null) return;
+        try { await _avatar.CloseMouthAsync().ConfigureAwait(false); }
+        catch { /* ignore */ }
     }
 
-    private bool _rmsErrorLogged;
-
-    private async void HandleRmsAsync(float rms)
+    /// <summary>Mouth close on interrupt: fire-and-forget so callers on the UI thread
+    /// (stop button) never block on backend I/O; failures are surfaced via OnError.</summary>
+    private async Task CloseMouthReportingAsync()
     {
-        if (_vts is null) return;
-        try
-        {
-            await _vts.SetMouthAsync(rms);
-            _rmsErrorLogged = false;
-        }
+        if (_avatar is null) return;
+        try { await _avatar.CloseMouthAsync().ConfigureAwait(false); }
         catch (Exception ex)
         {
-            // Log only the first failure per outage to avoid spamming the ~30ms RMS loop.
-            if (!_rmsErrorLogged)
-            {
-                _rmsErrorLogged = true;
-                var msg = $"[VTS] 口型注入失败: {ex.Message}";
-                Console.Error.WriteLine(msg);
-                OnError?.Invoke(this, msg);
-            }
+            // Stop/disposal must remain safe when the backend is already disconnected.
+            var message = $"[Avatar] 关闭口型失败: {ex.Message}";
+            AIVTuber.Core.Diagnostics.DebugLog.Write(message);
+            if (!_disposed) OnError?.Invoke(this, message);
         }
-    }
-
-    private async void TryCloseMouthAsync()
-    {
-        if (_vts is null) return;
-        try { await _vts.CloseMouthAsync(); }
-        catch { /* ignore */ }
     }
 
     /// <summary>Process a speech segment from VAD. Interrupts any ongoing processing.</summary>
@@ -455,17 +415,9 @@ public sealed class BotOrchestrator : IDisposable
         _coordinator.CancelCurrentAsync().GetAwaiter().GetResult();
         _currentEmotion = null;
         _stopPlayback();
-        if (_vts is not null)
-        {
-            try { _vts.CloseMouthAsync().GetAwaiter().GetResult(); }
-            catch (Exception ex)
-            {
-                // Stop/disposal must remain safe when VTS is already disconnected.
-                var message = $"[VTS] 关闭口型失败: {ex.Message}";
-                AIVTuber.Core.Diagnostics.DebugLog.Write(message);
-                if (!_disposed) OnError?.Invoke(this, message);
-            }
-        }
+        // Was a blocking CloseMouthAsync().GetResult(): the stop button runs Interrupt on the
+        // UI thread, so backend I/O must not be awaited synchronously here.
+        _ = CloseMouthReportingAsync();
     }
 
     public bool IsProcessing => _coordinator.IsBusy;

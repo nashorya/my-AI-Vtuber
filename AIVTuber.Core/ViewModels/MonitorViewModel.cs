@@ -194,6 +194,10 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
     private bool _micMuted;
     public bool MicMuted { get => _micMuted; private set => SetField(ref _micMuted, value); }
 
+    private bool _loopbackMuted;
+    /// <summary>User-facing 对面麦 mute — while true the AI stops hearing the opponent's audio.</summary>
+    public bool LoopbackMuted { get => _loopbackMuted; private set => SetField(ref _loopbackMuted, value); }
+
     private float _micLevel;
     public float MicLevel { get => _micLevel; private set => SetField(ref _micLevel, value); }
 
@@ -215,6 +219,13 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
         var muted = !_micMuted;
         _runtime.SetMicMuted(muted);
         _dispatch(() => MicMuted = muted);
+    }
+
+    public void ToggleLoopbackMute()
+    {
+        var muted = !_loopbackMuted;
+        _runtime.SetLoopbackMuted(muted);
+        _dispatch(() => LoopbackMuted = muted);
     }
 
     /// <summary>Interrupts the AI immediately — stops current speech/generation and playback.</summary>
