@@ -1,6 +1,8 @@
 namespace AIVTuber.Core.Avatar;
 
-/// <summary>Fans out avatar commands to multiple backends (e.g. VTS + pixel).</summary>
+/// <summary>Fans out avatar commands to multiple backends (e.g. pixel + VTS). Async intents
+/// run backends in constructor order; a throwing backend stops later ones, so pass the
+/// never-throwing backend (pixel) first.</summary>
 public sealed class CompositeAvatarController : IAvatarController
 {
     private readonly IAvatarController[] _backends;
@@ -23,9 +25,27 @@ public sealed class CompositeAvatarController : IAvatarController
         foreach (var b in _backends) b.OnRms(rms);
     }
 
-    public void SetEmotion(string emotion, TimeSpan? hold = null)
+    public async Task SetEmotionAsync(string emotion, TimeSpan? hold = null, CancellationToken ct = default)
     {
-        foreach (var b in _backends) b.SetEmotion(emotion, hold);
+        foreach (var b in _backends)
+            await b.SetEmotionAsync(emotion, hold, ct).ConfigureAwait(false);
+    }
+
+    public async Task TriggerActionAsync(string action, CancellationToken ct = default)
+    {
+        foreach (var b in _backends)
+            await b.TriggerActionAsync(action, ct).ConfigureAwait(false);
+    }
+
+    public void SetPose(string pose)
+    {
+        foreach (var b in _backends) b.SetPose(pose);
+    }
+
+    public async Task CloseMouthAsync(CancellationToken ct = default)
+    {
+        foreach (var b in _backends)
+            await b.CloseMouthAsync(ct).ConfigureAwait(false);
     }
 
     public void SetListening(bool userSpeaking)

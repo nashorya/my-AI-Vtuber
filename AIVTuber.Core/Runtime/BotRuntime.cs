@@ -43,9 +43,9 @@ public sealed class BotRuntime : IAsyncDisposable
     private VtsClient? _vts;
     private PixelAvatarDriver? _pixelAvatar;
     private AvatarConfigWatcher? _avatarConfigWatcher;
-    private EventHandler<float>? _avatarRmsHandler;
-    private EventHandler<string>? _avatarEmotionHandler;
-    private EventHandler<string>? _avatarPoseHandler;
+    // Stable facade the orchestrator holds; RefreshAvatarController swaps the backend inside
+    // when pixel init or a VTS reconnect changes what exists.
+    private SwappableAvatarController? _avatarFacade;
     private ObsClient? _obs;
     private IAsrClient _asr = null!;   // provider-specific (whisper-HTTP or DashScope-WebSocket)
     private LlmClient _llm = null!;
@@ -233,11 +233,11 @@ public sealed class BotRuntime : IAsyncDisposable
         SuperviseBackgroundTask(StartLocalAsrServerAsync());
     }
 
-    /// <summary>Show a sticker on the pixel avatar if active (no-op for VTS-only).</summary>
-    public void ShowAvatarSticker(string stickerId) => _pixelAvatar?.ShowSticker(stickerId);
+    /// <summary>Show a sticker on the avatar (VTS backend ignores it).</summary>
+    public void ShowAvatarSticker(string stickerId) => _avatarFacade?.ShowSticker(stickerId);
 
-    /// <summary>Set idle/special state on the pixel avatar if active.</summary>
-    public void SetAvatarIdleState(string state) => _pixelAvatar?.SetIdleState(state);
+    /// <summary>Set idle/special state on the avatar (VTS backend ignores it).</summary>
+    public void SetAvatarIdleState(string state) => _avatarFacade?.SetIdleState(state);
 
     private async Task InitMemoryAsync()
     {
@@ -294,7 +294,6 @@ public sealed class BotRuntime : IAsyncDisposable
 
     private void InitPixelAvatar()
     {
-        UnwirePixelAvatar();
         _avatarConfigWatcher?.Dispose();
         _avatarConfigWatcher = null;
         _pixelAvatar = null;
@@ -302,6 +301,7 @@ public sealed class BotRuntime : IAsyncDisposable
         if (!_config.Avatar.UsesPixel)
         {
             Console.WriteLine($"[Avatar] backend={_config.Avatar.Backend} — pixel renderer off");
+            RefreshAvatarController();
             return;
         }
 
@@ -333,9 +333,6 @@ public sealed class BotRuntime : IAsyncDisposable
             }
 
             _pixelAvatar = new PixelAvatarDriver(pack, assetsDir, available, _config.Avatar.EmotionMap);
-            // Wire after InitPipeline creates the orchestrator; StartAsync calls InitPipeline first.
-            if (_orchestrator is not null)
-                WirePixelAvatar();
             StartAvatarConfigWatcher(assetsDir);
             Console.WriteLine($"[Avatar] pixel driver ready ({pack.Meta.Name}, states={available.Count}) @ {assetsDir}");
         }
@@ -346,6 +343,10 @@ public sealed class BotRuntime : IAsyncDisposable
             PipelineError?.Invoke(this, msg);
             _pixelAvatar = null;
         }
+
+        // StartAsync runs InitPipeline (facade created) before InitPixelAvatar, so the driver
+        // built here reaches the orchestrator through the facade swap.
+        RefreshAvatarController();
     }
 
     private void StartAvatarConfigWatcher(string assetsDir)
@@ -380,31 +381,36 @@ public sealed class BotRuntime : IAsyncDisposable
             TimeSpan.FromMilliseconds(300));
     }
 
-    private void WirePixelAvatar()
+    /// <summary>Composes the current avatar backend(s) into one controller:
+    /// pixel / VTS adapter / composite of both (pixel first — it never throws), or null.</summary>
+    private IAvatarController? BuildAvatarController()
     {
-        if (_pixelAvatar is null || _player is null) return;
-
-        _avatarRmsHandler = (_, rms) => _pixelAvatar?.OnRms(rms);
-        _player.RmsUpdated += _avatarRmsHandler;
-
-        _avatarEmotionHandler = (_, emotion) => _pixelAvatar?.SetEmotion(emotion);
-        _orchestrator.OnEmotionDetected += _avatarEmotionHandler;
-
-        _avatarPoseHandler = (_, pose) => _pixelAvatar?.SetPose(pose);
-        _orchestrator.OnPoseDetected += _avatarPoseHandler;
+        IAvatarController? vts = _vts is not null ? new VtsAvatarAdapter(_vts, _config.Vts) : null;
+        IAvatarController? pixel = _pixelAvatar;
+        if (pixel is not null && vts is not null)
+            return new CompositeAvatarController(pixel, vts);
+        return pixel ?? vts;
     }
 
-    private void UnwirePixelAvatar()
+    /// <summary>Rebuilds the controller behind the stable facade the orchestrator holds.
+    /// Called from InitPipeline (covers orchestrator rebuilds and VTS reconnects) and from
+    /// InitPixelAvatar (pixel is created after the first orchestrator on startup).</summary>
+    private void RefreshAvatarController()
     {
-        if (_avatarRmsHandler is not null && _player is not null)
-            _player.RmsUpdated -= _avatarRmsHandler;
-        if (_avatarEmotionHandler is not null && _orchestrator is not null)
-            _orchestrator.OnEmotionDetected -= _avatarEmotionHandler;
-        if (_avatarPoseHandler is not null && _orchestrator is not null)
-            _orchestrator.OnPoseDetected -= _avatarPoseHandler;
-        _avatarRmsHandler = null;
-        _avatarEmotionHandler = null;
-        _avatarPoseHandler = null;
+        if (_avatarFacade is null) return;
+        var inner = BuildAvatarController();
+        _ = inner?.StartAsync(); // both current backends complete synchronously
+        var old = _avatarFacade.Swap(inner);
+        if (old is not null && !ReferenceEquals(old, inner))
+            _ = DisposeControllerQuietlyAsync(old);
+    }
+
+    private static async Task DisposeControllerQuietlyAsync(IAvatarController controller)
+    {
+        // Disposing an old composite/adapter closes the VTS mouth at worst; the pixel
+        // driver's dispose is a no-op, so a still-live driver inside an old wrapper is safe.
+        try { await controller.DisposeAsync().ConfigureAwait(false); }
+        catch { /* ignore */ }
     }
 
     private void InitObs()
@@ -506,6 +512,13 @@ public sealed class BotRuntime : IAsyncDisposable
         RuntimeChange.RebuildAsr | RuntimeChange.RebuildLlm | RuntimeChange.RebuildTts)
     {
         _orchestrator?.Dispose();
+        if (_avatarFacade is not null)
+        {
+            // The old orchestrator (just disposed) held this facade; retire it with its inner
+            // controller so a stale VTS adapter can't linger across the rewire.
+            _ = DisposeControllerQuietlyAsync(_avatarFacade);
+            _avatarFacade = null;
+        }
 
         if (_asr is null || rebuild.HasFlag(RuntimeChange.RebuildAsr))
         {
@@ -530,8 +543,10 @@ public sealed class BotRuntime : IAsyncDisposable
             // Single stable tap: reads _virtualMic field, so mixer restarts pick up automatically.
             _player.PcmChunkPlayed += (_, chunk) => _virtualMic?.WriteTts(chunk);
         }
+        _avatarFacade = new SwappableAvatarController();
+        RefreshAvatarController();
         _orchestrator = new BotOrchestrator(
-            _asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts,
+            _asr, _llm, _tts, _player, _config.Tts, _avatarFacade,
             ttsEmotionMap: _config.Avatar.EmotionMap);
 
         _orchestrator.OnError += (_, msg) => PipelineError?.Invoke(this, msg);
@@ -603,18 +618,8 @@ public sealed class BotRuntime : IAsyncDisposable
             AiStopSpeaking?.Invoke(this, EventArgs.Empty);
         };
 
-        // Orchestrator is recreated here — re-attach pixel avatar hooks if active.
-        if (_pixelAvatar is not null)
-        {
-            if (_avatarEmotionHandler is not null)
-                _orchestrator.OnEmotionDetected -= _avatarEmotionHandler;
-            if (_avatarPoseHandler is not null)
-                _orchestrator.OnPoseDetected -= _avatarPoseHandler;
-            _avatarEmotionHandler = (_, emotion) => _pixelAvatar?.SetEmotion(emotion);
-            _avatarPoseHandler = (_, pose) => _pixelAvatar?.SetPose(pose);
-            _orchestrator.OnEmotionDetected += _avatarEmotionHandler;
-            _orchestrator.OnPoseDetected += _avatarPoseHandler;
-        }
+        // Avatar output (RMS/emotion/pose/action) reaches the backends through _avatarFacade,
+        // which the new orchestrator received above — no per-event re-attach needed.
     }
 
     /// <summary>Merges VTS + pixel avatar emotion/pose allow-lists into the LLM system prompt.</summary>
@@ -1151,7 +1156,11 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         _cts.Cancel();
         await DrainBackgroundTasksAsync();
-        UnwirePixelAvatar();
+        if (_avatarFacade is not null)
+        {
+            await _avatarFacade.DisposeAsync();
+            _avatarFacade = null;
+        }
         _avatarConfigWatcher?.Dispose();
         _avatarConfigWatcher = null;
         if (_pixelAvatar is not null)

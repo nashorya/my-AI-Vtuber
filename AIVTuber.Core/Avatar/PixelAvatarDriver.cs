@@ -58,6 +58,25 @@ public sealed class PixelAvatarDriver : IAvatarController
         _motion.SetRms(rms);
     }
 
+    public Task SetEmotionAsync(string emotion, TimeSpan? hold = null, CancellationToken ct = default)
+    {
+        SetEmotion(emotion, hold);
+        return Task.CompletedTask;
+    }
+
+    public Task TriggerActionAsync(string action, CancellationToken ct = default)
+    {
+        // No pixel gesture channel yet (AVATAR-14); actions are a VTS-hotkey concept for now.
+        DebugLog.Write($"[Avatar] action '{action}' ignored (pixel backend has no gesture channel)");
+        return Task.CompletedTask;
+    }
+
+    public Task CloseMouthAsync(CancellationToken ct = default)
+    {
+        OnRms(0f); // below every mouth threshold — the state machine closes the mouth
+        return Task.CompletedTask;
+    }
+
     public void SetEmotion(string emotion, TimeSpan? hold = null)
     {
         var mapped = MapEmotion(emotion);

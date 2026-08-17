@@ -52,11 +52,14 @@ public class DashScopeConnectionPoolTests
 
         // Use a short timeout via a linked CTS so we don't hang on connect retry.
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            async () => await pool.GetOrCreateAsync(cts.Token));
+        var ex = await Record.ExceptionAsync(() => pool.GetOrCreateAsync(cts.Token));
 
-        // We cancelled before the connection error could fire; either way the pool must remain
-        // usable (no stale _ws left behind).
+        // Which exception wins is a race: an immediate ECONNREFUSED surfaces as a
+        // WebSocketException before the 500ms cancellation; a slow connect gets cancelled.
+        // Either way the pool must remain usable (no stale _ws left behind).
+        Assert.NotNull(ex);
+        Assert.True(ex is OperationCanceledException or System.Net.WebSockets.WebSocketException,
+            $"unexpected exception type: {ex.GetType()}");
         pool.Dispose();
     }
 }
