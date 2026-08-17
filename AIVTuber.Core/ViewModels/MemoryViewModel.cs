@@ -13,11 +13,14 @@ public sealed class MemoryViewModel : INotifyPropertyChanged
     private readonly object _searchLock = new();
     private CancellationTokenSource? _factSearchCancellation;
     private CancellationTokenSource? _viewerSearchCancellation;
+    private CancellationTokenSource? _pkSearchCancellation;
     private readonly MemoryQueryCoordinator _factQueries = new();
     private readonly MemoryQueryCoordinator _viewerQueries = new();
+    private readonly MemoryQueryCoordinator _pkQueries = new();
 
     public ObservableCollection<FactRowViewModel> Facts { get; } = [];
     public ObservableCollection<ViewerRowViewModel> Viewers { get; } = [];
+    public ObservableCollection<PkTurnRowViewModel> PkTurns { get; } = [];
 
     private FactRowViewModel? _selectedFact;
     public FactRowViewModel? SelectedFact
@@ -74,6 +77,34 @@ public sealed class MemoryViewModel : INotifyPropertyChanged
     public bool FactsEmpty => !FactsLoading && string.IsNullOrEmpty(FactsError) && Facts.Count == 0;
     public bool ViewersEmpty => !ViewersLoading && string.IsNullOrEmpty(ViewersError) && Viewers.Count == 0;
 
+    private string _pkSearch = string.Empty;
+    public string PkSearch
+    {
+        get => _pkSearch;
+        set
+        {
+            if (_pkSearch == value) return;
+            _pkSearch = value;
+            OnPropertyChanged();
+            SchedulePkSearch();
+        }
+    }
+
+    private bool _pkLoading;
+    public bool PkLoading
+    {
+        get => _pkLoading;
+        private set { if (_pkLoading == value) return; _pkLoading = value; OnPropertyChanged(); OnPropertyChanged(nameof(PkEmpty)); }
+    }
+    public bool PkEmpty => !PkLoading && string.IsNullOrEmpty(PkError) && PkTurns.Count == 0;
+
+    private string _pkError = string.Empty;
+    public string PkError
+    {
+        get => _pkError;
+        private set { if (_pkError == value) return; _pkError = value; OnPropertyChanged(); OnPropertyChanged(nameof(PkEmpty)); }
+    }
+
     private string _factsError = string.Empty;
     public string FactsError
     {
@@ -117,6 +148,7 @@ public sealed class MemoryViewModel : INotifyPropertyChanged
     {
         await RefreshFactsAsync();
         await RefreshViewersAsync();
+        await RefreshPkTurnsAsync();
     }
 
     public Task RefreshFactsAsync() => RefreshFactsAsync(NextFactGeneration());
@@ -195,6 +227,60 @@ public sealed class MemoryViewModel : INotifyPropertyChanged
         }
     }
 
+    public Task DeleteFactByIdAsync(string factId) => DeleteFactAsync(factId);
+    public Task DeletePkTurnByIdAsync(string turnId) => DeletePkTurnAsync(turnId);
+
+    public Task RefreshPkTurnsAsync() => RefreshPkTurnsAsync(NextPkGeneration());
+
+    private async Task RefreshPkTurnsAsync(long generation)
+    {
+        SetIfCurrentPkGeneration(generation, () => { PkLoading = true; PkError = string.Empty; });
+        try
+        {
+            var all = await _memory.GetPkTurnsAsync();
+            var query = _pkSearch.Trim();
+            var filtered = string.IsNullOrEmpty(query)
+                ? all
+                : all.Where(t =>
+                        (t.OpponentName?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)
+                        || (t.OpponentUid?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)
+                        || t.OpponentText.Contains(query, StringComparison.OrdinalIgnoreCase)
+                        || t.AssistantText.Contains(query, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+            _dispatch(() =>
+            {
+                if (!_pkQueries.IsCurrent(generation)) return;
+                PkTurns.Clear();
+                foreach (var t in filtered)
+                    PkTurns.Add(new PkTurnRowViewModel(t, DeletePkTurnAsync));
+                PkLoading = false;
+            });
+        }
+        catch (Exception ex)
+        {
+            _dispatch(() =>
+            {
+                if (!_pkQueries.IsCurrent(generation)) return;
+                PkLoading = false;
+                PkError = $"加载失败: {ex.Message}";
+            });
+        }
+    }
+
+    private async Task DeletePkTurnAsync(string turnId)
+    {
+        try
+        {
+            await _memory.DeletePkTurnAsync(turnId);
+            await RefreshPkTurnsAsync();
+        }
+        catch (Exception ex)
+        {
+            _dispatch(() => PkError = $"删除失败: {ex.Message}");
+        }
+    }
+
     private async Task DeleteFactAsync(string factId)
     {
         try
@@ -208,15 +294,73 @@ public sealed class MemoryViewModel : INotifyPropertyChanged
         }
     }
 
+    /// <summary>Snapshot for the Web memory page (facts + viewers + status).</summary>
+    public object BuildWebSnapshot()
+    {
+        return new
+        {
+            facts = Facts.Select(f => new
+            {
+                id = f.Id,
+                content = f.Content,
+                importance = f.Importance,
+                importanceStars = f.ImportanceStars,
+                subjectUid = f.SubjectUid,
+                lastAccessed = f.LastAccessed,
+                expires = f.Expires,
+            }).ToList(),
+            viewers = Viewers.Select(v => new
+            {
+                uid = v.Uid,
+                platform = v.Platform,
+                nickname = v.Nickname,
+                interactionCount = v.InteractionCount,
+                lastSeen = v.LastSeen,
+                notes = v.Notes,
+            }).ToList(),
+            pkTurns = PkTurns.Select(t => new
+            {
+                id = t.Id,
+                opponentName = t.OpponentName,
+                opponentUid = t.OpponentUid,
+                opponentText = t.OpponentText,
+                assistantText = t.AssistantText,
+                source = t.Source,
+                ts = t.Ts,
+            }).ToList(),
+            factSearch = FactSearch,
+            viewerSearch = ViewerSearch,
+            pkSearch = PkSearch,
+            factsLoading = FactsLoading,
+            viewersLoading = ViewersLoading,
+            pkLoading = PkLoading,
+            factsEmpty = FactsEmpty,
+            viewersEmpty = ViewersEmpty,
+            pkEmpty = PkEmpty,
+            factsError = FactsError,
+            viewersError = ViewersError,
+            pkError = PkError,
+            extracting = Extracting,
+            statusMessage = StatusMessage,
+        };
+    }
+
     private long NextFactGeneration() => _factQueries.Begin();
     private long NextViewerGeneration() => _viewerQueries.Begin();
+    private long NextPkGeneration() => _pkQueries.Begin();
 
     public Task ActivateTabAsync(MemoryTab tab)
     {
         CancelPendingSearches();
         _factQueries.Invalidate();
         _viewerQueries.Invalidate();
-        return tab == MemoryTab.Facts ? RefreshFactsAsync() : RefreshViewersAsync();
+        _pkQueries.Invalidate();
+        return tab switch
+        {
+            MemoryTab.Viewers => RefreshViewersAsync(),
+            MemoryTab.PkTurns => RefreshPkTurnsAsync(),
+            _ => RefreshFactsAsync(),
+        };
     }
 
     private void SetIfCurrentFactGeneration(long generation, Action action)
@@ -224,6 +368,9 @@ public sealed class MemoryViewModel : INotifyPropertyChanged
 
     private void SetIfCurrentViewerGeneration(long generation, Action action)
         => _dispatch(() => { if (_viewerQueries.IsCurrent(generation)) action(); });
+
+    private void SetIfCurrentPkGeneration(long generation, Action action)
+        => _dispatch(() => { if (_pkQueries.IsCurrent(generation)) action(); });
 
     private void ScheduleFactSearch()
     {
@@ -251,12 +398,26 @@ public sealed class MemoryViewModel : INotifyPropertyChanged
         _ = DebounceAsync(RefreshViewersAsync, generation, cancellation.Token);
     }
 
+    private void SchedulePkSearch()
+    {
+        CancellationTokenSource cancellation;
+        long generation = NextPkGeneration();
+        lock (_searchLock)
+        {
+            _pkSearchCancellation?.Cancel();
+            _pkSearchCancellation?.Dispose();
+            cancellation = _pkSearchCancellation = new CancellationTokenSource();
+        }
+        _ = DebounceAsync(RefreshPkTurnsAsync, generation, cancellation.Token);
+    }
+
     private void CancelPendingSearches()
     {
         lock (_searchLock)
         {
             _factSearchCancellation?.Cancel();
             _viewerSearchCancellation?.Cancel();
+            _pkSearchCancellation?.Cancel();
         }
     }
 
@@ -325,7 +486,33 @@ public sealed class FactRowViewModel(Fact fact, Func<string, Task> deleteCallbac
 public enum MemoryTab
 {
     Facts,
-    Viewers
+    Viewers,
+    PkTurns
+}
+
+public sealed class PkTurnRowViewModel(PkTurn turn, Func<string, Task> deleteCallback)
+{
+    private int _deleting;
+    public string Id { get; } = turn.Id;
+    public string OpponentName { get; } = string.IsNullOrWhiteSpace(turn.OpponentName) ? "—" : turn.OpponentName;
+    public string OpponentUid { get; } = turn.OpponentUid ?? "—";
+    public string OpponentText { get; } = turn.OpponentText;
+    public string AssistantText { get; } = turn.AssistantText;
+    public string Source { get; } = turn.Source;
+    public string Ts { get; } = TryFormatDate(turn.Ts);
+
+    public async Task DeleteAsync()
+    {
+        if (Interlocked.Exchange(ref _deleting, 1) != 0) return;
+        try { await deleteCallback(Id); }
+        finally { Volatile.Write(ref _deleting, 0); }
+    }
+
+    private static string TryFormatDate(string? iso)
+    {
+        if (string.IsNullOrEmpty(iso)) return "—";
+        return DateTime.TryParse(iso, out var dt) ? dt.ToLocalTime().ToString("MM-dd HH:mm") : iso;
+    }
 }
 
 public sealed class ViewerRowViewModel(Viewer viewer)

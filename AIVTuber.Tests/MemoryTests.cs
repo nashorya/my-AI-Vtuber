@@ -31,9 +31,9 @@ public class MemoryDbTests : IAsyncLifetime
         // Verify tables exist by inserting and reading
         var conn = _db.GetConnection();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('viewers','facts','sessions','conversations')";
+        cmd.CommandText = "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('viewers','facts','sessions','conversations','pk_matches','pk_turns')";
         var count = await cmd.ExecuteScalarAsync();
-        Assert.Equal(4L, count);
+        Assert.Equal(6L, count);
     }
 
     [Fact]

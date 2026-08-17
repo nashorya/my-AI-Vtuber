@@ -1,0 +1,14 @@
+<UserControl x:Class="AIVTuber.App.Views.WebConsoleView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf">
+    <Grid Background="#F3EFE6">
+        <wv2:WebView2 x:Name="Browser" DefaultBackgroundColor="#F3EFE6" />
+        <TextBlock x:Name="FallbackText"
+                   Text="正在加载…"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center"
+                   Foreground="#6D6770"
+                   FontSize="14" />
+    </Grid>
+</UserControl>

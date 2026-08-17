@@ -9,69 +9,49 @@ namespace AIVTuber.App;
 
 public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
 {
-    private readonly MonitorView _monitorView;
-    private readonly ConfigView _configView;
-    private readonly MemoryView _memoryView;
-    private readonly FirstRunView _firstRunView;
-    private bool _navigationReady;
-    private bool _showFirstRun;
+    private readonly MonitorViewModel _monitorVm;
+    private readonly ConfigViewModel _configVm;
+    private readonly MemoryViewModel _memoryVm;
 
     public MainWindow(BotRuntime runtime, ConfigManager configManager)
     {
         InitializeComponent();
 
-        _monitorView = new MonitorView();
-        _monitorView.DataContext = new MonitorViewModel(
-            runtime, action => Dispatcher.BeginInvoke(action));
-
-        _configView = new ConfigView();
-        _configView.DataContext = new ConfigViewModel(
+        _monitorVm = new MonitorViewModel(runtime, action => Dispatcher.BeginInvoke(action));
+        _configVm = new ConfigViewModel(
             runtime.CurrentConfig,
             MicrophoneCapture.ListDevices(),
             configManager.Save,
             runtime.ApplyConfigAsync,
             () => runtime.GetVtsHotkeysAsync());
+        _memoryVm = new MemoryViewModel(runtime, action => Dispatcher.BeginInvoke(action));
 
-        _memoryView = new MemoryView();
-        _memoryView.DataContext = new MemoryViewModel(
-            runtime, action => Dispatcher.BeginInvoke(action));
+        ConsoleHost.Attach(_monitorVm, _configVm, _memoryVm);
 
-        _firstRunView = new FirstRunView();
-        _firstRunView.ConfigureSectionRequested += (_, section) => ShowConfigPage(section);
-        _firstRunView.SkipRequested += (_, _) => ShowMonitorPage();
-    }
-
-    private void OnNavigationLoaded(object sender, RoutedEventArgs e)
-    {
-        var svc = new PageService();
-        svc.Register(typeof(MonitorView), _monitorView);
-        svc.Register(typeof(ConfigView), _configView);
-        svc.Register(typeof(MemoryView), _memoryView);
-        svc.Register(typeof(FirstRunView), _firstRunView);
-        RootNavigation.SetPageService(svc);
-        _navigationReady = true;
-        RootNavigation.Navigate(_showFirstRun ? typeof(FirstRunView) : typeof(MonitorView));
+        FirstRunHost.ConfigureSectionRequested += (_, section) =>
+        {
+            FirstRunHost.Visibility = Visibility.Collapsed;
+            ConsoleHost.Visibility = Visibility.Visible;
+            _ = section;
+        };
+        FirstRunHost.SkipRequested += (_, _) => ShowConsolePage();
     }
 
     public void ShowFirstRunPage()
     {
-        _showFirstRun = true;
-        if (_navigationReady) RootNavigation.Navigate(typeof(FirstRunView));
+        ConsoleHost.Visibility = Visibility.Collapsed;
+        FirstRunHost.Visibility = Visibility.Visible;
     }
 
     public void ShowConfigPage(ConfigSection section = ConfigSection.QuickSetup)
     {
-        _showFirstRun = false;
-        _configView.ShowSection(section);
-        if (_navigationReady) RootNavigation.Navigate(typeof(ConfigView));
+        ShowConsolePage();
+        _ = section;
     }
 
-    private void ShowMonitorPage()
+    private void ShowConsolePage()
     {
-        _showFirstRun = false;
-        if (_navigationReady) RootNavigation.Navigate(typeof(MonitorView));
+        FirstRunHost.Visibility = Visibility.Collapsed;
+        ConsoleHost.Visibility = Visibility.Visible;
     }
-
-    private void OnThemeToggle(object sender, RoutedEventArgs e)
-        => ((App)Application.Current).ToggleTheme();
 }

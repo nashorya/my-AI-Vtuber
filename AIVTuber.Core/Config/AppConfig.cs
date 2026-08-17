@@ -14,8 +14,34 @@ public sealed class AppConfig
     public MemoryConfig Memory { get; set; } = new();
     public BilibiliConfig Bilibili { get; set; } = new();
     public InputTemplateConfig Input { get; set; } = new();
+    /// <summary>Normal vs PK interaction (wake-keyword gate).</summary>
+    public InteractionConfig Interaction { get; set; } = new();
     /// <summary>In-process PNG avatar + backend selection (vts / pixel / both).</summary>
     public AvatarRuntimeConfig Avatar { get; set; } = new();
+}
+
+/// <summary>
+/// Live interaction policy. In <c>pk</c> mode the bot stays silent until a wake
+/// keyword appears in mic / loopback / danmaku / PK-announce text (or within the hold window).
+/// </summary>
+public sealed class InteractionConfig
+{
+    /// <summary>"normal" replies to every turn; "pk" requires wake keywords.</summary>
+    public string Mode { get; set; } = "normal";
+
+    /// <summary>Case-insensitive substrings that unlock speech in PK mode.</summary>
+    public List<string> WakeKeywords { get; set; } = [];
+
+    /// <summary>
+    /// After a wake hit, allow keyword-free follow-ups for this many seconds.
+    /// 0 means every turn must contain a keyword.
+    /// </summary>
+    public double WakeHoldSec { get; set; } = 45;
+
+    public bool IsPkMode =>
+        string.Equals(Mode, "pk", StringComparison.OrdinalIgnoreCase);
+
+    public void SetPkMode(bool pk) => Mode = pk ? "pk" : "normal";
 }
 
 /// <summary>

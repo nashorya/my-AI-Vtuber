@@ -26,6 +26,7 @@ config.json
 
 # External sub-repos (no commits, causes submodule error)
 ZerolanLiveRobot/
+AI-Vtuber/
 
 # Python cache
 __pycache__/

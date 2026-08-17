@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AIVTuber</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <nav class="rail" aria-label="主导航">
+      <button type="button" class="active" data-page="monitor" title="监控">监</button>
+      <button type="button" data-page="settings" title="设置">设</button>
+      <button type="button" data-page="memory" title="记忆">忆</button>
+      <div class="spacer"></div>
+    </nav>
+
+    <div class="main">
+      <!-- Monitor -->
+      <section class="page active" id="page-monitor">
+        <div class="mon-head">
+          <div class="brand">AIV<span>Tuber</span></div>
+          <div class="state on" id="stateLabel">空闲</div>
+          <div class="links">
+            <span id="pillVts">VTS 未连接</span>
+            <span id="pillObs">OBS 未连接</span>
+            <span id="pillDanmaku">弹幕 未连接</span>
+            <span id="pillAsr">ASR 未连接</span>
+            <span id="modeLabel">模式 <b>正常</b></span>
+          </div>
+        </div>
+        <div class="mon-actions">
+          <button type="button" class="btn danger" id="btnStop" disabled>截停</button>
+          <button type="button" class="btn" id="btnMic">麦克风</button>
+          <button type="button" class="btn" id="btnPk">正常模式</button>
+          <button type="button" class="btn primary" id="btnNewPk">新 PK</button>
+          <button type="button" class="btn ghost" id="btnRestartAsr">重启 ASR</button>
+        </div>
+        <div class="mon-body">
+          <div class="box">
+            <h3>对话</h3>
+            <div class="lane"><label>用户 / 麦</label><p id="userText">—</p></div>
+            <div class="lane reply"><label>助手</label><p id="assistantText">—</p></div>
+            <div class="lane"><label>对面内录</label><p id="opponentText">—</p></div>
+            <div class="meta-row">
+              <span>情绪 <strong id="emotion">—</strong></span>
+              <span>用户情绪 <strong id="userEmotion">—</strong></span>
+              <span id="danmakuCount"></span>
+            </div>
+            <p class="error" id="lastError" hidden></p>
+          </div>
+          <div class="box">
+            <h3>电平 / 延迟</h3>
+            <div class="meter">
+              <label><span>麦克风</span><span id="micPct">0%</span></label>
+              <div class="track"><i id="micBar"></i></div>
+            </div>
+            <div class="meter">
+              <label><span>内录</span><span id="loopPct">0%</span></label>
+              <div class="track"><i id="loopBar" class="pk"></i></div>
+            </div>
+            <div class="latency">
+              <div>ASR<strong id="latAsr">—</strong></div>
+              <div>LLM<strong id="latLlm">—</strong></div>
+              <div>TTS<strong id="latTts">—</strong></div>
+            </div>
+          </div>
+          <div class="box events">
+            <h3>事件</h3>
+            <div id="eventList"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Settings -->
+      <section class="page" id="page-settings">
+        <div class="set-head">
+          <h1>Set<span>tings</span></h1>
+        </div>
+        <div class="set-scroll" id="setScroll">
+          <details class="acc" open>
+            <summary><span class="chev">›</span>快速设置<span class="sub">音频 / 内录 / 虚拟麦</span></summary>
+            <div class="body">
+              <div class="field">
+                <label>输入设备</label>
+                <select id="audio.inputDeviceIndex" data-path="audio.inputDeviceIndex" data-type="int"></select>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="audio.enableLoopbackListen" data-path="audio.enableLoopbackListen" data-type="bool" />
+                同时监听 PC 声音
+              </label>
+              <div class="field">
+                <label>内录进程</label>
+                <select id="audio.loopbackProcessName" data-path="audio.loopbackProcessName"></select>
+              </div>
+              <button type="button" class="btn ghost sm" id="btnRefreshLoopback">刷新进程列表</button>
+              <label class="switch">
+                <input type="checkbox" id="audio.enableVirtualMic" data-path="audio.enableVirtualMic" data-type="bool" />
+                输出到虚拟麦克风
+              </label>
+              <div class="field">
+                <label>虚拟麦克风设备</label>
+                <select id="audio.virtualMicDeviceName" data-path="audio.virtualMicDeviceName"></select>
+              </div>
+              <button type="button" class="btn ghost sm" id="btnRefreshOutputs">刷新输出设备</button>
+            </div>
+          </details>
+
+          <details class="acc">
+            <summary><span class="chev">›</span>AI 引擎<span class="sub">LLM / ASR</span></summary>
+            <div class="body">
+              <div class="field">
+                <label>LLM Base URL</label>
+                <input id="llm.baseUrl" data-path="llm.baseUrl" type="text" />
+              </div>
+              <div class="row2">
+                <div class="field">
+                  <label>模型</label>
+                  <input id="llm.model" data-path="llm.model" type="text" />
+                </div>
+                <div class="field">
+                  <label>API Key <span class="hint">留空不修改</span></label>
+                  <input id="llm.apiKey" data-path="llm.apiKey" type="password" placeholder="留空不修改" autocomplete="off" />
+                </div>
+              </div>
+              <div class="field">
+                <label>人设</label>
+                <textarea id="llm.systemPrompt" data-path="llm.systemPrompt" rows="3"></textarea>
+              </div>
+              <div class="row2">
+                <div class="field">
+                  <label>ASR 提供商</label>
+                  <select id="asr.provider" data-path="asr.provider">
+                    <option value="aliyun">aliyun</option>
+                    <option value="local">local</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>ASR API Key <span class="hint">留空不修改</span></label>
+                  <input id="asr.apiKey" data-path="asr.apiKey" type="password" placeholder="留空不修改" autocomplete="off" />
+                </div>
+              </div>
+              <div class="field">
+                <label>ASR 模型</label>
+                <input id="asr.model" data-path="asr.model" type="text" />
+              </div>
+              <div class="field">
+                <label>本地 ASR 服务地址</label>
+                <input id="asr.localAsrUrl" data-path="asr.localAsrUrl" type="text" />
+              </div>
+              <div class="field">
+                <label>本地 ASR Python 路径</label>
+                <input id="asr.pythonPath" data-path="asr.pythonPath" type="text" />
+              </div>
+            </div>
+          </details>
+
+          <details class="acc">
+            <summary><span class="chev">›</span>语音<span class="sub">TTS</span></summary>
+            <div class="body">
+              <div class="row2">
+                <div class="field">
+                  <label>提供商</label>
+                  <select id="tts.provider" data-path="tts.provider">
+                    <option value="fish-audio">fish-audio</option>
+                    <option value="minimax">minimax</option>
+                    <option value="aliyun">aliyun</option>
+                    <option value="dots">dots</option>
+                    <option value="mimo">mimo</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>API Key <span class="hint">留空不修改</span></label>
+                  <input id="tts.apiKey" data-path="tts.apiKey" type="password" placeholder="留空不修改" autocomplete="off" />
+                </div>
+              </div>
+              <div class="row2">
+                <div class="field">
+                  <label>Voice ID</label>
+                  <input id="tts.voiceId" data-path="tts.voiceId" type="text" />
+                </div>
+                <div class="field">
+                  <label>模型</label>
+                  <input id="tts.model" data-path="tts.model" type="text" />
+                </div>
+              </div>
+              <div class="row2">
+                <div class="field">
+                  <label>MiniMax Group ID</label>
+                  <input id="tts.groupId" data-path="tts.groupId" type="text" />
+                </div>
+                <div class="field">
+                  <label>语速</label>
+                  <input id="tts.speed" data-path="tts.speed" data-type="float" type="number" step="0.1" min="0.5" max="2" />
+                </div>
+              </div>
+              <div class="row2">
+                <div class="field">
+                  <label>采样率</label>
+                  <input id="tts.sampleRate" data-path="tts.sampleRate" data-type="int" type="number" />
+                </div>
+                <div class="field">
+                  <label>dots.tts 地址</label>
+                  <input id="tts.baseUrl" data-path="tts.baseUrl" type="text" />
+                </div>
+              </div>
+              <div class="row2">
+                <div class="field">
+                  <label>语言</label>
+                  <input id="tts.language" data-path="tts.language" type="text" />
+                </div>
+                <div class="field">
+                  <label>种子</label>
+                  <input id="tts.seed" data-path="tts.seed" data-type="int" type="number" />
+                </div>
+              </div>
+              <div class="row2">
+                <div class="field">
+                  <label>采样步数</label>
+                  <input id="tts.numSteps" data-path="tts.numSteps" data-type="int" type="number" />
+                </div>
+                <div class="field">
+                  <label>引导强度</label>
+                  <input id="tts.guidanceScale" data-path="tts.guidanceScale" data-type="float" type="number" step="0.1" />
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <details class="acc">
+            <summary><span class="chev">›</span>直播集成<span class="sub">OBS / B 站</span></summary>
+            <div class="body">
+              <label class="switch">
+                <input type="checkbox" id="obs.enable" data-path="obs.enable" data-type="bool" />
+                启用 OBS 字幕
+              </label>
+              <div class="row2">
+                <div class="field">
+                  <label>主机</label>
+                  <input id="obs.host" data-path="obs.host" type="text" />
+                </div>
+                <div class="field">
+                  <label>端口</label>
+                  <input id="obs.port" data-path="obs.port" data-type="int" type="number" />
+                </div>
+              </div>
+              <div class="field">
+                <label>密码 <span class="hint">留空不修改</span></label>
+                <input id="obs.password" data-path="obs.password" type="password" placeholder="留空不修改" autocomplete="off" />
+              </div>
+              <div class="row2">
+                <div class="field">
+                  <label>助手文本组件</label>
+                  <input id="obs.assistantTextComponent" data-path="obs.assistantTextComponent" type="text" />
+                </div>
+                <div class="field">
+                  <label>用户文本组件</label>
+                  <input id="obs.userTextComponent" data-path="obs.userTextComponent" type="text" />
+                </div>
+              </div>
+              <div class="field">
+                <label>打字间隔（毫秒）</label>
+                <input id="obs.typewriterIntervalMs" data-path="obs.typewriterIntervalMs" data-type="int" type="number" />
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="bilibili.enable" data-path="bilibili.enable" data-type="bool" />
+                启用 B 站弹幕
+              </label>
+              <div class="row3">
+                <div class="field">
+                  <label>房间号</label>
+                  <input id="bilibili.roomId" data-path="bilibili.roomId" data-type="int" type="number" />
+                </div>
+                <div class="field">
+                  <label>推送端口</label>
+                  <input id="bilibili.pushPort" data-path="bilibili.pushPort" data-type="int" type="number" />
+                </div>
+                <div class="field">
+                  <label>选取间隔（秒）</label>
+                  <input id="bilibili.selectionIntervalSec" data-path="bilibili.selectionIntervalSec" data-type="int" type="number" />
+                </div>
+              </div>
+              <div class="field">
+                <label>SESSDATA <span class="hint">留空不修改</span></label>
+                <input id="bilibili.sessdata" data-path="bilibili.sessdata" type="password" placeholder="留空不修改" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label>bili_jct <span class="hint">留空不修改</span></label>
+                <input id="bilibili.biliJct" data-path="bilibili.biliJct" type="password" placeholder="留空不修改" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label>buvid3 <span class="hint">留空不修改</span></label>
+                <input id="bilibili.buvid3" data-path="bilibili.buvid3" type="password" placeholder="留空不修改" autocomplete="off" />
+              </div>
+              <div class="field">
+                <label>B 站 Python 路径</label>
+                <input id="bilibili.pythonPath" data-path="bilibili.pythonPath" type="text" />
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="bilibili.pkNotice" data-path="bilibili.pkNotice" data-type="bool" />
+                PK 时播报对手主播
+              </label>
+            </div>
+          </details>
+
+          <details class="acc">
+            <summary><span class="chev">›</span>角色与动作<span class="sub">VTS 映射</span></summary>
+            <div class="body">
+              <div class="row3">
+                <div class="field">
+                  <label>主机</label>
+                  <input id="vts.host" data-path="vts.host" type="text" />
+                </div>
+                <div class="field">
+                  <label>端口</label>
+                  <input id="vts.port" data-path="vts.port" data-type="int" type="number" />
+                </div>
+                <div class="field">
+                  <label>嘴部幅度</label>
+                  <input id="vts.mouthScale" data-path="vts.mouthScale" data-type="float" type="number" step="0.1" />
+                </div>
+              </div>
+              <div class="map-actions">
+                <button type="button" class="btn ghost sm" id="btnQueryHotkeys">查询现有热键</button>
+              </div>
+              <div class="field"><label>情绪映射</label></div>
+              <div class="map-list" id="emotionList"></div>
+              <div class="map-actions">
+                <button type="button" class="btn ghost sm" id="btnAddEmotion">添加情绪映射</button>
+              </div>
+              <div class="field"><label>动作映射</label></div>
+              <div class="map-actions">
+                <button type="button" class="btn ghost sm" id="btnImportAnimations">导入动画热键</button>
+                <button type="button" class="btn ghost sm" id="btnAddAction">添加动作映射</button>
+              </div>
+              <div class="map-list" id="actionList"></div>
+            </div>
+          </details>
+
+          <details class="acc">
+            <summary><span class="chev">›</span>高级 / PK<span class="sub">唤醒 · VAD · 模板</span></summary>
+            <div class="body">
+              <label class="switch">
+                <input type="checkbox" id="interaction.isPkMode" data-path="interaction.isPkMode" data-type="bool" />
+                PK 模式
+              </label>
+              <div class="field">
+                <label>唤醒关键词</label>
+                <input id="interaction.wakeKeywords" data-path="interaction.wakeKeywords" type="text" />
+              </div>
+              <div class="field">
+                <label>保持秒数</label>
+                <input id="interaction.wakeHoldSec" data-path="interaction.wakeHoldSec" data-type="float" type="number" step="1" />
+              </div>
+              <div class="row2">
+                <div class="field">
+                  <label>VAD 激进度</label>
+                  <input id="audio.vadAggressiveness" data-path="audio.vadAggressiveness" data-type="int" type="number" min="0" max="3" />
+                </div>
+                <div class="field">
+                  <label>最大历史 Token</label>
+                  <input id="llm.maxHistoryTokens" data-path="llm.maxHistoryTokens" data-type="int" type="number" />
+                </div>
+              </div>
+              <div class="row2">
+                <div class="field">
+                  <label>前置静音（毫秒）</label>
+                  <input id="audio.preSpeechPaddingMs" data-path="audio.preSpeechPaddingMs" data-type="int" type="number" />
+                </div>
+                <div class="field">
+                  <label>后置静音（毫秒）</label>
+                  <input id="audio.postSpeechSilenceMs" data-path="audio.postSpeechSilenceMs" data-type="int" type="number" />
+                </div>
+              </div>
+              <div class="field">
+                <label>记忆数据库</label>
+                <input id="memory.databasePath" data-path="memory.databasePath" type="text" />
+              </div>
+              <div class="field">
+                <label>嵌入模型路径</label>
+                <input id="memory.embeddingModelPath" data-path="memory.embeddingModelPath" type="text" />
+              </div>
+              <div class="field">
+                <label>提取轮数</label>
+                <input id="memory.extractEveryNTurns" data-path="memory.extractEveryNTurns" data-type="int" type="number" />
+              </div>
+              <div class="field">
+                <label>麦克风模板</label>
+                <input id="input.micTemplate" data-path="input.micTemplate" type="text" />
+              </div>
+              <div class="field">
+                <label>内录模板</label>
+                <input id="input.loopbackTemplate" data-path="input.loopbackTemplate" type="text" />
+              </div>
+              <div class="field">
+                <label>弹幕模板</label>
+                <input id="input.danmakuTemplate" data-path="input.danmakuTemplate" type="text" />
+              </div>
+              <div class="field">
+                <label>PK 模板</label>
+                <input id="input.pkTemplate" data-path="input.pkTemplate" type="text" />
+              </div>
+              <div class="field">
+                <label>PK 手动模板</label>
+                <input id="input.pkManualTemplate" data-path="input.pkManualTemplate" type="text" />
+              </div>
+            </div>
+          </details>
+        </div>
+        <div class="set-dock">
+          <button type="button" class="btn primary" id="btnSave">保存并应用</button>
+          <button type="button" class="btn ghost" id="btnDiscard">放弃</button>
+          <span class="status" id="saveStatus"></span>
+        </div>
+      </section>
+
+      <!-- Memory -->
+      <section class="page" id="page-memory">
+        <div class="mem-head">
+          <div class="brand">Mem<span>ory</span></div>
+          <div class="mem-actions">
+            <button type="button" class="btn ghost" id="btnMemRefresh">刷新</button>
+            <button type="button" class="btn primary" id="btnMemExtract">提取</button>
+          </div>
+        </div>
+        <div class="mem-tabs" role="tablist">
+          <button type="button" class="active" data-mem-tab="pk">对手</button>
+          <button type="button" data-mem-tab="facts">使用者</button>
+          <button type="button" data-mem-tab="viewers">观众</button>
+        </div>
+        <div class="mem-body">
+          <div class="mem-pane active" id="mem-pk">
+            <input id="pkSearch" type="search" placeholder="搜索对手名、UID 或说过的话" />
+            <div class="mem-table-wrap">
+              <table class="mem-table">
+                <thead>
+                  <tr>
+                    <th>对手</th>
+                    <th>对面说</th>
+                    <th>我说</th>
+                    <th>时间</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="pkRows"></tbody>
+              </table>
+              <p class="mem-empty" id="pkEmpty" hidden>还没有对手对话</p>
+              <p class="mem-error" id="pkError" hidden></p>
+              <p class="mem-loading" id="pkLoading" hidden>加载中…</p>
+            </div>
+          </div>
+          <div class="mem-pane" id="mem-facts">
+            <input id="factSearch" type="search" placeholder="搜索使用者记忆或 UID" />
+            <div class="mem-table-wrap">
+              <table class="mem-table">
+                <thead>
+                  <tr>
+                    <th>记忆</th>
+                    <th>重要度</th>
+                    <th>UID</th>
+                    <th>访问</th>
+                    <th>有效期</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="factRows"></tbody>
+              </table>
+              <p class="mem-empty" id="factsEmpty" hidden>还没有使用者记忆</p>
+              <p class="mem-error" id="factsError" hidden></p>
+              <p class="mem-loading" id="factsLoading" hidden>加载中…</p>
+            </div>
+          </div>
+          <div class="mem-pane" id="mem-viewers">
+            <input id="viewerSearch" type="search" placeholder="搜索昵称、UID 或平台" />
+            <div class="mem-table-wrap">
+              <table class="mem-table">
+                <thead>
+                  <tr>
+                    <th>昵称</th>
+                    <th>UID</th>
+                    <th>互动</th>
+                    <th>平台</th>
+                    <th>最后来访</th>
+                  </tr>
+                </thead>
+                <tbody id="viewerRows"></tbody>
+              </table>
+              <p class="mem-empty" id="viewersEmpty" hidden>没有匹配的观众</p>
+              <p class="mem-error" id="viewersError" hidden></p>
+              <p class="mem-loading" id="viewersLoading" hidden>加载中…</p>
+            </div>
+          </div>
+        </div>
+        <div class="mem-status" id="memStatus"></div>
+      </section>
+    </div>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

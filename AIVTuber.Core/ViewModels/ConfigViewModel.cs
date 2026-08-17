@@ -336,6 +336,34 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
     public string ValidationMessage { get => _validationMessage; private set => SetField(ref _validationMessage, value); }
     public bool HasValidationErrors => !string.IsNullOrEmpty(ValidationMessage);
 
+    /// <summary>Comma/newline-separated wake keywords for PK mode (synced into Working.Interaction).</summary>
+    public string WakeKeywordsText
+    {
+        get => string.Join(", ", Working.Interaction.WakeKeywords);
+        set
+        {
+            Working.Interaction.WakeKeywords = SplitWakeKeywords(value);
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(WakeKeywordsText)));
+        }
+    }
+
+    public bool InteractionIsPkMode
+    {
+        get => Working.Interaction.IsPkMode;
+        set
+        {
+            Working.Interaction.SetPkMode(value);
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InteractionIsPkMode)));
+        }
+    }
+
+    private static List<string> SplitWakeKeywords(string? value) =>
+        (value ?? "")
+            .Split([',', '，', ';', '；', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(s => s.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
     /// <summary>Whether the draft differs from the last loaded or successfully persisted configuration.</summary>
     public bool IsDirty => !ConfigsEqual(BuildCandidate(), _original);
 
@@ -385,6 +413,7 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
         SaveState = ConfigSaveState.Saving;
         try
         {
+            FlushPendingSecrets();
             SyncEmotionMap();
             SyncActionMap();
             var persistedCandidate = ConfigManager.Clone(Working);
@@ -419,10 +448,14 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
         Working = ConfigManager.Clone(_original);
         ReplaceRows(EmotionRows, Working.Vts.EmotionMap.Select(kv => new EmotionMapRow { Emotion = kv.Key, HotkeyId = kv.Value }));
         ReplaceRows(ActionRows, Working.Vts.ActionMap.Select(kv => new ActionMapRow { Action = kv.Key, HotkeyId = kv.Value }));
+        ClearPendingSecrets();
         ValidationMessage = "";
         SaveState = ConfigSaveState.Unchanged;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Working)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(WakeKeywordsText)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InteractionIsPkMode)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsDirty)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SaveStateText)));
     }
 
     /// <summary>Called by the view after a draft-bound control changes so the save bar stays current.</summary>
@@ -430,6 +463,353 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
     {
         if (!IsSaving && IsDirty) SaveState = ConfigSaveState.Draft;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsDirty)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SaveStateText)));
+    }
+
+    // ── WebView bridge ───────────────────────────────────────────────────────
+
+    private readonly Dictionary<string, string> _pendingSecrets = new(StringComparer.Ordinal);
+
+    /// <summary>Public draft for the Web settings UI (secrets never echoed; only *Set flags).</summary>
+    public object BuildWebDraft()
+    {
+        return new
+        {
+            audio = new
+            {
+                inputDeviceIndex = Working.Audio.InputDeviceIndex,
+                enableLoopbackListen = Working.Audio.EnableLoopbackListen,
+                loopbackProcessName = Working.Audio.LoopbackProcessName ?? "",
+                enableVirtualMic = Working.Audio.EnableVirtualMic,
+                virtualMicDeviceName = Working.Audio.VirtualMicDeviceName ?? "",
+                vadAggressiveness = Working.Audio.VadAggressiveness,
+                preSpeechPaddingMs = Working.Audio.PreSpeechPaddingMs,
+                postSpeechSilenceMs = Working.Audio.PostSpeechSilenceMs,
+            },
+            llm = new
+            {
+                baseUrl = Working.Llm.BaseUrl,
+                model = Working.Llm.Model,
+                systemPrompt = Working.Llm.SystemPrompt,
+                maxHistoryTokens = Working.Llm.MaxHistoryTokens,
+                apiKeySet = !string.IsNullOrEmpty(Working.Llm.ApiKey),
+            },
+            asr = new
+            {
+                provider = Working.Asr.Provider,
+                model = Working.Asr.Model,
+                localAsrUrl = Working.Asr.LocalAsrUrl,
+                pythonPath = Working.Asr.PythonPath,
+                apiKeySet = !string.IsNullOrEmpty(Working.Asr.ApiKey),
+            },
+            tts = new
+            {
+                provider = Working.Tts.Provider,
+                voiceId = Working.Tts.VoiceId,
+                model = Working.Tts.Model,
+                groupId = Working.Tts.GroupId,
+                speed = Working.Tts.Speed,
+                sampleRate = Working.Tts.SampleRate,
+                baseUrl = Working.Tts.BaseUrl,
+                language = Working.Tts.Language,
+                seed = Working.Tts.Seed,
+                numSteps = Working.Tts.NumSteps,
+                guidanceScale = Working.Tts.GuidanceScale,
+                apiKeySet = !string.IsNullOrEmpty(Working.Tts.ApiKey),
+            },
+            obs = new
+            {
+                enable = Working.Obs.Enable,
+                host = Working.Obs.Host,
+                port = Working.Obs.Port,
+                assistantTextComponent = Working.Obs.AssistantTextComponent,
+                userTextComponent = Working.Obs.UserTextComponent,
+                typewriterIntervalMs = Working.Obs.TypewriterIntervalMs,
+                passwordSet = !string.IsNullOrEmpty(Working.Obs.Password),
+            },
+            bilibili = new
+            {
+                enable = Working.Bilibili.Enable,
+                roomId = Working.Bilibili.RoomId,
+                pushPort = Working.Bilibili.PushPort,
+                selectionIntervalSec = Working.Bilibili.SelectionIntervalSec,
+                pythonPath = Working.Bilibili.PythonPath,
+                pkNotice = Working.Bilibili.PkNotice,
+                sessdataSet = !string.IsNullOrEmpty(Working.Bilibili.Sessdata),
+                biliJctSet = !string.IsNullOrEmpty(Working.Bilibili.BiliJct),
+                buvid3Set = !string.IsNullOrEmpty(Working.Bilibili.Buvid3),
+            },
+            vts = new
+            {
+                host = Working.Vts.Host,
+                port = Working.Vts.Port,
+                mouthScale = Working.Vts.MouthScale,
+            },
+            input = new
+            {
+                micTemplate = Working.Input.MicTemplate,
+                loopbackTemplate = Working.Input.LoopbackTemplate,
+                danmakuTemplate = Working.Input.DanmakuTemplate,
+                pkTemplate = Working.Input.PkTemplate,
+                pkManualTemplate = Working.Input.PkManualTemplate,
+            },
+            memory = new
+            {
+                databasePath = Working.Memory.DatabasePath,
+                embeddingModelPath = Working.Memory.EmbeddingModelPath,
+                extractEveryNTurns = Working.Memory.ExtractEveryNTurns,
+            },
+            interaction = new
+            {
+                isPkMode = Working.Interaction.IsPkMode,
+                wakeKeywords = Working.Interaction.WakeKeywords.ToList(),
+                wakeHoldSec = Working.Interaction.WakeHoldSec,
+            },
+            emotionRows = EmotionRows.Select(r => new { emotion = r.Emotion, hotkeyId = r.HotkeyId }).ToList(),
+            actionRows = ActionRows.Select(r => new { action = r.Action, hotkeyId = r.HotkeyId }).ToList(),
+            inputDevices = InputDevices.Select((name, i) => new { index = i, name }).ToList(),
+            loopbackSources = LoopbackSources.Select(s => new { displayName = s.DisplayName, processName = s.ProcessName }).ToList(),
+            outputDevices = OutputDevices.ToList(),
+            saveStateText = SaveStateText,
+            isDirty = IsDirty,
+            isSaving = IsSaving,
+            status = Status,
+            validationMessage = ValidationMessage,
+        };
+    }
+
+    /// <summary>Merge a partial patch from the Web UI into <see cref="Working"/>.</summary>
+    public void ApplyWebPatch(JsonElement data)
+    {
+        if (data.ValueKind != JsonValueKind.Object) return;
+        ApplyObjectPatch(data);
+        NotifyDraftChanged();
+    }
+
+    public void SetPendingSecret(string key, string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+            _pendingSecrets.Remove(key);
+        else
+            _pendingSecrets[key] = value;
+        NotifyDraftChanged();
+    }
+
+    public void ClearPendingSecrets() => _pendingSecrets.Clear();
+
+    private void FlushPendingSecrets()
+    {
+        if (_pendingSecrets.TryGetValue("llmApiKey", out var llm)) Working.Llm.ApiKey = llm;
+        if (_pendingSecrets.TryGetValue("asrApiKey", out var asr)) Working.Asr.ApiKey = asr;
+        if (_pendingSecrets.TryGetValue("ttsApiKey", out var tts)) Working.Tts.ApiKey = tts;
+        if (_pendingSecrets.TryGetValue("obsPassword", out var obs)) Working.Obs.Password = obs;
+        if (_pendingSecrets.TryGetValue("sessdata", out var sd)) Working.Bilibili.Sessdata = sd;
+        if (_pendingSecrets.TryGetValue("biliJct", out var jct)) Working.Bilibili.BiliJct = jct;
+        if (_pendingSecrets.TryGetValue("buvid3", out var bv)) Working.Bilibili.Buvid3 = bv;
+        _pendingSecrets.Clear();
+    }
+
+    private void ApplyObjectPatch(JsonElement data)
+    {
+        if (data.TryGetProperty("audio", out var audio) && audio.ValueKind == JsonValueKind.Object)
+        {
+            if (TryBool(audio, "enableLoopbackListen", out var elb)) Working.Audio.EnableLoopbackListen = elb;
+            if (TryBool(audio, "enableVirtualMic", out var evm)) Working.Audio.EnableVirtualMic = evm;
+            if (TryInt(audio, "inputDeviceIndex", out var idx)) Working.Audio.InputDeviceIndex = idx;
+            if (TryInt(audio, "vadAggressiveness", out var vad)) Working.Audio.VadAggressiveness = vad;
+            if (TryInt(audio, "preSpeechPaddingMs", out var pre)) Working.Audio.PreSpeechPaddingMs = pre;
+            if (TryInt(audio, "postSpeechSilenceMs", out var post)) Working.Audio.PostSpeechSilenceMs = post;
+            if (TryString(audio, "loopbackProcessName", out var lpn))
+            {
+                Working.Audio.LoopbackProcessName = lpn;
+                RestoreSelection();
+            }
+            if (TryString(audio, "virtualMicDeviceName", out var vmd))
+            {
+                Working.Audio.VirtualMicDeviceName = vmd;
+                SelectedOutputDevice = vmd;
+            }
+        }
+
+        if (data.TryGetProperty("llm", out var llm) && llm.ValueKind == JsonValueKind.Object)
+        {
+            if (TryString(llm, "baseUrl", out var bu)) Working.Llm.BaseUrl = bu;
+            if (TryString(llm, "model", out var m)) Working.Llm.Model = m;
+            if (TryString(llm, "systemPrompt", out var sp)) Working.Llm.SystemPrompt = sp;
+            if (TryInt(llm, "maxHistoryTokens", out var mh)) Working.Llm.MaxHistoryTokens = mh;
+            if (TryString(llm, "apiKey", out var key) && key.Length > 0) SetPendingSecret("llmApiKey", key);
+        }
+
+        if (data.TryGetProperty("asr", out var asr) && asr.ValueKind == JsonValueKind.Object)
+        {
+            if (TryString(asr, "provider", out var p)) Working.Asr.Provider = p;
+            if (TryString(asr, "model", out var m)) Working.Asr.Model = m;
+            if (TryString(asr, "localAsrUrl", out var u)) Working.Asr.LocalAsrUrl = u;
+            if (TryString(asr, "pythonPath", out var py)) Working.Asr.PythonPath = py;
+            if (TryString(asr, "apiKey", out var key) && key.Length > 0) SetPendingSecret("asrApiKey", key);
+        }
+
+        if (data.TryGetProperty("tts", out var tts) && tts.ValueKind == JsonValueKind.Object)
+        {
+            if (TryString(tts, "provider", out var p)) Working.Tts.Provider = p;
+            if (TryString(tts, "voiceId", out var v)) Working.Tts.VoiceId = v;
+            if (TryString(tts, "model", out var m)) Working.Tts.Model = m;
+            if (TryString(tts, "groupId", out var g)) Working.Tts.GroupId = g;
+            if (TryDouble(tts, "speed", out var sp)) Working.Tts.Speed = sp;
+            if (TryInt(tts, "sampleRate", out var sr)) Working.Tts.SampleRate = sr;
+            if (TryString(tts, "baseUrl", out var bu)) Working.Tts.BaseUrl = bu;
+            if (TryString(tts, "language", out var lang)) Working.Tts.Language = lang;
+            if (TryString(tts, "seed", out var seedStr) && int.TryParse(seedStr, out var seedInt))
+                Working.Tts.Seed = seedInt;
+            else if (TryInt(tts, "seed", out var seed)) Working.Tts.Seed = seed;
+            if (TryInt(tts, "numSteps", out var ns)) Working.Tts.NumSteps = ns;
+            if (TryDouble(tts, "guidanceScale", out var gs)) Working.Tts.GuidanceScale = gs;
+            if (TryString(tts, "apiKey", out var key) && key.Length > 0) SetPendingSecret("ttsApiKey", key);
+        }
+
+        if (data.TryGetProperty("obs", out var obs) && obs.ValueKind == JsonValueKind.Object)
+        {
+            if (TryBool(obs, "enable", out var en)) Working.Obs.Enable = en;
+            if (TryString(obs, "host", out var h)) Working.Obs.Host = h;
+            if (TryInt(obs, "port", out var port)) Working.Obs.Port = port;
+            if (TryString(obs, "assistantTextComponent", out var a)) Working.Obs.AssistantTextComponent = a;
+            if (TryString(obs, "userTextComponent", out var u)) Working.Obs.UserTextComponent = u;
+            if (TryInt(obs, "typewriterIntervalMs", out var tw)) Working.Obs.TypewriterIntervalMs = tw;
+            if (TryString(obs, "password", out var pw) && pw.Length > 0) SetPendingSecret("obsPassword", pw);
+        }
+
+        if (data.TryGetProperty("bilibili", out var bili) && bili.ValueKind == JsonValueKind.Object)
+        {
+            if (TryBool(bili, "enable", out var en)) Working.Bilibili.Enable = en;
+            if (TryInt(bili, "roomId", out var room)) Working.Bilibili.RoomId = room;
+            if (TryInt(bili, "pushPort", out var pp)) Working.Bilibili.PushPort = pp;
+            if (TryInt(bili, "selectionIntervalSec", out var si)) Working.Bilibili.SelectionIntervalSec = si;
+            if (TryString(bili, "pythonPath", out var py)) Working.Bilibili.PythonPath = py;
+            if (TryBool(bili, "pkNotice", out var pn)) Working.Bilibili.PkNotice = pn;
+            if (TryString(bili, "sessdata", out var sd) && sd.Length > 0) SetPendingSecret("sessdata", sd);
+            if (TryString(bili, "biliJct", out var jct) && jct.Length > 0) SetPendingSecret("biliJct", jct);
+            if (TryString(bili, "buvid3", out var bv) && bv.Length > 0) SetPendingSecret("buvid3", bv);
+        }
+
+        if (data.TryGetProperty("vts", out var vts) && vts.ValueKind == JsonValueKind.Object)
+        {
+            if (TryString(vts, "host", out var h)) Working.Vts.Host = h;
+            if (TryInt(vts, "port", out var port)) Working.Vts.Port = port;
+            if (TryDouble(vts, "mouthScale", out var ms)) Working.Vts.MouthScale = (float)ms;
+            if (vts.TryGetProperty("emotionMap", out var em) && em.ValueKind == JsonValueKind.Object)
+                ApplyMapDict(EmotionRows, em, (e, id) => new EmotionMapRow { Emotion = e, HotkeyId = id });
+            if (vts.TryGetProperty("actionMap", out var am) && am.ValueKind == JsonValueKind.Object)
+                ApplyMapDict(ActionRows, am, (a, id) => new ActionMapRow { Action = a, HotkeyId = id });
+        }
+
+        if (data.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object)
+        {
+            if (TryString(input, "micTemplate", out var mic)) Working.Input.MicTemplate = mic;
+            if (TryString(input, "loopbackTemplate", out var lb)) Working.Input.LoopbackTemplate = lb;
+            if (TryString(input, "danmakuTemplate", out var dm)) Working.Input.DanmakuTemplate = dm;
+            if (TryString(input, "pkTemplate", out var pk)) Working.Input.PkTemplate = pk;
+            if (TryString(input, "pkManualTemplate", out var pkm)) Working.Input.PkManualTemplate = pkm;
+        }
+
+        if (data.TryGetProperty("memory", out var mem) && mem.ValueKind == JsonValueKind.Object)
+        {
+            if (TryString(mem, "databasePath", out var db)) Working.Memory.DatabasePath = db;
+            if (TryString(mem, "embeddingModelPath", out var em)) Working.Memory.EmbeddingModelPath = em;
+            if (TryInt(mem, "extractEveryNTurns", out var n)) Working.Memory.ExtractEveryNTurns = n;
+        }
+
+        if (data.TryGetProperty("interaction", out var ix) && ix.ValueKind == JsonValueKind.Object)
+        {
+            if (TryBool(ix, "isPkMode", out var pk)) InteractionIsPkMode = pk;
+            if (TryDouble(ix, "wakeHoldSec", out var hold)) Working.Interaction.WakeHoldSec = hold;
+            if (ix.TryGetProperty("wakeKeywords", out var wk))
+            {
+                if (wk.ValueKind == JsonValueKind.String)
+                    WakeKeywordsText = wk.GetString() ?? "";
+                else if (wk.ValueKind == JsonValueKind.Array)
+                    WakeKeywordsText = string.Join(", ", wk.EnumerateArray().Select(e => e.GetString() ?? ""));
+            }
+        }
+
+        if (data.TryGetProperty("emotionRows", out var er) && er.ValueKind == JsonValueKind.Array)
+            ReplaceMapRows(EmotionRows, er, (e, h) => new EmotionMapRow { Emotion = e, HotkeyId = h }, "emotion", "hotkeyId");
+        if (data.TryGetProperty("actionRows", out var ar) && ar.ValueKind == JsonValueKind.Array)
+            ReplaceMapRows(ActionRows, ar, (e, h) => new ActionMapRow { Action = e, HotkeyId = h }, "action", "hotkeyId");
+    }
+
+    private void ReplaceMapRows<T>(
+        ObservableCollection<T> target,
+        JsonElement array,
+        Func<string, string, T> factory,
+        string aliasKey,
+        string hotkeyKey) where T : INotifyPropertyChanged
+    {
+        foreach (T row in target.ToList())
+            row.PropertyChanged -= OnMappingRowPropertyChanged;
+        target.Clear();
+        foreach (var item in array.EnumerateArray())
+        {
+            var alias = item.TryGetProperty(aliasKey, out var a) ? a.GetString() ?? ""
+                : item.TryGetProperty("key", out var k) ? k.GetString() ?? "" : "";
+            var hotkey = item.TryGetProperty(hotkeyKey, out var h) ? h.GetString() ?? ""
+                : item.TryGetProperty("id", out var id) ? id.GetString() ?? "" : "";
+            var row = factory(alias, hotkey);
+            row.PropertyChanged += OnMappingRowPropertyChanged;
+            target.Add(row);
+        }
+    }
+
+    private void ApplyMapDict<T>(
+        ObservableCollection<T> target,
+        JsonElement dict,
+        Func<string, string, T> factory) where T : INotifyPropertyChanged
+    {
+        foreach (T row in target.ToList())
+            row.PropertyChanged -= OnMappingRowPropertyChanged;
+        target.Clear();
+        foreach (var prop in dict.EnumerateObject())
+        {
+            var hotkey = prop.Value.ValueKind == JsonValueKind.String
+                ? prop.Value.GetString() ?? ""
+                : prop.Value.ToString();
+            var row = factory(prop.Name, hotkey);
+            row.PropertyChanged += OnMappingRowPropertyChanged;
+            target.Add(row);
+        }
+    }
+
+    private static bool TryString(JsonElement obj, string name, out string value)
+    {
+        value = "";
+        if (!obj.TryGetProperty(name, out var el) || el.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+            return false;
+        value = el.ValueKind == JsonValueKind.String ? el.GetString() ?? "" : el.ToString();
+        return true;
+    }
+
+    private static bool TryBool(JsonElement obj, string name, out bool value)
+    {
+        value = false;
+        if (!obj.TryGetProperty(name, out var el)) return false;
+        if (el.ValueKind == JsonValueKind.True) { value = true; return true; }
+        if (el.ValueKind == JsonValueKind.False) { value = false; return true; }
+        return el.ValueKind == JsonValueKind.String && bool.TryParse(el.GetString(), out value);
+    }
+
+    private static bool TryInt(JsonElement obj, string name, out int value)
+    {
+        value = 0;
+        if (!obj.TryGetProperty(name, out var el)) return false;
+        if (el.ValueKind == JsonValueKind.Number && el.TryGetInt32(out value)) return true;
+        return el.ValueKind == JsonValueKind.String && int.TryParse(el.GetString(), out value);
+    }
+
+    private static bool TryDouble(JsonElement obj, string name, out double value)
+    {
+        value = 0;
+        if (!obj.TryGetProperty(name, out var el)) return false;
+        if (el.ValueKind == JsonValueKind.Number && el.TryGetDouble(out value)) return true;
+        return el.ValueKind == JsonValueKind.String && double.TryParse(el.GetString(), out value);
     }
 
     private bool ValidateDraft()

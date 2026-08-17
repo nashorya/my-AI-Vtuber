@@ -8,7 +8,9 @@ public interface IMemoryDataSource
 {
     Task<List<Fact>> GetFactsAsync();
     Task<List<Viewer>> GetViewersAsync();
+    Task<List<PkTurn>> GetPkTurnsAsync();
     Task DeleteFactAsync(string factId);
+    Task DeletePkTurnAsync(string turnId);
     Task ForceExtractAsync();
 }
 
@@ -17,6 +19,8 @@ public sealed class RuntimeMemoryDataSource(BotRuntime runtime) : IMemoryDataSou
 {
     public Task<List<Fact>> GetFactsAsync() => runtime.FactRepository.GetAllAsync();
     public Task<List<Viewer>> GetViewersAsync() => runtime.ViewerRepository.GetAllAsync();
+    public Task<List<PkTurn>> GetPkTurnsAsync() => runtime.PkTurnRepository.ListAllAsync();
     public Task DeleteFactAsync(string factId) => runtime.FactRepository.DeleteAsync(factId);
+    public Task DeletePkTurnAsync(string turnId) => runtime.PkTurnRepository.DeleteTurnAsync(turnId);
     public Task ForceExtractAsync() => runtime.ForceExtractMemoryAsync();
 }

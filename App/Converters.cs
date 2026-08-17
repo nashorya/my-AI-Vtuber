@@ -100,7 +100,7 @@ internal sealed class BoolToGreenGrayBrushConverter : IValueConverter
 internal sealed class BoolToAvailabilityTextConverter : IValueConverter
 {
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
-        => value is true ? "在线" : "离线";
+        => value is true ? "已连接" : "未连接";
 
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         => throw new NotSupportedException();
