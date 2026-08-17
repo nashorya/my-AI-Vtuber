@@ -208,6 +208,45 @@ public sealed class MemoryViewModel : INotifyPropertyChanged
         }
     }
 
+    public Task DeleteFactByIdAsync(string factId) => DeleteFactAsync(factId);
+
+    /// <summary>Snapshot for the Web memory page (facts + viewers + status).</summary>
+    public object BuildWebSnapshot()
+    {
+        return new
+        {
+            facts = Facts.Select(f => new
+            {
+                id = f.Id,
+                content = f.Content,
+                importance = f.Importance,
+                importanceStars = f.ImportanceStars,
+                subjectUid = f.SubjectUid,
+                lastAccessed = f.LastAccessed,
+                expires = f.Expires,
+            }).ToList(),
+            viewers = Viewers.Select(v => new
+            {
+                uid = v.Uid,
+                platform = v.Platform,
+                nickname = v.Nickname,
+                interactionCount = v.InteractionCount,
+                lastSeen = v.LastSeen,
+                notes = v.Notes,
+            }).ToList(),
+            factSearch = FactSearch,
+            viewerSearch = ViewerSearch,
+            factsLoading = FactsLoading,
+            viewersLoading = ViewersLoading,
+            factsEmpty = FactsEmpty,
+            viewersEmpty = ViewersEmpty,
+            factsError = FactsError,
+            viewersError = ViewersError,
+            extracting = Extracting,
+            statusMessage = StatusMessage,
+        };
+    }
+
     private long NextFactGeneration() => _factQueries.Begin();
     private long NextViewerGeneration() => _viewerQueries.Begin();
 

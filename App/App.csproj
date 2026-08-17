@@ -25,6 +25,7 @@
 
   <ItemGroup>
     <PackageReference Include="WPF-UI" Version="3.1.1" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
     <!-- Pinned explicitly because the SDK otherwise derives this from whatever .NET runtime
          patch happens to be installed. CI's runner image ships a newer runtime than the
          pinned 10.0.300 SDK, which flipped the requested version to 10.0.10 and broke
@@ -75,6 +76,11 @@
     <None Include="..\assets\avatar\**\*"
           Exclude="..\assets\avatar\layered\**\*;..\assets\avatar\contact_sheet.png"
           Link="assets\avatar\%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" />
+    <!-- WebView2 monitor UI (served via virtual host mapping). -->
+    <None Include="WebUi\wwwroot\**\*"
           CopyToOutputDirectory="PreserveNewest"
           CopyToPublishDirectory="PreserveNewest"
           ExcludeFromSingleFile="true" />

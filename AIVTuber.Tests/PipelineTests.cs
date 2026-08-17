@@ -265,6 +265,37 @@ public class ConversationManagerTests
         Assert.Single(messages);
         Assert.Equal(MessageRole.User, messages[0].Role);
     }
+
+    [Fact]
+    public async Task BuildMessages_InjectsRelevantFacts()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "aivt-mem-" + Guid.NewGuid().ToString("N") + ".db");
+        try
+        {
+            var db = new AIVTuber.Core.Memory.MemoryDb(path);
+            await db.InitializeAsync();
+            var facts = new AIVTuber.Core.Memory.FactRepository(db);
+            await facts.InsertAsync(new AIVTuber.Core.Memory.Fact
+            {
+                Content = "创造者喜欢喝美式咖啡",
+                Importance = 4,
+            });
+
+            var mgr = CreateManager();
+            mgr.SetMemory(null, facts);
+            mgr.AddUserMessage("今天喝什么咖啡好？");
+
+            var messages = mgr.BuildMessages();
+            var memoryMsg = messages.FirstOrDefault(m =>
+                m.Role == MessageRole.System && m.Content.Contains("相关记忆"));
+            Assert.NotNull(memoryMsg);
+            Assert.Contains("美式咖啡", memoryMsg!.Content);
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { /* ignore */ }
+        }
+    }
 }
 
 public class AsrClientTests

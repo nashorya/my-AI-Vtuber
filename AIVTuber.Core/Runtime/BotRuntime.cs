@@ -60,12 +60,15 @@ public sealed class BotRuntime : IAsyncDisposable
     private AIVTuber.Core.Audio.VirtualMicMixer? _virtualMic;
     private BilibiliDanmakuClient? _danmaku;
     private DanmakuSelector? _selector;
+    private readonly WakeGate _wakeGate = new();
 
     private readonly PipelineStateTracker _stateTracker = new();
 
     public PipelineStateTracker StateTracker => _stateTracker;
     public event EventHandler? AiStartSpeaking;
     public event EventHandler? AiStopSpeaking;
+    /// <summary>Fired when Normal/PK interaction mode changes.</summary>
+    public event EventHandler? InteractionModeChanged;
     /// <summary>Fired when any pipeline stage (ASR/LLM/TTS) encounters a non-cancellation error.</summary>
     public event EventHandler<string>? PipelineError;
     /// <summary>Fired per mic frame with RMS in [0,1] for a level indicator.</summary>
@@ -520,6 +523,12 @@ public sealed class BotRuntime : IAsyncDisposable
         _orchestrator = new BotOrchestrator(
             _asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts,
             ttsEmotionMap: _config.Avatar.EmotionMap);
+        _orchestrator.ShouldSpeak = probe => _wakeGate.ShouldSpeak(
+            _config.Interaction.IsPkMode,
+            _config.Interaction.WakeKeywords,
+            _config.Interaction.WakeHoldSec,
+            probe,
+            Environment.TickCount64);
 
         _orchestrator.OnError += (_, msg) => PipelineError?.Invoke(this, msg);
 
@@ -925,12 +934,26 @@ public sealed class BotRuntime : IAsyncDisposable
         FeedPkText(text, pk.Uid);
     }
 
+    /// <summary>True when live interaction mode is PK (wake-keyword gate).</summary>
+    public bool IsPkMode => _config.Interaction.IsPkMode;
+
     /// <summary>
-    /// Manually marks the start of a new PK match. Exists because auto-detection cannot
-    /// always resolve the opponent (the room id may be absent from the payload, or the
-    /// lookup may fail); without this the AI would keep treating the previous opponent as
-    /// current. Clears the recorded opponent, then tells the AI a fresh match has begun.
+    /// Hot-switch Normal ↔ PK without rebuilding the pipeline. Resets the wake hold window.
+    /// Does not write config.json; save from the Config tab to persist.
     /// </summary>
+    public void SetPkMode(bool pk)
+    {
+        if (_config.Interaction.IsPkMode == pk) return;
+        _config.Interaction.SetPkMode(pk);
+        _wakeGate.Reset();
+        AIVTuber.Core.Diagnostics.DebugLog.Write(pk
+            ? "[模式] PK（默认静默；麦/内录/弹幕/开场播报均需关键词或保持窗）"
+            : "[模式] 正常（有输入就回）");
+        InteractionModeChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Manually marks a new PK match, for when the opponent could not be
+    /// auto-detected. Clears the previous opponent and tells the AI a fresh match began.</summary>
     public void StartNewPk()
     {
         CurrentPkOpponent = null;
@@ -968,7 +991,7 @@ public sealed class BotRuntime : IAsyncDisposable
             var text = _config.Input.DanmakuTemplate
                 .Replace("{username}", d.Username)
                 .Replace("{content}", d.Content);
-            await _orchestrator.ProcessTextAsync(text, history);
+            await _orchestrator.ProcessTextAsync(text, history, wakeProbe: d.Content);
         };
         return selector;
     }
@@ -1022,6 +1045,8 @@ public sealed class BotRuntime : IAsyncDisposable
             _activeConfig = ConfigManager.Clone(candidate);
             _config = candidate;
             Interlocked.Exchange(ref _activeRevision, candidateRevision);
+            _wakeGate.Reset();
+            InteractionModeChanged?.Invoke(this, EventArgs.Empty);
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[配置] 应用完成 revision={candidateRevision}");
         }
         finally

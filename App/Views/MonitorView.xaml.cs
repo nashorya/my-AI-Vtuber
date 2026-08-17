@@ -46,6 +46,12 @@ public partial class MonitorView : UserControl
             vm.ToggleMicMute();
     }
 
+    private void OnPkModeClicked(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is MonitorViewModel vm)
+            vm.TogglePkMode();
+    }
+
     private void OnStopSpeakingClicked(object sender, RoutedEventArgs e)
     {
         if (DataContext is MonitorViewModel vm)
