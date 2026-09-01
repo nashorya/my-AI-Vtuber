@@ -59,6 +59,20 @@ public class PkOpponentTests
         Assert.True(PkOpponent.TryParse(json, out var pk));
         Assert.Equal("对面主播", pk!.Username);
     }
+
+    [Fact]
+    public void IsEndPush_RecognizesEndType()
+    {
+        Assert.True(PkOpponent.IsEndPush("""{"type":"end"}"""));
+        Assert.True(PkOpponent.IsEndPush("""{"type":"END"}"""));
+    }
+
+    [Fact]
+    public void IsEndPush_RejectsStartPayload()
+    {
+        Assert.False(PkOpponent.IsEndPush("""{"uid":"1","username":"x","follower":1,"roomid":2}"""));
+        Assert.False(PkOpponent.TryParse("""{"type":"end"}""", out _));
+    }
 }
 
 public class PkConfigDiffTests

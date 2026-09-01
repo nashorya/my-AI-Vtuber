@@ -58,6 +58,12 @@ public sealed class BotOrchestrator : IDisposable
     public event EventHandler<string>? OnLoopbackTranscript;
     public event EventHandler<string>? OnError;
 
+    /// <summary>
+    /// Optional PK wake gate. Return false to publish transcripts but skip LLM/TTS.
+    /// Probe text is ASR transcript or the full text turn (danmaku template, etc.).
+    /// </summary>
+    public Func<string, bool>? ShouldSpeak { get; set; }
+
     public BotOrchestrator(
         IAsrClient asr, ILlmClient llm, ITtsClient tts,
         AudioPlayer player, TtsConfig ttsConfig,
@@ -296,6 +302,7 @@ public sealed class BotOrchestrator : IDisposable
                         commandCt => _userOutputCommand(result.Text, commandCt));
                 if (result.Emotion is not null && IsCurrent(envelope, ct))
                     OnUserEmotionDetected?.Invoke(this, result.Emotion);
+                if (!AllowSpeak(result.Text)) return;
                 pipelineStarted = true;
                 var annotated = AnnotateWithUserEmotion(result.Text, result.Emotion);
                 await RunStreamingPipelineAsync(
@@ -328,6 +335,7 @@ public sealed class BotOrchestrator : IDisposable
                 var result = await _asr.RecognizeAsync(speech.AudioData, ct).ConfigureAwait(false);
                 if (string.IsNullOrWhiteSpace(result.Text) || !IsCurrent(envelope, ct)) return;
                 OnLoopbackTranscript?.Invoke(this, result.Text);
+                if (!AllowSpeak(result.Text)) return;
                 pipelineStarted = true;
                 await RunStreamingPipelineAsync(
                     history, loopbackTemplate.Replace("{text}", result.Text), envelope, ct).ConfigureAwait(false);
@@ -366,6 +374,7 @@ public sealed class BotOrchestrator : IDisposable
                         commandCt => _userOutputCommand(result.Text, commandCt));
                 if (result.Emotion is not null && IsCurrent(envelope, ct))
                     OnUserEmotionDetected?.Invoke(this, result.Emotion);
+                if (!AllowSpeak(result.Text)) return;
                 pipelineStarted = true;
                 var annotated = AnnotateWithUserEmotion(result.Text, result.Emotion);
                 await RunStreamingPipelineAsync(
@@ -397,6 +406,7 @@ public sealed class BotOrchestrator : IDisposable
                 var result = await CollectStreamedAsync(audioStream, ct).ConfigureAwait(false);
                 if (string.IsNullOrWhiteSpace(result.Text) || !IsCurrent(envelope, ct)) return;
                 OnLoopbackTranscript?.Invoke(this, result.Text);
+                if (!AllowSpeak(result.Text)) return;
                 pipelineStarted = true;
                 await RunStreamingPipelineAsync(
                     history, loopbackTemplate.Replace("{text}", result.Text), envelope, ct).ConfigureAwait(false);
@@ -433,20 +443,42 @@ public sealed class BotOrchestrator : IDisposable
         return new AsrResult(transcript.ToString(), emotion);
     }
 
-    /// <summary>Process text directly (e.g., from danmaku). Interrupts ongoing processing.</summary>
-    public Task ProcessTextAsync(string text, List<Message> history)
+    /// <summary>Process text directly (e.g., from danmaku or PK announce). Interrupts ongoing processing.</summary>
+    /// <param name="wakeProbe">Text used for wake matching; defaults to <paramref name="text"/>.</param>
+    public Task ProcessTextAsync(
+        string text,
+        List<Message> history,
+        string? wakeProbe = null)
     {
         if (string.IsNullOrWhiteSpace(text)) return Task.CompletedTask;
         return _coordinator.EnqueueAsync(InputSource.Danmaku, async (envelope, ct) =>
         {
             _currentEmotion = null;
-            try { await RunStreamingPipelineAsync(history, text, envelope, ct).ConfigureAwait(false); }
+            var pipelineStarted = false;
+            try
+            {
+                if (!AllowSpeak(wakeProbe ?? text)) return;
+                pipelineStarted = true;
+                await RunStreamingPipelineAsync(history, text, envelope, ct).ConfigureAwait(false);
+            }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             catch (Exception ex)
             {
                 ReportCurrentError(envelope.Generation, $"[Pipeline] {ex.GetType().Name}: {ex.Message}");
             }
+            finally
+            {
+                if (!pipelineStarted && IsCurrent(envelope, ct, allowCancellation: true))
+                    OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
+            }
         });
+    }
+
+    private bool AllowSpeak(string probeText)
+    {
+        if (ShouldSpeak is null || ShouldSpeak(probeText)) return true;
+        AIVTuber.Core.Diagnostics.DebugLog.Write($"[唤起] PK 静默，跳过：「{probeText}」");
+        return false;
     }
 
     /// <summary>Interrupt any ongoing processing and stop playback immediately.</summary>

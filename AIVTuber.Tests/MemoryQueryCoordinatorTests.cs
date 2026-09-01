@@ -168,6 +168,8 @@ public class MemoryQueryCoordinatorTests
             return FactReads.TryDequeue(out var read) ? read : Task.FromResult(Facts.ToList());
         }
         public Task<List<Viewer>> GetViewersAsync() => Task.FromResult(Viewers);
+        public Task<List<PkTurn>> GetPkTurnsAsync() => Task.FromResult(new List<PkTurn>());
+        public Task DeletePkTurnAsync(string turnId) => Task.CompletedTask;
         public Task DeleteFactAsync(string factId)
         {
             DeleteCalls++;

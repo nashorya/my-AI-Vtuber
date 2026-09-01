@@ -81,6 +81,11 @@
     "loopback_template": "（你听到对面说：{text}）",
     "danmaku_template": "（弹幕 {username}：{content}）"
   },
+  "interaction": {
+    "mode": "normal",
+    "wake_keywords": [],
+    "wake_hold_sec": 45
+  },
   "avatar": {
     "backend": "vts",
     "assets_path": "assets/avatar",

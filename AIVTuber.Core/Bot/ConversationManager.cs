@@ -99,7 +99,63 @@ public sealed class ConversationManager
             }
         }
 
+        AppendRelevantFacts(sb, viewerUid);
         return sb.Length > 0 ? sb.AppendLine().ToString() : string.Empty;
+    }
+
+    /// <summary>
+    /// Retrieves top relevant facts for the latest user turn (and the viewer when known)
+    /// and appends them so the reply LLM can ground on stored memory — not just extract/store.
+    /// </summary>
+    private void AppendRelevantFacts(StringBuilder sb, string? viewerUid)
+    {
+        if (_factRepo is null) return;
+
+        var query = LatestUserText();
+        if (string.IsNullOrWhiteSpace(query) && string.IsNullOrEmpty(viewerUid))
+            query = " "; // empty-ish query still ranks by recency/frequency via Score()
+
+        var byId = new Dictionary<string, Fact>(StringComparer.Ordinal);
+        try
+        {
+            foreach (var (fact, _) in _factRepo.SearchAsync(query, subjectUid: null, topK: 5)
+                         .GetAwaiter().GetResult())
+                byId[fact.Id] = fact;
+
+            if (!string.IsNullOrEmpty(viewerUid))
+            {
+                foreach (var (fact, _) in _factRepo.SearchAsync(query, viewerUid, topK: 3)
+                             .GetAwaiter().GetResult())
+                    byId[fact.Id] = fact;
+            }
+        }
+        catch (Exception ex)
+        {
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[Memory] 检索事实失败: {ex.Message}");
+            return;
+        }
+
+        if (byId.Count == 0) return;
+
+        sb.AppendLine("【相关记忆】");
+        foreach (var fact in byId.Values.Take(6))
+        {
+            sb.Append("- ").Append(fact.Content);
+            if (!string.IsNullOrEmpty(fact.SubjectUid))
+                sb.Append("（UID: ").Append(fact.SubjectUid).Append('）');
+            sb.AppendLine();
+            _ = _factRepo.UpdateWeightAsync(fact.Id, 1);
+        }
+    }
+
+    private string LatestUserText()
+    {
+        for (var i = _history.Count - 1; i >= 0; i--)
+        {
+            if (_history[i].Role == MessageRole.User && !string.IsNullOrWhiteSpace(_history[i].Content))
+                return _history[i].Content;
+        }
+        return string.Empty;
     }
 
     public int GetEstimatedTokenCount()

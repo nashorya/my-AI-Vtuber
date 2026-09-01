@@ -37,9 +37,13 @@ public sealed class BotRuntime : IAsyncDisposable
     private EmbeddingEngine? _embedding;
     private ViewerRepository _viewerRepo = null!;
     private FactRepository _factRepo = null!;
+    private PkTurnRepository _pkTurnRepo = null!;
+    private readonly PkMatchBuffer _pkBuffer = new();
+    private PkMemoryCurator _pkCurator = null!;
     private ConversationManager _conversation = null!;
     private MemoryExtractor _memoryExtractor = null!;
     private LlmClient _memoryLlm = null!; // owned by BotRuntime so it can be disposed (MemoryExtractor is not IDisposable)
+    private LlmClient _pkCuratorLlm = null!; // dedicated client: no character system prompt
     private VtsClient? _vts;
     private PixelAvatarDriver? _pixelAvatar;
     private AvatarConfigWatcher? _avatarConfigWatcher;
@@ -60,12 +64,15 @@ public sealed class BotRuntime : IAsyncDisposable
     private AIVTuber.Core.Audio.VirtualMicMixer? _virtualMic;
     private BilibiliDanmakuClient? _danmaku;
     private DanmakuSelector? _selector;
+    private readonly WakeGate _wakeGate = new();
 
     private readonly PipelineStateTracker _stateTracker = new();
 
     public PipelineStateTracker StateTracker => _stateTracker;
     public event EventHandler? AiStartSpeaking;
     public event EventHandler? AiStopSpeaking;
+    /// <summary>Fired when Normal/PK interaction mode changes.</summary>
+    public event EventHandler? InteractionModeChanged;
     /// <summary>Fired when any pipeline stage (ASR/LLM/TTS) encounters a non-cancellation error.</summary>
     public event EventHandler<string>? PipelineError;
     /// <summary>Fired per mic frame with RMS in [0,1] for a level indicator.</summary>
@@ -111,6 +118,7 @@ public sealed class BotRuntime : IAsyncDisposable
     public bool CandidateConfigIsActive => CandidateConfigRevision == ActiveConfigRevision;
     public ViewerRepository ViewerRepository => _viewerRepo;
     public FactRepository FactRepository => _factRepo;
+    public PkTurnRepository PkTurnRepository => _pkTurnRepo;
     public DanmakuSelector? Selector => _selector;
 
     public Task ForceExtractMemoryAsync() => _memoryExtractor.ExtractFactsAsync();
@@ -247,6 +255,7 @@ public sealed class BotRuntime : IAsyncDisposable
         catch (Exception ex) { Console.WriteLine($"[记忆] 向量引擎加载失败: {ex.Message}"); }
         _viewerRepo = new ViewerRepository(_memoryDb);
         _factRepo = new FactRepository(_memoryDb, _embedding);
+        _pkTurnRepo = new PkTurnRepository(_memoryDb);
         _conversation = new ConversationManager(_config.Llm);
         _conversation.SetMemory(_viewerRepo, _factRepo);
         BuildMemoryExtractor();
@@ -256,8 +265,12 @@ public sealed class BotRuntime : IAsyncDisposable
     private void BuildMemoryExtractor()
     {
         _memoryLlm?.Dispose();
+        _pkCuratorLlm?.Dispose();
         _memoryLlm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, BuildLlmSystemPrompt());
+        // Curator must not inherit the VTuber prompt — that fights JSON keep-index output.
+        _pkCuratorLlm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, systemPrompt: "");
         _memoryExtractor = new MemoryExtractor(_memoryLlm, _factRepo, _config.Memory, _conversation);
+        _pkCurator = new PkMemoryCurator(_pkCuratorLlm, _pkTurnRepo);
     }
 
     private async Task InitVtsAsync()
@@ -520,6 +533,12 @@ public sealed class BotRuntime : IAsyncDisposable
         _orchestrator = new BotOrchestrator(
             _asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts,
             ttsEmotionMap: _config.Avatar.EmotionMap);
+        _orchestrator.ShouldSpeak = probe => _wakeGate.ShouldSpeak(
+            _config.Interaction.IsPkMode,
+            _config.Interaction.WakeKeywords,
+            _config.Interaction.WakeHoldSec,
+            probe,
+            Environment.TickCount64);
 
         _orchestrator.OnError += (_, msg) => PipelineError?.Invoke(this, msg);
 
@@ -534,6 +553,8 @@ public sealed class BotRuntime : IAsyncDisposable
         _orchestrator.OnSentenceReady += (_, s) =>
         {
             _conversation.AddAssistantMessage(s);
+            if (_pkBuffer.IsActive)
+                _pkBuffer.NoteAssistantChunk(s);
             SentenceReady?.Invoke(this, s);
         };
         _orchestrator.OnEmotionDetected += (_, e) => EmotionDetected?.Invoke(this, e);
@@ -542,6 +563,8 @@ public sealed class BotRuntime : IAsyncDisposable
         _orchestrator.OnLoopbackTranscript += (_, t) =>
         {
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录识别→对面] 「{t}」");
+            if (CurrentPkOpponent is not null)
+                _pkBuffer.NoteOpponentSpeech(t, "loopback");
             LoopbackTranscript?.Invoke(this, t);
         };
 
@@ -571,6 +594,8 @@ public sealed class BotRuntime : IAsyncDisposable
             _loopbackVadMuted = false;
             _loopbackVad?.Reset();
             AbandonLoopbackSpeechChannel();
+            if (_pkBuffer.IsActive)
+                _pkBuffer.EndAssistantReply();
         };
 
         // Stable speaking->selector bridge, added once per orchestrator. Null-safe so it works
@@ -883,6 +908,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _danmaku = new BilibiliDanmakuClient(_config.Bilibili);
         _danmaku.OnDanmaku += (_, d) => { _selector?.Enqueue(d); _selector?.TrySelectNext(); };
         _danmaku.OnPkStarted += (_, pk) => AnnouncePkOpponent(pk);
+        _danmaku.OnPkEnded += (_, _) => HandlePkEnded();
         // Surface bridge health to the UI error banner, and pipe its stdout/stderr to the debug log.
         _danmaku.OnError += (_, msg) => PipelineError?.Invoke(this, $"[弹幕] {msg}");
         _danmaku.OnProcessExited += (_, msg) => PipelineError?.Invoke(this, $"[弹幕] {msg}");
@@ -913,26 +939,111 @@ public sealed class BotRuntime : IAsyncDisposable
     public void AnnouncePkOpponent(PkOpponent pk)
     {
         ArgumentNullException.ThrowIfNull(pk);
+        // If a previous match was still open (missed end event), curate it before starting anew.
+        if (_pkBuffer.IsActive)
+            HandlePkEnded();
+
         CurrentPkOpponent = pk;
         AIVTuber.Core.Diagnostics.DebugLog.Write(
             $"[PK] 对手 {pk.Username}（{pk.FollowerCount} 粉，房间 {pk.RoomId}）");
+
+        var matchId = _pkBuffer.Start(pk);
+        SuperviseBackgroundTask(StartPkMatchAsync(pk, matchId));
 
         var text = _config.Input.PkTemplate
             .Replace("{uname}", pk.Username)
             .Replace("{follower}", pk.FollowerCount.ToString())
             .Replace("{uid}", pk.Uid)
             .Replace("{roomid}", pk.RoomId.ToString());
+        _pkBuffer.NoteOpponentSpeech(text, "pk_announce");
         FeedPkText(text, pk.Uid);
     }
 
+    private async Task StartPkMatchAsync(PkOpponent pk, string matchId)
+    {
+        try
+        {
+            await _viewerRepo.RecordInteractionAsync(pk.Uid, "bilibili", pk.Username).ConfigureAwait(false);
+            await _pkTurnRepo.InsertMatchAsync(new PkMatch
+            {
+                MatchId = matchId,
+                OpponentUid = pk.Uid,
+                OpponentName = pk.Username,
+                StartedAt = DateTime.UtcNow.ToString("o"),
+                Status = "active",
+            }).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[PK记忆] 开场落库失败: {ex.Message}");
+        }
+    }
+
+    /// <summary>Ends the current PK match: agentic-curate buffered original pairs, then clear state.</summary>
+    public void HandlePkEnded()
+    {
+        var matchId = _pkBuffer.MatchId;
+        var opponent = _pkBuffer.Opponent ?? CurrentPkOpponent;
+        _pkBuffer.EndAssistantReply();
+        var turns = _pkBuffer.Snapshot();
+        _pkBuffer.Clear();
+        CurrentPkOpponent = null;
+        AIVTuber.Core.Diagnostics.DebugLog.Write(
+            $"[PK] 结束（缓冲 {turns.Count} 对，对手 {opponent?.Username ?? "?"}）");
+
+        if (matchId is null) return;
+        SuperviseBackgroundTask(CurateAndPersistPkAsync(matchId, opponent, turns));
+    }
+
+    private async Task CurateAndPersistPkAsync(
+        string matchId,
+        PkOpponent? opponent,
+        IReadOnlyList<BufferedPkTurn> turns)
+    {
+        try
+        {
+            await _pkCurator.PersistMatchAsync(
+                matchId,
+                opponent?.Uid,
+                opponent?.Username,
+                turns,
+                _cts.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[PK记忆] 结束落盘失败: {ex.Message}");
+            try
+            {
+                await _pkTurnRepo.EndMatchAsync(matchId, DateTime.UtcNow.ToString("o")).ConfigureAwait(false);
+            }
+            catch { /* ignore */ }
+        }
+    }
+
+    /// <summary>True when live interaction mode is PK (wake-keyword gate).</summary>
+    public bool IsPkMode => _config.Interaction.IsPkMode;
+
     /// <summary>
-    /// Manually marks the start of a new PK match. Exists because auto-detection cannot
-    /// always resolve the opponent (the room id may be absent from the payload, or the
-    /// lookup may fail); without this the AI would keep treating the previous opponent as
-    /// current. Clears the recorded opponent, then tells the AI a fresh match has begun.
+    /// Hot-switch Normal ↔ PK without rebuilding the pipeline. Resets the wake hold window.
+    /// Does not write config.json; save from the Config tab to persist.
     /// </summary>
+    public void SetPkMode(bool pk)
+    {
+        if (_config.Interaction.IsPkMode == pk) return;
+        _config.Interaction.SetPkMode(pk);
+        _wakeGate.Reset();
+        AIVTuber.Core.Diagnostics.DebugLog.Write(pk
+            ? "[模式] PK（默认静默；麦/内录/弹幕/开场播报均需关键词或保持窗）"
+            : "[模式] 正常（有输入就回）");
+        InteractionModeChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Manually marks a new PK match, for when the opponent could not be
+    /// auto-detected. Clears the previous opponent and tells the AI a fresh match began.</summary>
     public void StartNewPk()
     {
+        if (_pkBuffer.IsActive)
+            HandlePkEnded();
         CurrentPkOpponent = null;
         AIVTuber.Core.Diagnostics.DebugLog.Write("[PK] 手动标记新一场 PK");
         FeedPkText(_config.Input.PkManualTemplate, uid: "pk-manual");
@@ -968,7 +1079,7 @@ public sealed class BotRuntime : IAsyncDisposable
             var text = _config.Input.DanmakuTemplate
                 .Replace("{username}", d.Username)
                 .Replace("{content}", d.Content);
-            await _orchestrator.ProcessTextAsync(text, history);
+            await _orchestrator.ProcessTextAsync(text, history, wakeProbe: d.Content);
         };
         return selector;
     }
@@ -1022,6 +1133,8 @@ public sealed class BotRuntime : IAsyncDisposable
             _activeConfig = ConfigManager.Clone(candidate);
             _config = candidate;
             Interlocked.Exchange(ref _activeRevision, candidateRevision);
+            _wakeGate.Reset();
+            InteractionModeChanged?.Invoke(this, EventArgs.Empty);
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[配置] 应用完成 revision={candidateRevision}");
         }
         finally
@@ -1160,6 +1273,7 @@ public sealed class BotRuntime : IAsyncDisposable
         (_asr as IDisposable)?.Dispose();
         _player?.Dispose();
         _memoryLlm?.Dispose();
+        _pkCuratorLlm?.Dispose();
         _embedding?.Dispose();
         _memoryDb?.Dispose();
         _configApplyGate.Dispose();

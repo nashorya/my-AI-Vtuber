@@ -60,6 +60,8 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
             LocalAsrActive = _runtime.LocalAsrActive;
             LocalAsrReachable = reachable;
         });
+        _isPkMode = _runtime.IsPkMode;
+        _runtime.InteractionModeChanged += (_, _) => _dispatch(() => IsPkMode = _runtime.IsPkMode);
     }
 
     private void OnStateChanged()
@@ -215,6 +217,23 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
         var muted = !_micMuted;
         _runtime.SetMicMuted(muted);
         _dispatch(() => MicMuted = muted);
+    }
+
+    private bool _isPkMode;
+    /// <summary>Live interaction mode: PK = silent until wake keyword.</summary>
+    public bool IsPkMode { get => _isPkMode; private set => SetField(ref _isPkMode, value); }
+
+    public void TogglePkMode()
+    {
+        var next = !_runtime.IsPkMode;
+        _runtime.SetPkMode(next);
+        _dispatch(() =>
+        {
+            IsPkMode = next;
+            AddOperationalEvent("模式", next
+                ? "PK（静默；关键词唤起，保持窗内可追问；开场播报亦门控）"
+                : "正常");
+        });
     }
 
     /// <summary>Interrupts the AI immediately — stops current speech/generation and playback.</summary>

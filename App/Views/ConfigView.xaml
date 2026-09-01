@@ -1,4 +1,4 @@
-﻿<UserControl x:Class="AIVTuber.App.Views.ConfigView"
+<UserControl x:Class="AIVTuber.App.Views.ConfigView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
@@ -128,6 +128,13 @@
                     <TextBlock Text="最大历史 Token" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Llm.MaxHistoryTokens, UpdateSourceTrigger=PropertyChanged}" />
                     <TextBlock Text="记忆数据库 / 嵌入模型 / 提取轮数" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Memory.DatabasePath, UpdateSourceTrigger=PropertyChanged}"/><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Memory.EmbeddingModelPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,8,0,0"/><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Memory.ExtractEveryNTurns, UpdateSourceTrigger=PropertyChanged}" Margin="0,8,0,0"/>
                     <TextBlock Text="麦克风/内录/弹幕/PK 输入模板" Style="{StaticResource FieldLabel}" /><ui:TextBox Text="{Binding Working.Input.MicTemplate, UpdateSourceTrigger=PropertyChanged}"/><ui:TextBox Text="{Binding Working.Input.LoopbackTemplate, UpdateSourceTrigger=PropertyChanged}" Margin="0,8,0,0"/><ui:TextBox Text="{Binding Working.Input.DanmakuTemplate, UpdateSourceTrigger=PropertyChanged}" Margin="0,8,0,0"/><ui:TextBox Text="{Binding Working.Input.PkTemplate, UpdateSourceTrigger=PropertyChanged}" Margin="0,8,0,16"/>
+                    <TextBlock Text="互动模式" Style="{StaticResource FieldLabel}" />
+                    <ui:ToggleSwitch Content="PK 模式（默认静默；麦/内录/弹幕/开场播报均需关键词或保持窗）" IsChecked="{Binding InteractionIsPkMode}" Margin="0,0,0,8" />
+                    <TextBlock Text="唤醒关键词（逗号分隔，如角色名）" Style="{StaticResource FieldLabel}" />
+                    <ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding WakeKeywordsText, UpdateSourceTrigger=PropertyChanged}"
+                                PlaceholderText="例如：小娜, AI酱" Margin="0,0,0,8" />
+                    <TextBlock Text="唤醒保持秒数（命中后无需关键词的窗口；0=每句都要关键词；默认 45）" Style="{StaticResource FieldLabel}" />
+                    <ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Interaction.WakeHoldSec, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,16"/>
                 </StackPanel></ScrollViewer>
             </TabItem>
         </TabControl>
