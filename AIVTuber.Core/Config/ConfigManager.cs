@@ -121,6 +121,8 @@ public sealed class ConfigManager
 
     internal static void HydrateProviderKeys(AppConfig config)
     {
+        config.Llm.Provider = ProviderSecrets.NormalizeLlmProvider(config.Llm.Provider, config.Llm.BaseUrl);
+        ProviderSecrets.Remember(config.Llm.Models, config.Llm.VendorId, config.Llm.Model);
         config.Llm.RememberActiveKey();
         config.Asr.RememberActiveKey();
         config.Tts.RememberActiveKey();

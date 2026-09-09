@@ -136,7 +136,10 @@ public sealed class WebConsoleHost : IDisposable
                 case "patchConfig":
                     if (data.ValueKind == JsonValueKind.Object)
                         _config.ApplyWebPatch(data);
-                    PushConfigMeta();
+                    if (TouchesLlmProvider(data))
+                        PushConfig();
+                    else
+                        PushConfigMeta();
                     break;
                 case "saveConfig":
                     if (data.ValueKind == JsonValueKind.Object)
@@ -513,6 +516,12 @@ public sealed class WebConsoleHost : IDisposable
         }
         return null;
     }
+
+    private static bool TouchesLlmProvider(JsonElement data)
+        => data.ValueKind == JsonValueKind.Object
+           && data.TryGetProperty("llm", out var llm)
+           && llm.ValueKind == JsonValueKind.Object
+           && llm.TryGetProperty("provider", out _);
 
     public void Dispose()
     {

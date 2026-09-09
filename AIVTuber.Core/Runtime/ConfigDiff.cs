@@ -38,10 +38,12 @@ public static class ConfigDiff
     {
         var c = RuntimeChange.None;
 
-        if (a.Llm.BaseUrl != b.Llm.BaseUrl || a.Llm.ApiKey != b.Llm.ApiKey ||
-            a.Llm.Model != b.Llm.Model || a.Llm.SystemPrompt != b.Llm.SystemPrompt ||
+        if (a.Llm.Provider != b.Llm.Provider || a.Llm.BaseUrl != b.Llm.BaseUrl ||
+            a.Llm.ApiKey != b.Llm.ApiKey || a.Llm.Model != b.Llm.Model ||
+            a.Llm.SystemPrompt != b.Llm.SystemPrompt ||
             a.Llm.MaxHistoryTokens != b.Llm.MaxHistoryTokens ||
-            !DictEqual(a.Llm.ApiKeys, b.Llm.ApiKeys))
+            !DictEqual(a.Llm.ApiKeys, b.Llm.ApiKeys) ||
+            !DictEqual(a.Llm.Models, b.Llm.Models))
             c |= RuntimeChange.RebuildLlm;
 
         if (a.Asr.Provider != b.Asr.Provider || a.Asr.ApiKey != b.Asr.ApiKey ||

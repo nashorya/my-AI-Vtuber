@@ -15,6 +15,25 @@ public class ProviderSecretsTests
         Assert.Equal(vendor, ProviderSecrets.LlmVendor(baseUrl));
     }
 
+    [Theory]
+    [InlineData("deepseek", "https://api.openai.com/v1", "deepseek")]
+    [InlineData("gemini", "https://api.deepseek.com", "gemini")]
+    [InlineData("custom", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini")]
+    [InlineData("", "https://api.deepseek.com", "deepseek")]
+    public void InferLlmVendor_PrefersKnownProviderThenHost(string provider, string baseUrl, string vendor)
+    {
+        Assert.Equal(vendor, ProviderSecrets.InferLlmVendor(provider, baseUrl));
+    }
+
+    [Theory]
+    [InlineData("deepseek", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini")]
+    [InlineData("", "https://api.deepseek.com", "deepseek")]
+    [InlineData("custom", "https://api.openai.com/v1", "custom")]
+    public void NormalizeLlmProvider_KnownHostWins(string provider, string baseUrl, string expected)
+    {
+        Assert.Equal(expected, ProviderSecrets.NormalizeLlmProvider(provider, baseUrl));
+    }
+
     [Fact]
     public void RememberAndActivate_RestoreOtherVendor()
     {
@@ -104,5 +123,55 @@ public class ProviderKeyRetentionTests
         ConfigManager.HydrateProviderKeys(config);
 
         Assert.Equal("sk-legacy", config.Llm.ApiKeys["deepseek"]);
+        Assert.Equal("deepseek", config.Llm.Provider);
+        Assert.Equal("deepseek-chat", config.Llm.Models["deepseek"]);
+    }
+
+    [Fact]
+    public async Task SwitchingLlmProvider_FillsOfficialUrlAndKeepsKey()
+    {
+        AppConfig? saved = null;
+        var current = new AppConfig();
+        current.Llm.Provider = "deepseek";
+        current.Llm.BaseUrl = "https://api.deepseek.com";
+        current.Llm.Model = "deepseek-chat";
+        current.Llm.ApiKey = "sk-deepseek";
+        var vm = Make(current, c => saved = c);
+
+        vm.ApplyWebPatch(Patch("""{"llm":{"provider":"gemini","apiKey":"sk-gemini"}}"""));
+        await vm.SaveAsync();
+
+        Assert.Equal("gemini", saved!.Llm.Provider);
+        Assert.Equal("https://generativelanguage.googleapis.com/v1beta/openai", saved.Llm.BaseUrl);
+        Assert.Equal("gemini-2.5-flash", saved.Llm.Model);
+        Assert.Equal("sk-gemini", saved.Llm.ApiKey);
+        Assert.Equal("sk-deepseek", saved.Llm.ApiKeys["deepseek"]);
+        Assert.Equal("deepseek-chat", saved.Llm.Models["deepseek"]);
+
+        vm.ApplyWebPatch(Patch("""{"llm":{"provider":"deepseek"}}"""));
+        await vm.SaveAsync();
+
+        Assert.Equal("deepseek", saved.Llm.Provider);
+        Assert.Equal("https://api.deepseek.com", saved.Llm.BaseUrl);
+        Assert.Equal("deepseek-chat", saved.Llm.Model);
+        Assert.Equal("sk-deepseek", saved.Llm.ApiKey);
+        Assert.Equal("sk-gemini", saved.Llm.ApiKeys["gemini"]);
+        Assert.Equal("gemini-2.5-flash", saved.Llm.Models["gemini"]);
+    }
+
+    [Fact]
+    public void Hydrate_InfersGeminiProviderFromUrl()
+    {
+        var config = new AppConfig();
+        config.Llm.Provider = "deepseek";
+        config.Llm.BaseUrl = "https://generativelanguage.googleapis.com/v1beta/openai";
+        config.Llm.Model = "gemini-2.5-flash";
+        config.Llm.ApiKey = "sk-gemini";
+
+        ConfigManager.HydrateProviderKeys(config);
+
+        Assert.Equal("gemini", config.Llm.Provider);
+        Assert.Equal("sk-gemini", config.Llm.ApiKeys["gemini"]);
+        Assert.Equal("gemini-2.5-flash", config.Llm.Models["gemini"]);
     }
 }

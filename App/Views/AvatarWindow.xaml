@@ -84,7 +84,7 @@
         </Canvas>
 
         <!-- Drag chrome / title strip (semi-transparent, top) -->
-        <Border VerticalAlignment="Top" Height="28" Background="Transparent">
+        <Border VerticalAlignment="Top" Height="28" Background="Transparent"
                 MouseLeftButtonDown="OnChromeDrag"
                 Cursor="SizeAll">
             <DockPanel Margin="8,0">

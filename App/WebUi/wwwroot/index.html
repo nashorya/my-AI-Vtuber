@@ -112,9 +112,19 @@
           <details class="acc">
             <summary><span class="chev">›</span>AI 引擎<span class="sub">LLM / ASR</span></summary>
             <div class="body">
-              <div class="field">
-                <label>LLM Base URL</label>
-                <input id="llm.baseUrl" data-path="llm.baseUrl" type="text" />
+              <div class="row2">
+                <div class="field">
+                  <label>LLM 提供商</label>
+                  <select id="llm.provider" data-path="llm.provider">
+                    <option value="deepseek">deepseek</option>
+                    <option value="gemini">gemini</option>
+                    <option value="custom">custom</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>API Key <span class="hint">留空不修改</span></label>
+                  <input id="llm.apiKey" data-path="llm.apiKey" type="password" placeholder="留空不修改" autocomplete="off" />
+                </div>
               </div>
               <div class="row2">
                 <div class="field">
@@ -122,8 +132,8 @@
                   <input id="llm.model" data-path="llm.model" type="text" />
                 </div>
                 <div class="field">
-                  <label>API Key <span class="hint">留空不修改</span></label>
-                  <input id="llm.apiKey" data-path="llm.apiKey" type="password" placeholder="留空不修改" autocomplete="off" />
+                  <label>LLM Base URL</label>
+                  <input id="llm.baseUrl" data-path="llm.baseUrl" type="text" />
                 </div>
               </div>
               <div class="field">

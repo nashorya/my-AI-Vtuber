@@ -501,6 +501,7 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
             },
             llm = new
             {
+                provider = Working.Llm.Provider,
                 baseUrl = Working.Llm.BaseUrl,
                 model = Working.Llm.Model,
                 systemPrompt = Working.Llm.SystemPrompt,
@@ -653,8 +654,28 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
         if (data.TryGetProperty("llm", out var llm) && llm.ValueKind == JsonValueKind.Object)
         {
             Working.Llm.RememberActiveKey();
-            if (TryString(llm, "baseUrl", out var bu)) Working.Llm.BaseUrl = bu;
-            if (TryString(llm, "model", out var m)) Working.Llm.Model = m;
+            ProviderSecrets.Remember(Working.Llm.Models, Working.Llm.VendorId, Working.Llm.Model);
+            var hasProvider = TryString(llm, "provider", out var provider);
+            var hasBaseUrl = TryString(llm, "baseUrl", out var bu);
+            var hasModel = TryString(llm, "model", out var m);
+            if (hasProvider)
+            {
+                Working.Llm.ApplyProvider(provider);
+                if (hasModel) Working.Llm.Model = m;
+                if (hasBaseUrl && ProviderSecrets.TryPreset(provider) is null)
+                    Working.Llm.BaseUrl = bu;
+            }
+            else
+            {
+                if (hasBaseUrl)
+                {
+                    Working.Llm.BaseUrl = bu;
+                    Working.Llm.Provider = ProviderSecrets.NormalizeLlmProvider(Working.Llm.Provider, bu);
+                }
+
+                if (hasModel) Working.Llm.Model = m;
+            }
+
             if (TryString(llm, "systemPrompt", out var sp)) Working.Llm.SystemPrompt = sp;
             if (TryInt(llm, "maxHistoryTokens", out var mh)) Working.Llm.MaxHistoryTokens = mh;
             if (TryString(llm, "apiKey", out var key) && key.Length > 0) SetPendingSecret("llmApiKey", key);

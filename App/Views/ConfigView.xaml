@@ -65,6 +65,7 @@
             <TabItem Header="AI 引擎">
                 <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel MaxWidth="720">
                     <TextBlock Text="AI 引擎" Style="{StaticResource SectionTitle}" />
+                    <TextBlock Text="LLM 提供商" Style="{StaticResource FieldLabel}" /><ComboBox SelectedValue="{Binding Working.Llm.Provider}" SelectedValuePath="Content"><ComboBoxItem Content="deepseek"/><ComboBoxItem Content="gemini"/><ComboBoxItem Content="custom"/></ComboBox>
                     <TextBlock Text="LLM Base URL" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Llm.BaseUrl, UpdateSourceTrigger=PropertyChanged}" />
                     <TextBlock Text="LLM 模型" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Llm.Model, UpdateSourceTrigger=PropertyChanged}" />
                     <TextBlock Text="LLM API Key（留空不修改）" Style="{StaticResource FieldLabel}" /><ui:PasswordBox x:Name="LlmKey" />

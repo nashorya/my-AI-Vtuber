@@ -189,16 +189,22 @@ public sealed class AsrConfig
 
 public sealed class LlmConfig
 {
+    /// <summary>deepseek / gemini / custom. Known vendors fill the official Base URL and default model.</summary>
+    public string Provider { get; set; } = "deepseek";
     public string BaseUrl { get; set; } = "https://api.deepseek.com";
     public string ApiKey { get; set; } = string.Empty;
     /// <summary>Keys keyed by vendor (deepseek / gemini / host) so switching models keeps the previous secret.</summary>
     public Dictionary<string, string> ApiKeys { get; set; } = new();
     public string Model { get; set; } = "deepseek-chat";
+    /// <summary>Last model name per vendor so switching DeepSeek ↔ Gemini restores each side.</summary>
+    public Dictionary<string, string> Models { get; set; } = new();
     public string SystemPrompt { get; set; } =
         "你是直播中的 AI VTuber。口语短句回答，正文不超过80字（控制标记不计入），一句顶十句，别啰嗦、别列点。";
     public int MaxHistoryTokens { get; set; } = 4096;
 
-    internal string VendorId => ProviderSecrets.LlmVendor(BaseUrl);
+    internal string VendorId => ProviderSecrets.InferLlmVendor(Provider, BaseUrl);
+
+    public void ApplyProvider(string provider) => ProviderSecrets.ApplyLlmProvider(this, provider);
 
     public void RememberActiveKey() => ProviderSecrets.Remember(ApiKeys, VendorId, ApiKey);
 

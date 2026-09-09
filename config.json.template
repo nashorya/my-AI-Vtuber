@@ -23,6 +23,7 @@
     "streaming": true
   },
   "llm": {
+    "provider": "deepseek",
     "base_url": "https://api.deepseek.com",
     "api_key": "<your-llm-api-key>",
     "model": "deepseek-chat",
