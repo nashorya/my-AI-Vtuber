@@ -16,7 +16,7 @@
   "files": [
     {
       "path": "asr_server.py",
-      "sha256": "e7b211b01ee041857042ec47f945385f999371647d7ebbd15706b751084447b0"
+      "sha256": "31097a895732c930354fd4a93156e4dc412520f2852f0dfaaac46d4556d3b8f9"
     },
     {
       "path": "requirements.lock",

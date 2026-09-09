@@ -148,9 +148,10 @@
   },
   "motion_layer": {
     "breath": {
+      "amp_px": 0,
       "scale_amp": 0,
       "period_ms": 3200,
-      "comment": "呼吸缩放已关闭"
+      "comment": "呼吸位移与缩放已关闭"
     },
     "bounce": {
       "comment": "说话弹跳,由RMS驱动",
