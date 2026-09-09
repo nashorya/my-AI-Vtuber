@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using AIVTuber.Core.Audio;
 using AIVTuber.Core.Config;
+using AIVTuber.Core.LiveStream;
 using AIVTuber.Core.Vts;
 
 namespace AIVTuber.Core.ViewModels;
@@ -353,6 +354,8 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
         set
         {
             Working.Interaction.SetPkMode(value);
+            if (value && Working.Bilibili.Enable)
+                Working.Bilibili.PkNotice = true;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InteractionIsPkMode)));
         }
     }
@@ -466,11 +469,21 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SaveStateText)));
     }
 
+    public void ApplyBilibiliLogin(BiliQrCredentials creds, int roomId)
+    {
+        Working.Bilibili.Sessdata = creds.Sessdata;
+        Working.Bilibili.BiliJct = creds.BiliJct;
+        Working.Bilibili.Buvid3 = creds.Buvid3;
+        if (roomId > 0) Working.Bilibili.RoomId = roomId;
+        NotifyDraftChanged();
+    }
+
     // ── WebView bridge ───────────────────────────────────────────────────────
 
     private readonly Dictionary<string, string> _pendingSecrets = new(StringComparer.Ordinal);
 
-    /// <summary>Public draft for the Web settings UI (secrets never echoed; only *Set flags).</summary>
+    /// <summary>Public draft for the Web settings UI. API keys stay *Set-only;
+    /// B 站 Cookie 写入 password 框以便扫码后能看到已填。</summary>
     public object BuildWebDraft()
     {
         return new
@@ -488,6 +501,7 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
             },
             llm = new
             {
+                provider = Working.Llm.Provider,
                 baseUrl = Working.Llm.BaseUrl,
                 model = Working.Llm.Model,
                 systemPrompt = Working.Llm.SystemPrompt,
@@ -535,6 +549,9 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
                 selectionIntervalSec = Working.Bilibili.SelectionIntervalSec,
                 pythonPath = Working.Bilibili.PythonPath,
                 pkNotice = Working.Bilibili.PkNotice,
+                sessdata = Working.Bilibili.Sessdata,
+                biliJct = Working.Bilibili.BiliJct,
+                buvid3 = Working.Bilibili.Buvid3,
                 sessdataSet = !string.IsNullOrEmpty(Working.Bilibili.Sessdata),
                 biliJctSet = !string.IsNullOrEmpty(Working.Bilibili.BiliJct),
                 buvid3Set = !string.IsNullOrEmpty(Working.Bilibili.Buvid3),
@@ -599,9 +616,12 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
 
     private void FlushPendingSecrets()
     {
-        if (_pendingSecrets.TryGetValue("llmApiKey", out var llm)) Working.Llm.ApiKey = llm;
-        if (_pendingSecrets.TryGetValue("asrApiKey", out var asr)) Working.Asr.ApiKey = asr;
-        if (_pendingSecrets.TryGetValue("ttsApiKey", out var tts)) Working.Tts.ApiKey = tts;
+        if (_pendingSecrets.TryGetValue("llmApiKey", out var llm)) Working.Llm.StoreKey(llm);
+        else Working.Llm.ActivateStoredKey();
+        if (_pendingSecrets.TryGetValue("asrApiKey", out var asr)) Working.Asr.StoreKey(asr);
+        else Working.Asr.ActivateStoredKey();
+        if (_pendingSecrets.TryGetValue("ttsApiKey", out var tts)) Working.Tts.StoreKey(tts);
+        else Working.Tts.ActivateStoredKey();
         if (_pendingSecrets.TryGetValue("obsPassword", out var obs)) Working.Obs.Password = obs;
         if (_pendingSecrets.TryGetValue("sessdata", out var sd)) Working.Bilibili.Sessdata = sd;
         if (_pendingSecrets.TryGetValue("biliJct", out var jct)) Working.Bilibili.BiliJct = jct;
@@ -633,27 +653,52 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
 
         if (data.TryGetProperty("llm", out var llm) && llm.ValueKind == JsonValueKind.Object)
         {
-            if (TryString(llm, "baseUrl", out var bu)) Working.Llm.BaseUrl = bu;
-            if (TryString(llm, "model", out var m)) Working.Llm.Model = m;
+            Working.Llm.RememberActiveKey();
+            ProviderSecrets.Remember(Working.Llm.Models, Working.Llm.VendorId, Working.Llm.Model);
+            var hasProvider = TryString(llm, "provider", out var provider);
+            var hasBaseUrl = TryString(llm, "baseUrl", out var bu);
+            var hasModel = TryString(llm, "model", out var m);
+            if (hasProvider)
+            {
+                Working.Llm.ApplyProvider(provider);
+                if (hasModel) Working.Llm.Model = m;
+                if (hasBaseUrl && ProviderSecrets.TryPreset(provider) is null)
+                    Working.Llm.BaseUrl = bu;
+            }
+            else
+            {
+                if (hasBaseUrl)
+                {
+                    Working.Llm.BaseUrl = bu;
+                    Working.Llm.Provider = ProviderSecrets.NormalizeLlmProvider(Working.Llm.Provider, bu);
+                }
+
+                if (hasModel) Working.Llm.Model = m;
+            }
+
             if (TryString(llm, "systemPrompt", out var sp)) Working.Llm.SystemPrompt = sp;
             if (TryInt(llm, "maxHistoryTokens", out var mh)) Working.Llm.MaxHistoryTokens = mh;
             if (TryString(llm, "apiKey", out var key) && key.Length > 0) SetPendingSecret("llmApiKey", key);
+            else Working.Llm.ActivateStoredKey();
         }
 
         if (data.TryGetProperty("asr", out var asr) && asr.ValueKind == JsonValueKind.Object)
         {
+            Working.Asr.RememberActiveKey();
             if (TryString(asr, "provider", out var p)) Working.Asr.Provider = p;
             if (TryString(asr, "model", out var m)) Working.Asr.Model = m;
             if (TryString(asr, "localAsrUrl", out var u)) Working.Asr.LocalAsrUrl = u;
             if (TryString(asr, "pythonPath", out var py)) Working.Asr.PythonPath = py;
             if (TryString(asr, "apiKey", out var key) && key.Length > 0) SetPendingSecret("asrApiKey", key);
+            else Working.Asr.ActivateStoredKey();
         }
 
         if (data.TryGetProperty("tts", out var tts) && tts.ValueKind == JsonValueKind.Object)
         {
+            Working.Tts.RememberActiveKey();
             if (TryString(tts, "provider", out var p)) Working.Tts.Provider = p;
-            if (TryString(tts, "voiceId", out var v)) Working.Tts.VoiceId = v;
-            if (TryString(tts, "model", out var m)) Working.Tts.Model = m;
+            if (TryString(tts, "voiceId", out var v)) Working.Tts.VoiceId = v.Trim();
+            if (TryString(tts, "model", out var m)) Working.Tts.Model = m.Trim();
             if (TryString(tts, "groupId", out var g)) Working.Tts.GroupId = g;
             if (TryDouble(tts, "speed", out var sp)) Working.Tts.Speed = sp;
             if (TryInt(tts, "sampleRate", out var sr)) Working.Tts.SampleRate = sr;
@@ -665,6 +710,7 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
             if (TryInt(tts, "numSteps", out var ns)) Working.Tts.NumSteps = ns;
             if (TryDouble(tts, "guidanceScale", out var gs)) Working.Tts.GuidanceScale = gs;
             if (TryString(tts, "apiKey", out var key) && key.Length > 0) SetPendingSecret("ttsApiKey", key);
+            else Working.Tts.ActivateStoredKey();
         }
 
         if (data.TryGetProperty("obs", out var obs) && obs.ValueKind == JsonValueKind.Object)

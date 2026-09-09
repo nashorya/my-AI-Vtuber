@@ -41,7 +41,10 @@ public sealed class LlmClient : ILlmClient, IDisposable
         _apiKey = apiKey;
         _model = model.Trim();
         _systemPrompt = systemPrompt;
-        _httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+        _httpClient = new HttpClient(LlmTransport.CreateHandler(baseUrl))
+        {
+            Timeout = TimeSpan.FromMinutes(5),
+        };
     }
 
     public async IAsyncEnumerable<string> StreamAsync(
@@ -51,24 +54,32 @@ public sealed class LlmClient : ILlmClient, IDisposable
     {
         var messages = BuildMessages(history, userInput);
 
-        var requestBody = new
-        {
-            model = _model,
-            messages = messages,
-            stream = true,
-            // Safety cap only — brevity is enforced by the system prompt ("一句顶十句别啰嗦").
-            // Must stay wide enough that a normal short reply finishes naturally (EOS) WITH its
-            // trailing [emotion:xxx] tag intact; a tight cap (e.g. 128) hard-truncates mid-sentence
-            // and drops the emotion tag that drives VTS expression + TTS emotion.
-            max_tokens = 256,
-            // DeepSeek V4 enables thinking by default (effort=high). CoT arrives as
-            // delta.reasoning_content, which this client ignores; with max_tokens=256 the
-            // budget is often spent entirely on thinking so content never appears → no TTS.
-            thinking = new { type = "disabled" },
-        };
+        // Safety cap only — brevity is enforced by the system prompt ("一句顶十句别啰嗦").
+        // Must stay wide enough that a normal short reply finishes naturally (EOS) WITH its
+        // trailing [emotion:xxx] tag intact; a tight cap (e.g. 128) hard-truncates mid-sentence
+        // and drops the emotion tag that drives VTS expression + TTS emotion.
+        object requestBody = LlmTransport.IncludeThinkingDisabled(_baseUrl)
+            ? new
+            {
+                model = _model,
+                messages,
+                stream = true,
+                max_tokens = 256,
+                // DeepSeek V4 enables thinking by default (effort=high). CoT arrives as
+                // delta.reasoning_content, which this client ignores; with max_tokens=256 the
+                // budget is often spent entirely on thinking so content never appears → no TTS.
+                thinking = new { type = "disabled" },
+            }
+            : new
+            {
+                model = _model,
+                messages,
+                stream = true,
+                max_tokens = 256,
+            };
 
         var json = JsonSerializer.Serialize(requestBody, JsonOptions);
-        var request = new HttpRequestMessage(HttpMethod.Post, $"{_baseUrl}/v1/chat/completions")
+        var request = new HttpRequestMessage(HttpMethod.Post, LlmTransport.ResolveChatCompletionsUrl(_baseUrl))
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json")
         };

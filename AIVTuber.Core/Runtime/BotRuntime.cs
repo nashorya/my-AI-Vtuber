@@ -1029,13 +1029,31 @@ public sealed class BotRuntime : IAsyncDisposable
     /// </summary>
     public void SetPkMode(bool pk)
     {
-        if (_config.Interaction.IsPkMode == pk) return;
-        _config.Interaction.SetPkMode(pk);
-        _wakeGate.Reset();
-        AIVTuber.Core.Diagnostics.DebugLog.Write(pk
-            ? "[模式] PK（默认静默；麦/内录/弹幕/开场播报均需关键词或保持窗）"
-            : "[模式] 正常（有输入就回）");
-        InteractionModeChanged?.Invoke(this, EventArgs.Empty);
+        var modeChanged = _config.Interaction.IsPkMode != pk;
+        var enableCapture = pk && _config.Bilibili.Enable && !_config.Bilibili.PkNotice;
+        if (!modeChanged && !enableCapture) return;
+        if (modeChanged)
+        {
+            _config.Interaction.SetPkMode(pk);
+            _activeConfig.Interaction.SetPkMode(pk);
+            _wakeGate.Reset();
+            AIVTuber.Core.Diagnostics.DebugLog.Write(pk
+                ? "[模式] PK（默认静默；麦/内录/弹幕/开场播报均需关键词或保持窗）"
+                : "[模式] 正常（有输入就回）");
+            InteractionModeChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        if (enableCapture)
+        {
+            _config.Bilibili.PkNotice = true;
+            _activeConfig.Bilibili.PkNotice = true;
+            AIVTuber.Core.Diagnostics.DebugLog.Write("[PK] 已打开对手抓取");
+            if (_danmaku is not null)
+            {
+                AIVTuber.Core.Diagnostics.DebugLog.Write("[PK] 重启弹幕桥以监听对手");
+                SuperviseBackgroundTask(RestartDanmakuAsync());
+            }
+        }
     }
 
     /// <summary>Manually marks a new PK match, for when the opponent could not be

@@ -16,6 +16,9 @@ AIVTuber - AI虚拟主播后端程序
 
 本地 ASR Sidecar
 ----------------
+标准 GitHub Release 为轻量 API-ASR 版，不包含 sidecar/python 运行时；默认使用配置模板中的 aliyun API。
+只有明确标注为“本地 ASR 完整版”的分发包才包含并启用以下托管运行时布局：
+
 本地 ASR 使用发布包内的托管 Python 运行时，不读取系统 PATH。发布布局为：
 - sidecar/python/python.exe
 - sidecar/asr_server.py
@@ -25,7 +28,7 @@ AIVTuber - AI虚拟主播后端程序
 发布前运行：
   powershell -File scripts/Test-SidecarPackage.ps1 -PackageRoot . -RequireRuntime
 
-若运行时未随包提供，验证固定返回 ASR-SIDECAR-001；不得将该包描述为自包含本地 ASR 版本。
+若运行时未随包提供，验证固定返回 ASR-SIDECAR-001；API-ASR 版不得描述为自包含本地 ASR 版本。
 无 CUDA 的机器使用 device=auto，由 CPU 兼容的已暂存 wheels 执行；模型或设备初始化失败固定归类为
 ASR-SIDECAR-005，/health 状态为 failed，不会被误判为 ready。
 
@@ -49,11 +52,22 @@ OBS 字幕设置
 
 B站弹幕设置
 -----------
-1. 浏览器登录B站 → F12 → Application → Cookies
-2. 复制 SESSDATA、bili_jct、buvid3 的值
-3. 需要安装 Python 及 bilibili-api-python 包:
-   pip install bilibili-api-python httpx
-4. 在 config.json 中设置 bilibili.enable = true 并填入房间号和 Cookie
+1. 控制台「直播集成」→ 扫码登录，手机确认后写入房间号和 Cookie。
+2. 勾选启用 B 站弹幕，保存并应用。
+   旁边有 danmaku_bridge.exe 时不需要再装 Python。
+3. 也可手动粘贴 SESSDATA / bili_jct / buvid3，或运行 scripts/Bili-QrLogin.ps1。
+
+CosyVoice 复刻音色配置
+---------------------
+使用 Python 3.10+ 查询当前百炼账号下可调用的 CosyVoice 自定义音色，并将音色与绑定模型一起写入运行配置：
+
+  $env:DASHSCOPE_API_KEY = "<your-api-key>"
+  python scripts/find_cosyvoice_voices.py
+
+脚本会优先显示今天上午复刻的音色，选择并确认后同时更新 tts.provider、tts.voice_id 和 tts.model。
+默认更新 App/bin/Debug/net10.0-windows/win-x64/config.json，也可使用 --config 指定其他运行配置。
+可用 --prefix 筛选复刻前缀、用 --voice-id 精确选择完整音色 ID，或用 --all 显示全部可用音色。
+写入前的配置保存在同目录 config.json.bak。
 
 向量记忆（可选）
 --------------
@@ -69,14 +83,15 @@ B站弹幕设置
 - VTube Studio（嘴型和表情控制）
 - OBS Studio + WebSocket 插件（字幕显示，可选）
 - 本地 ASR 不依赖系统 Python；需要发布包内 sidecar/python/python.exe
-- Python 3.8+（仅 B站弹幕桥接，可选）
+- 弹幕桥优先使用同目录 danmaku_bridge.exe，无需 Python；没有 exe 时才回退 python danmaku_bridge.py
 
 文件说明
 --------
 AIVTuber.exe      - 主程序
 config.json       - 用户配置（启动后自动生成）
 config.json.template - 配置模板
-danmaku_bridge.py - B站弹幕桥接脚本
+danmaku_bridge.exe - B站弹幕桥（Go 二进制，分发用）
+danmaku_bridge.py - B站弹幕桥开发回退脚本
 sidecar/          - 本地 ASR 托管运行时、服务脚本和完整性 manifest
 models/bge-small-zh/ - 向量模型目录（可选）
 memory.db         - 记忆数据库（自动生成）

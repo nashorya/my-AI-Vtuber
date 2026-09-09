@@ -23,7 +23,7 @@ Assert-Match $workflow '(?m)^\s*tags:\s*\[''v\*''\]\s*$' "Windows CI must preser
 Assert-NotMatch $workflow '(?m)^\s*continue-on-error:\s*true\s*$' "Windows CI must be blocking."
 Assert-Match $workflow 'persist-credentials:\s*false' "Checkout credentials must not persist."
 Assert-Match $workflow '-MinimumTests\s+200' "Windows CI must enforce the full-suite test floor."
-Assert-Match $workflow '-RequireSidecarRuntime\s+\$\{\{\s*startsWith\(github\.ref' "Version tags must require the managed sidecar runtime."
+Assert-Match $workflow '-RequireSidecarRuntime\s+false' "Standard API-ASR releases must not require the optional managed sidecar runtime."
 Assert-Match $workflow "hashFiles\('artifacts/windows-quality/artifact-upload-approved\.txt'\)" "Evidence upload must require post-scan approval."
 Assert-Match $batch 'Get-Command\s+"pwsh"\s+-CommandType\s+Application\s+-ErrorAction\s+SilentlyContinue' "Verification batch must prefer pwsh when it is available."
 Assert-Match $batch '\[Diagnostics\.Process\]::GetCurrentProcess\(\)\.MainModule\.FileName' "Verification batch must fall back to the current PowerShell host."
@@ -49,6 +49,8 @@ Assert-Match $batch '(?s)Invoke-DotNetStage\s+"02-build".*?Invoke-NativeTestDepe
 Assert-Match $batch '(?s)name\s*=\s*\$name.*?exit_code\s*=\s*\$exitCode' "Native dependency preparation must record its result for the final integrity gate."
 Assert-Match $batch '(?s)\$requiredStageNames\s*=\s*@\(.*?"02-native-test-dependency".*?\)' "Native dependency preparation must be a required verification stage."
 Assert-Match $batch '(?s)\$failedStages\s*=.*?if\s*\(-not\s+\$EvidenceOnly\s+-and\s+\$failedStages\.Count\s+-gt\s+0\).*?Blocking stages failed' "Failed native dependency preparation must block normal verification."
+Assert-Match $batch 'assets/avatar/avatar\.json' "Verification must require the published avatar config."
+Assert-Match $batch 'missing avatar state file' "Verification must fail when a referenced avatar sprite is missing."
 
 foreach ($required in @(
     'restore.*--locked-mode',

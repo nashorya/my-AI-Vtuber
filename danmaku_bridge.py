@@ -44,6 +44,29 @@ def _as_room_id(value) -> int:
         return 0
 
 
+def _pk_data(payload):
+    if not isinstance(payload, dict):
+        return None
+    inner = payload.get("data")
+    if isinstance(inner, dict) and (
+        "init_info" in inner or "match_info" in inner or "room_id" in inner
+    ):
+        return inner
+    if "init_info" in payload or "match_info" in payload or "room_id" in payload:
+        return payload
+    return inner if isinstance(inner, dict) else None
+
+
+def _room_from_side(side, *keys) -> int:
+    if not isinstance(side, dict):
+        return 0
+    for key in keys:
+        room = _as_room_id(side.get(key))
+        if room:
+            return room
+    return 0
+
+
 def extract_opponent_room_id(payload, self_room_id: int) -> int | None:
     """Pull the opponent's room id out of a PK payload.
 
@@ -52,16 +75,12 @@ def extract_opponent_room_id(payload, self_room_id: int) -> int | None:
     data.room_id is accepted as a fallback. Returns None when nothing usable is found;
     callers must treat that as "skip this event", never as an error.
     """
-    if not isinstance(payload, dict):
-        return None
-    data = payload.get("data")
+    data = _pk_data(payload)
     if not isinstance(data, dict):
         return None
 
-    init_room = _as_room_id((data.get("init_info") or {}).get("room_id")) \
-        if isinstance(data.get("init_info"), dict) else 0
-    match_room = _as_room_id((data.get("match_info") or {}).get("room_id")) \
-        if isinstance(data.get("match_info"), dict) else 0
+    init_room = _room_from_side(data.get("init_info"), "room_id", "init_id")
+    match_room = _room_from_side(data.get("match_info"), "room_id", "match_id")
 
     if init_room and match_room:
         if init_room == self_room_id and match_room == self_room_id:
@@ -73,6 +92,40 @@ def extract_opponent_room_id(payload, self_room_id: int) -> int | None:
         if candidate and candidate != self_room_id:
             return candidate
     return None
+
+
+def extract_opponent_hint(payload, self_room_id: int) -> dict | None:
+    data = _pk_data(payload)
+    if not isinstance(data, dict):
+        return None
+    init_info = data.get("init_info") if isinstance(data.get("init_info"), dict) else {}
+    match_info = data.get("match_info") if isinstance(data.get("match_info"), dict) else {}
+    init_room = _room_from_side(init_info, "room_id", "init_id")
+    match_room = _room_from_side(match_info, "room_id", "match_id")
+    if init_room and match_room:
+        if init_room == self_room_id and match_room != self_room_id:
+            side, room = match_info, match_room
+        elif match_room == self_room_id and init_room != self_room_id:
+            side, room = init_info, init_room
+        elif init_room != self_room_id:
+            side, room = init_info, init_room
+        else:
+            return None
+    else:
+        room = extract_opponent_room_id(payload, self_room_id)
+        if not room:
+            return None
+        side = init_info if room == init_room else match_info if room == match_room else {}
+    uid = side.get("uid")
+    uname = side.get("uname") or "对面主播"
+    if not uid and not uname and not room:
+        return None
+    return {
+        "uid": str(uid) if uid else "",
+        "username": uname,
+        "follower": 0,
+        "roomid": room,
+    }
 
 
 class Dedupe:
@@ -181,13 +234,21 @@ async def main():
         # Every failure path here must stay contained: PK is a nice-to-have, and the
         # danmaku pipeline shares this event loop.
         try:
-            room_id = extract_opponent_room_id(event.get("data"), ROOM_ID)
+            raw = event.get("data")
+            hint = extract_opponent_hint(raw, ROOM_ID)
+            room_id = extract_opponent_room_id(raw, ROOM_ID)
+            if room_id is None and hint and hint.get("roomid"):
+                room_id = hint["roomid"]
             if room_id is None:
+                print("[PK] start event missing opponent room", flush=True)
                 return
             if not pk_dedupe.should_process(room_id):
                 return
             opponent = await fetch_opponent(room_id)
             if opponent is None:
+                opponent = hint
+            if opponent is None or not opponent.get("uid"):
+                print(f"[PK] fetch failed and payload had no uid for room {room_id}", flush=True)
                 return
             print(f"[PK] opponent: {opponent['username']} "
                   f"({opponent['follower']} fans, room {room_id})", flush=True)

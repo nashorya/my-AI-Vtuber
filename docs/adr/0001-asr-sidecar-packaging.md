@@ -9,8 +9,10 @@ the application directory as its working directory.
 
 The repository publishes the versioned script, pinned requirements, manifest, and
 validator. The heavyweight Python runtime, native wheels, and model cache are staged by
-the release pipeline or distributor because they are platform artifacts, not source
-dependencies. `scripts/Test-SidecarPackage.ps1 -RequireRuntime` is the promotion gate.
+a distributor only for artifacts explicitly promoted as local-ASR builds because they
+are platform artifacts, not source dependencies. Standard GitHub releases use API ASR
+and omit this runtime. `scripts/Test-SidecarPackage.ps1 -RequireRuntime` is the promotion
+gate for a local-ASR artifact.
 
 ## Contract
 
@@ -30,6 +32,6 @@ dependencies. `scripts/Test-SidecarPackage.ps1 -RequireRuntime` is the promotion
 - `ASR-SIDECAR-004`: manifest invalid or unsupported.
 - `ASR-SIDECAR-005`: model or device initialization failed.
 
-An artifact without a staged runtime may be built for development, but it must fail the
-`-RequireRuntime` promotion gate with `ASR-SIDECAR-001`. It must not be described or
-distributed as a self-contained local-ASR release.
+An API-ASR artifact may omit the staged runtime and must not be described as a
+self-contained local-ASR release. Any artifact that is promoted as a local-ASR build
+must pass the `-RequireRuntime` gate; a missing runtime fails with `ASR-SIDECAR-001`.

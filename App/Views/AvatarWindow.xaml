@@ -5,10 +5,10 @@
         Width="480" Height="480"
         WindowStyle="None"
         ResizeMode="CanResizeWithGrip"
-        Background="#00FF00"
+        Background="Transparent"
         Topmost="True"
         ShowInTaskbar="True"
-        AllowsTransparency="False">
+        AllowsTransparency="True">
     <Grid x:Name="RootGrid"
           ClipToBounds="False"
           UseLayoutRounding="True"
@@ -84,7 +84,7 @@
         </Canvas>
 
         <!-- Drag chrome / title strip (semi-transparent, top) -->
-        <Border VerticalAlignment="Top" Height="28" Background="#33000000"
+        <Border VerticalAlignment="Top" Height="28" Background="Transparent"
                 MouseLeftButtonDown="OnChromeDrag"
                 Cursor="SizeAll">
             <DockPanel Margin="8,0">

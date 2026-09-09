@@ -1,0 +1,157 @@
+[
+    {
+        "path":  "AIVTuber.Core.pdb",
+        "length":  104656,
+        "sha256":  "e4d71259f278e8b666f0f5e2fdfbc466c3f44c2997792f0ac00efb91e3cd06bd"
+    },
+    {
+        "path":  "AIVTuber.exe",
+        "length":  196532684,
+        "sha256":  "56016d506751545dd179af85d6b28f662c0633a3ed8e2bb79aeb36071433f7db"
+    },
+    {
+        "path":  "AIVTuber.pdb",
+        "length":  50380,
+        "sha256":  "6bb138515fc4335fcde7624bf839c1e40101ab496209838b3c1b7cebb5539370"
+    },
+    {
+        "path":  "assets/avatar/avatar.json",
+        "length":  3620,
+        "sha256":  "18f6ada19c50b998ca28c56a2d628d70473ddb585f2f0955cfe2e02de02ca8c4"
+    },
+    {
+        "path":  "assets/avatar/contact_sheet.png",
+        "length":  2236851,
+        "sha256":  "ca79efeaf430af6510e4e6060e8094ad1b91e082199bb6d53d6260defc76acbd"
+    },
+    {
+        "path":  "assets/avatar/dev_placeholder/Maid Idle.png",
+        "length":  9646,
+        "sha256":  "d8cabfa78d189cabac5d47f4afbbd5c754ef6e6f4f32220b7adb60db30160d9b"
+    },
+    {
+        "path":  "assets/avatar/dev_placeholder/Maid Run.png",
+        "length":  29060,
+        "sha256":  "cf3b5c3c5add8f33ccca4f514409b885bffccbac881a845d024715c53ac2851d"
+    },
+    {
+        "path":  "assets/avatar/README.md",
+        "length":  932,
+        "sha256":  "a68b135fa71c808b301330abb4e8afeae285c732cac5486e4811b8c0f7603742"
+    },
+    {
+        "path":  "assets/avatar/sprites/gen_00.png",
+        "length":  1318991,
+        "sha256":  "7d864aa8a89fbe057334ea2a8fd0afdc887a7f97baced426331dc62923c1b9d5"
+    },
+    {
+        "path":  "assets/avatar/sprites/gen_01.png",
+        "length":  1731050,
+        "sha256":  "9c22fd8be080556857779ab59dff4d415c3417eb3754306ef89150546ac3be6a"
+    },
+    {
+        "path":  "assets/avatar/sprites/gen_02.png",
+        "length":  1744340,
+        "sha256":  "be6a059e4a46275dbe10ed339ff5e43c09cc8b8ea6c7758b264a34e3e3df7513"
+    },
+    {
+        "path":  "assets/avatar/sprites/gen_03.png",
+        "length":  1745505,
+        "sha256":  "9e4750332e0794365e1f4d5947b1a7e2b4a6c583f423d76e56145e3b768bef89"
+    },
+    {
+        "path":  "assets/avatar/sprites/gen_04.png",
+        "length":  1809191,
+        "sha256":  "c7ce9e8043024a98691ebc33db4c8045da8da382e4bad4665cde13e0bd4f1544"
+    },
+    {
+        "path":  "assets/avatar/sprites/gen_05.png",
+        "length":  1789365,
+        "sha256":  "50eee39f985a119463931c325b3b634d789ee4e175431f8f9d8165a4dea98845"
+    },
+    {
+        "path":  "assets/avatar/sprites/gen_06.png",
+        "length":  1506765,
+        "sha256":  "e168673b28132d920589abd47df0e08a564e03915d35e6fa0333b7c11997aa92"
+    },
+    {
+        "path":  "assets/avatar/sprites/gen_07.png",
+        "length":  1774241,
+        "sha256":  "60cf01e1f2ab46223d83aadfc13e37c55fd2379de74919b314dd01b8aa1c6bcb"
+    },
+    {
+        "path":  "assets/avatar/sprites/gen_08.png",
+        "length":  1778383,
+        "sha256":  "5b248eae092ccea87f3a3ee656ac85424cd85a07c7766583ef496af4b7a31bfb"
+    },
+    {
+        "path":  "assets/avatar/sprites/gen_09.png",
+        "length":  1736736,
+        "sha256":  "b39da5da5360e32818e48917ef0ff8da92eff8c95bbc9ee9517c1e0f2522ee8e"
+    },
+    {
+        "path":  "assets/avatar/sprites/gen_10.png",
+        "length":  1390910,
+        "sha256":  "9db86311ea5b912507c72f7d0daf726e8027c56a391810775eba08a917e674b8"
+    },
+    {
+        "path":  "assets/avatar/sprites/gen_11.png",
+        "length":  1401887,
+        "sha256":  "d0ebf6c0d602c676989e0c467a6cebb00957d79c276631e465b9b4c81aadf2ae"
+    },
+    {
+        "path":  "assets/avatar/stickers/sweat_laugh.png",
+        "length":  410834,
+        "sha256":  "038c0b0a5f50f0a92de34e9df5fcd337bf4806b3391a15ead5b6d91658e731ec"
+    },
+    {
+        "path":  "config.json.template",
+        "length":  2898,
+        "sha256":  "a60625560383cb2bfaab37c4a6184953257273cf5991bf494c596763547d985a"
+    },
+    {
+        "path":  "danmaku_bridge.py",
+        "length":  1600,
+        "sha256":  "3aa9ed8677a79e37a54a3848a089a14c27961b492b40dfdc6be975aa190188d3"
+    },
+    {
+        "path":  "onnxruntime.lib",
+        "length":  2124,
+        "sha256":  "63b987e2c3e37fe852a291d012931c0aadda2c9978eb259bc441a0023cd1920c"
+    },
+    {
+        "path":  "onnxruntime_providers_shared.lib",
+        "length":  2314,
+        "sha256":  "e3de923bee2994db06e0d01ce8c0b62ce9b05c25501b3efc837a039d3eef88f1"
+    },
+    {
+        "path":  "README.txt",
+        "length":  3556,
+        "sha256":  "26b10a82ff1f87fbf93101bfbd19be62d2250cdeebde0943c8f7db591ea6f765"
+    },
+    {
+        "path":  "scripts/Test-G005PublishContract.ps1",
+        "length":  3680,
+        "sha256":  "3483ed0d047f4d0b71dbce6a2936702e13285eb1b976e205ea58c82746129cdb"
+    },
+    {
+        "path":  "scripts/Test-SidecarPackage.ps1",
+        "length":  1818,
+        "sha256":  "20950ae1b0f00c8f79ecec8340b2fff205dea44a90fff950ce78919f9a7e94a2"
+    },
+    {
+        "path":  "sidecar/asr_server.py",
+        "length":  2978,
+        "sha256":  "e7b211b01ee041857042ec47f945385f999371647d7ebbd15706b751084447b0"
+    },
+    {
+        "path":  "sidecar/asr-sidecar.manifest.json",
+        "length":  906,
+        "sha256":  "52dc05d2403065f0747c8a9c41cce097d0f91da99929b5b68b60d5cb4656ddaf"
+    },
+    {
+        "path":  "sidecar/requirements.lock",
+        "length":  49,
+        "sha256":  "8b02e665b6a5fb1c93601241eb809247909f494464fb7596537688a730a00b58"
+    }
+]

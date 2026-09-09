@@ -1,0 +1,129 @@
+{
+    "schema_version":  1,
+    "evidence_only":  false,
+    "head":  "6d8607e1cdb72ab128ef354cce5ac5d62c5d5203",
+    "generated_at":  "2026-07-19T07:41:29.0965208+00:00",
+    "test_results":  {
+                         "total":  295,
+                         "executed":  295,
+                         "passed":  295,
+                         "failed":  0,
+                         "skipped":  0
+                     },
+    "minimum_tests":  200,
+    "test_filter":  "",
+    "require_sidecar_runtime":  false,
+    "integrity_passed":  true,
+    "integrity_errors":  [
+
+                         ],
+    "failed_stages":  [
+
+                      ],
+    "high_critical_vulnerabilities":  0,
+    "coverage_files":  [
+                           "test-results\\ab0a08da-4589-4314-aa4b-514eea5ace6f\\coverage.cobertura.xml",
+                           "test-results\\nashorya_NASHOR_2026-07-19_15_40_17\\In\\NASHOR\\coverage.cobertura.xml"
+                       ],
+    "secret_scan_passed":  true,
+    "stages":  [
+                   {
+                       "name":  "01-restore",
+                       "command":  "dotnet restore AIVTuber.slnx --locked-mode",
+                       "started_at":  "2026-07-19T07:40:11.1392527+00:00",
+                       "finished_at":  "2026-07-19T07:40:12.0377906+00:00",
+                       "exit_code":  0,
+                       "stdout":  "01-restore.stdout.log",
+                       "stderr":  "01-restore.stderr.log"
+                   },
+                   {
+                       "name":  "02-build",
+                       "command":  "dotnet build AIVTuber.slnx -c Release --no-restore",
+                       "started_at":  "2026-07-19T07:40:12.0575941+00:00",
+                       "finished_at":  "2026-07-19T07:40:14.4885077+00:00",
+                       "exit_code":  0,
+                       "stdout":  "02-build.stdout.log",
+                       "stderr":  "02-build.stderr.log"
+                   },
+                   {
+                       "name":  "02-native-test-dependency",
+                       "command":  "Resolve WebRtcVadSharp from project.assets.json, copy WebRtcVad.dll, validate SHA256",
+                       "started_at":  "2026-07-19T07:40:14.5025331+00:00",
+                       "finished_at":  "2026-07-19T07:40:14.6476471+00:00",
+                       "exit_code":  0,
+                       "stdout":  "02-native-test-dependency.stdout.log",
+                       "stderr":  "02-native-test-dependency.stderr.log"
+                   },
+                   {
+                       "name":  "03-test-coverage",
+                       "command":  "dotnet test AIVTuber.Tests/AIVTuber.Tests.csproj -c Release --no-build --logger trx;LogFileName=baseline.trx --results-directory C:\\Users\\nashorya\\my-AI-Vtuber\\artifacts\\release-v0.2.0\\test-results --collect XPlat Code Coverage",
+                       "started_at":  "2026-07-19T07:40:14.6487262+00:00",
+                       "finished_at":  "2026-07-19T07:41:12.9221684+00:00",
+                       "exit_code":  0,
+                       "stdout":  "03-test-coverage.stdout.log",
+                       "stderr":  "03-test-coverage.stderr.log"
+                   },
+                   {
+                       "name":  "04-dependency-graph",
+                       "command":  "dotnet list AIVTuber.slnx package --include-transitive --no-restore",
+                       "started_at":  "2026-07-19T07:41:12.9233824+00:00",
+                       "finished_at":  "2026-07-19T07:41:14.1255814+00:00",
+                       "exit_code":  0,
+                       "stdout":  "04-dependency-graph.stdout.log",
+                       "stderr":  "04-dependency-graph.stderr.log"
+                   },
+                   {
+                       "name":  "05-vulnerability-audit",
+                       "command":  "dotnet list AIVTuber.slnx package --vulnerable --include-transitive --no-restore --format json --output-version 1",
+                       "started_at":  "2026-07-19T07:41:14.1255814+00:00",
+                       "finished_at":  "2026-07-19T07:41:15.8381596+00:00",
+                       "exit_code":  0,
+                       "stdout":  "05-vulnerability-audit.stdout.log",
+                       "stderr":  "05-vulnerability-audit.stderr.log"
+                   },
+                   {
+                       "name":  "06-publish",
+                       "command":  "dotnet publish App/App.csproj -c Release -r win-x64 --no-restore -o C:\\Users\\nashorya\\my-AI-Vtuber\\artifacts\\release-v0.2.0\\publish",
+                       "started_at":  "2026-07-19T07:41:15.8381596+00:00",
+                       "finished_at":  "2026-07-19T07:41:18.3202925+00:00",
+                       "exit_code":  0,
+                       "stdout":  "06-publish.stdout.log",
+                       "stderr":  "06-publish.stderr.log"
+                   },
+                   {
+                       "name":  "07-ci-contract",
+                       "command":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -File C:\\Users\\nashorya\\my-AI-Vtuber\\scripts\\Test-G006CiContract.ps1 -RepositoryRoot C:\\Users\\nashorya\\my-AI-Vtuber",
+                       "started_at":  "2026-07-19T07:41:18.3721011+00:00",
+                       "finished_at":  "2026-07-19T07:41:18.6314887+00:00",
+                       "exit_code":  0,
+                       "stdout":  "07-ci-contract.stdout.log",
+                       "stderr":  "07-ci-contract.stderr.log"
+                   },
+                   {
+                       "name":  "08-sidecar-package",
+                       "command":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -File C:\\Users\\nashorya\\my-AI-Vtuber\\artifacts\\release-v0.2.0\\publish\\scripts\\Test-SidecarPackage.ps1 -PackageRoot C:\\Users\\nashorya\\my-AI-Vtuber\\artifacts\\release-v0.2.0\\publish",
+                       "started_at":  "2026-07-19T07:41:18.6325699+00:00",
+                       "finished_at":  "2026-07-19T07:41:18.9905660+00:00",
+                       "exit_code":  0,
+                       "stdout":  "08-sidecar-package.stdout.log",
+                       "stderr":  "08-sidecar-package.stderr.log"
+                   },
+                   {
+                       "name":  "09-publish-contract",
+                       "command":  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoProfile -File C:\\Users\\nashorya\\my-AI-Vtuber\\scripts\\Test-G005PublishContract.ps1 -RepositoryRoot C:\\Users\\nashorya\\my-AI-Vtuber",
+                       "started_at":  "2026-07-19T07:41:18.9905660+00:00",
+                       "finished_at":  "2026-07-19T07:41:20.7989155+00:00",
+                       "exit_code":  0,
+                       "stdout":  "09-publish-contract.stdout.log",
+                       "stderr":  "09-publish-contract.stderr.log"
+                   },
+                   {
+                       "name":  "10-publish-manifest",
+                       "command":  "Get-ChildItem/Get-FileHash C:\\Users\\nashorya\\my-AI-Vtuber\\artifacts\\release-v0.2.0\\publish",
+                       "started_at":  "2026-07-19T07:41:20.7989155+00:00",
+                       "finished_at":  "2026-07-19T07:41:21.1628061+00:00",
+                       "exit_code":  0,
+                       "log":  "publish-manifest.json"
+                   }
+               ]
+}

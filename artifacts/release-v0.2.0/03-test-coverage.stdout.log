@@ -1,0 +1,9 @@
+C:\Users\nashorya\my-AI-Vtuber\AIVTuber.Tests\bin\Release\net10.0\AIVTuber.Tests.dll (.NETCoreApp,Version=v10.0)的测试运行
+总共 1 个测试文件与指定模式相匹配。
+结果文件: C:\Users\nashorya\my-AI-Vtuber\artifacts\release-v0.2.0\test-results\baseline.trx
+
+已通过! - 失败:     0，通过:   295，已跳过:     0，总计:   295，持续时间: 54 s - AIVTuber.Tests.dll (net10.0)
+
+附件:
+  C:\Users\nashorya\my-AI-Vtuber\artifacts\release-v0.2.0\test-results\ab0a08da-4589-4314-aa4b-514eea5ace6f\coverage.cobertura.xml
+

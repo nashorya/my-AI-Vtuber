@@ -483,6 +483,31 @@ try {
         $integrityErrors.Add("Publish output contains forbidden real configuration file config.json.")
     }
 
+    $avatarConfigPath = Join-Path $publishRoot "assets/avatar/avatar.json"
+    if (-not (Test-Path -LiteralPath $avatarConfigPath -PathType Leaf)) {
+        $integrityErrors.Add("Publish output is missing assets/avatar/avatar.json.")
+    }
+    else {
+        try {
+            $avatarConfig = Get-Content -LiteralPath $avatarConfigPath -Raw | ConvertFrom-Json
+            $avatarStateFiles = @(
+                $avatarConfig.states.PSObject.Properties |
+                    ForEach-Object { [string]$_.Value.file } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                    Sort-Object -Unique
+            )
+            foreach ($avatarStateFile in $avatarStateFiles) {
+                $normalizedAvatarPath = "assets/avatar/" + $avatarStateFile.Replace("\", "/")
+                if ($normalizedAvatarPath -notin $publishedRelativePaths) {
+                    $integrityErrors.Add("Publish output is missing avatar state file: $normalizedAvatarPath")
+                }
+            }
+        }
+        catch {
+            $integrityErrors.Add("Published avatar config could not be validated: $($_.Exception.Message)")
+        }
+    }
+
     $failedStages = @($stages | Where-Object { $_.exit_code -ne 0 } | ForEach-Object { $_.name })
     if (-not $EvidenceOnly -and $failedStages.Count -gt 0) {
         $integrityErrors.Add("Blocking stages failed: $($failedStages -join ', ')")

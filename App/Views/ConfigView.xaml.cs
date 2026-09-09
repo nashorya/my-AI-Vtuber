@@ -35,9 +35,12 @@ public partial class ConfigView : UserControl
 
         // PasswordBox.Password isn't bindable; copy values before saving.
         // An empty box means "keep the existing key".
-        if (!string.IsNullOrEmpty(LlmKey.Password)) vm.Working.Llm.ApiKey = LlmKey.Password;
-        if (!string.IsNullOrEmpty(TtsKey.Password)) vm.Working.Tts.ApiKey = TtsKey.Password;
-        if (!string.IsNullOrEmpty(AsrKey.Password)) vm.Working.Asr.ApiKey = AsrKey.Password;
+        if (!string.IsNullOrEmpty(LlmKey.Password)) vm.Working.Llm.StoreKey(LlmKey.Password);
+        else vm.Working.Llm.ActivateStoredKey();
+        if (!string.IsNullOrEmpty(TtsKey.Password)) vm.Working.Tts.StoreKey(TtsKey.Password);
+        else vm.Working.Tts.ActivateStoredKey();
+        if (!string.IsNullOrEmpty(AsrKey.Password)) vm.Working.Asr.StoreKey(AsrKey.Password);
+        else vm.Working.Asr.ActivateStoredKey();
         if (!string.IsNullOrEmpty(ObsPassword.Password)) vm.Working.Obs.Password = ObsPassword.Password;
         if (!string.IsNullOrEmpty(BiliSessdata.Password)) vm.Working.Bilibili.Sessdata = BiliSessdata.Password;
         if (!string.IsNullOrEmpty(BiliJct.Password)) vm.Working.Bilibili.BiliJct = BiliJct.Password;

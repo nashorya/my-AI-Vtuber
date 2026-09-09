@@ -148,9 +148,10 @@
   },
   "motion_layer": {
     "breath": {
-      "scale_amp": 0.008,
+      "amp_px": 0,
+      "scale_amp": 0,
       "period_ms": 3200,
-      "comment": "仅纵向缩放,锚点 meta.pivot(脚底)。禁止位移,amp_px 已废弃"
+      "comment": "呼吸位移与缩放已关闭"
     },
     "bounce": {
       "comment": "说话弹跳,由RMS驱动",
@@ -160,12 +161,12 @@
       "gain": 4.0
     },
     "drift": {
-      "comment": "Perlin微漂移",
-      "amp_px": 2.5,
+      "comment": "水平漂移关闭,避免整身左右晃",
+      "amp_px": 0,
       "speed": 0.3
     },
     "sway": {
-      "comment": "整体轻微旋转摆动。默认关闭(0);需要时再开",
+      "comment": "整体旋转摆动关闭",
       "amp_deg": 0,
       "period_ms": 5200
     },

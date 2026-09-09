@@ -4,11 +4,12 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AIVTuber.Core.Config;
+using AIVTuber.Core;
 
 namespace AIVTuber.Core.LiveStream;
 
 /// <summary>
-/// Bilibili danmaku client using a Python bridge subprocess.
+/// Bilibili danmaku client using a local bridge subprocess (Go exe, Python fallback).
 /// Receives danmaku via local HTTP endpoint, auto-restarts up to 3 times on crash.
 /// </summary>
 public sealed class BilibiliDanmakuClient : IDisposable
@@ -28,7 +29,7 @@ public sealed class BilibiliDanmakuClient : IDisposable
     public event EventHandler? OnPkEnded;
     public event EventHandler<string>? OnProcessExited;
     public event EventHandler<string>? OnError;
-    /// <summary>Raised for each stdout/stderr line emitted by the Python bridge (for diagnostics).</summary>
+    /// <summary>Raised for each stdout/stderr line emitted by the bridge (for diagnostics).</summary>
     public event EventHandler<string>? OnBridgeOutput;
 
     public BilibiliDanmakuClient(BilibiliConfig config) => _config = config;
@@ -47,11 +48,11 @@ public sealed class BilibiliDanmakuClient : IDisposable
         _httpListener.Prefixes.Add($"http://localhost:{_config.PushPort}/pk/");
         _httpListener.Start();
         _ = AcceptLoopAsync(_cts.Token);
-        StartPythonProcess();
+        StartBridgeProcess();
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
-    /// <summary>Stops the HTTP listener and kills the Python process.</summary>
+    /// <summary>Stops the HTTP listener and kills the bridge process.</summary>
     public async Task StopAsync()
     {
         _cts?.Cancel();
@@ -119,12 +120,27 @@ public sealed class BilibiliDanmakuClient : IDisposable
         }
     }
 
-    private void StartPythonProcess()
+    internal static (string FileName, string Arguments) ResolveBridgeCommand(string contentRoot, string pythonPath)
+    {
+        var exe = Path.Combine(contentRoot, "danmaku_bridge.exe");
+        if (File.Exists(exe))
+            return (exe, string.Empty);
+
+        var script = Path.Combine(contentRoot, "danmaku_bridge.py");
+        var args = File.Exists(script) ? $"\"{script}\"" : "danmaku_bridge.py";
+        return (pythonPath, args);
+    }
+
+    private void StartBridgeProcess()
     {
         KillOrphanedProcess();
+        var contentRoot = AppPaths.ContentRoot;
+        var (fileName, arguments) = ResolveBridgeCommand(contentRoot, _config.PythonPath);
         var si = new ProcessStartInfo
         {
-            FileName = _config.PythonPath, Arguments = "danmaku_bridge.py",
+            FileName = fileName,
+            Arguments = arguments,
+            WorkingDirectory = contentRoot,
             RedirectStandardOutput = true, RedirectStandardError = true,
             UseShellExecute = false, CreateNoWindow = true
         };
@@ -150,7 +166,7 @@ public sealed class BilibiliDanmakuClient : IDisposable
         _pythonProcess.Start();
         _pythonProcess.BeginOutputReadLine();
         _pythonProcess.BeginErrorReadLine();
-        OnBridgeOutput?.Invoke(this, $"桥进程已启动 pid={_pythonProcess.Id} 房间={_config.RoomId} 推送端口={_config.PushPort}");
+        OnBridgeOutput?.Invoke(this, $"桥进程已启动 pid={_pythonProcess.Id} 文件={fileName} 房间={_config.RoomId} 推送端口={_config.PushPort}");
     }
 
     private void OnPythonProcessExited(object? sender, EventArgs e)
@@ -160,7 +176,7 @@ public sealed class BilibiliDanmakuClient : IDisposable
         if (++_restartCount > 3) { OnError?.Invoke(this, $"桥进程已退出(code={exitCode})并连续崩溃3次，已停止重启"); return; }
 
         OnProcessExited?.Invoke(this, $"桥进程已退出(code={exitCode})，5秒后重启(第{_restartCount}次)");
-        Task.Delay(5000).ContinueWith(_ => { if (!_cts.IsCancellationRequested) StartPythonProcess(); });
+        Task.Delay(5000).ContinueWith(_ => { if (!_cts.IsCancellationRequested) StartBridgeProcess(); });
     }
 
     private void KillOrphanedProcess()

@@ -4,7 +4,7 @@ using System.Text.Json.Serialization;
 namespace AIVTuber.Core.LiveStream;
 
 /// <summary>
-/// The opposing streamer in a Bilibili PK match, as resolved by the Python bridge.
+/// The opposing streamer in a Bilibili PK match, as resolved by the danmaku bridge.
 /// </summary>
 public sealed class PkOpponent
 {

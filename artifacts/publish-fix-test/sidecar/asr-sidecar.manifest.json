@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "sidecar_version": "1",
+  "delivery_mode": "managed-embedded-python",
+  "protocol": {
+    "health_endpoint": "/health",
+    "recognize_endpoint": "/recognize",
+    "ready_status": "ready"
+  },
+  "runtime": {
+    "executable": "python/python.exe",
+    "required_at_launch": true,
+    "model_source": "Qwen/Qwen3-ASR-0.6B",
+    "device_default": "auto"
+  },
+  "files": [
+    {
+      "path": "asr_server.py",
+      "sha256": "e7b211b01ee041857042ec47f945385f999371647d7ebbd15706b751084447b0"
+    },
+    {
+      "path": "requirements.lock",
+      "sha256": "8b02e665b6a5fb1c93601241eb809247909f494464fb7596537688a730a00b58"
+    }
+  ],
+  "error_codes": {
+    "runtime_missing": "ASR-SIDECAR-001",
+    "payload_missing": "ASR-SIDECAR-002",
+    "payload_hash_mismatch": "ASR-SIDECAR-003",
+    "manifest_invalid": "ASR-SIDECAR-004",
+    "model_or_device_failed": "ASR-SIDECAR-005"
+  }
+}

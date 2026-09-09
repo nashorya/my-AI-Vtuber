@@ -148,6 +148,54 @@ public class LlmClientTests
     }
 }
 
+public class LlmTransportTests
+{
+    [Theory]
+    [InlineData("https://generativelanguage.googleapis.com/v1beta/openai", true)]
+    [InlineData("https://generativelanguage.googleapis.com/v1beta/openai/", true)]
+    [InlineData("https://api.deepseek.com", false)]
+    [InlineData("https://api.openai.com/v1", false)]
+    [InlineData("http://127.0.0.1:11434", false)]
+    public void IsGemini_DetectsOfficialHost(string baseUrl, bool expected)
+    {
+        Assert.Equal(expected, LlmTransport.IsGemini(baseUrl));
+    }
+
+    [Fact]
+    public void ResolveProxy_UsesLocal7897OnlyForGemini()
+    {
+        Assert.Equal(
+            new Uri("http://127.0.0.1:7897"),
+            LlmTransport.ResolveProxy("https://generativelanguage.googleapis.com/v1beta/openai"));
+        Assert.Null(LlmTransport.ResolveProxy("https://api.deepseek.com"));
+    }
+
+    [Theory]
+    [InlineData(
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")]
+    [InlineData(
+        "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")]
+    [InlineData(
+        "https://generativelanguage.googleapis.com",
+        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")]
+    [InlineData("https://api.deepseek.com", "https://api.deepseek.com/v1/chat/completions")]
+    [InlineData("https://api.deepseek.com/", "https://api.deepseek.com/v1/chat/completions")]
+    [InlineData("https://api.deepseek.com/v1", "https://api.deepseek.com/v1/chat/completions")]
+    public void ResolveChatCompletionsUrl_MatchesProvider(string baseUrl, string expected)
+    {
+        Assert.Equal(expected, LlmTransport.ResolveChatCompletionsUrl(baseUrl));
+    }
+
+    [Fact]
+    public void IncludeThinkingDisabled_OnlyForNonGemini()
+    {
+        Assert.False(LlmTransport.IncludeThinkingDisabled("https://generativelanguage.googleapis.com/v1beta/openai"));
+        Assert.True(LlmTransport.IncludeThinkingDisabled("https://api.deepseek.com"));
+    }
+}
+
 public class ConversationManagerTests
 {
     private static ConversationManager CreateManager(int maxTokens = 4096)

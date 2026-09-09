@@ -38,15 +38,19 @@ public static class ConfigDiff
     {
         var c = RuntimeChange.None;
 
-        if (a.Llm.BaseUrl != b.Llm.BaseUrl || a.Llm.ApiKey != b.Llm.ApiKey ||
-            a.Llm.Model != b.Llm.Model || a.Llm.SystemPrompt != b.Llm.SystemPrompt ||
-            a.Llm.MaxHistoryTokens != b.Llm.MaxHistoryTokens)
+        if (a.Llm.Provider != b.Llm.Provider || a.Llm.BaseUrl != b.Llm.BaseUrl ||
+            a.Llm.ApiKey != b.Llm.ApiKey || a.Llm.Model != b.Llm.Model ||
+            a.Llm.SystemPrompt != b.Llm.SystemPrompt ||
+            a.Llm.MaxHistoryTokens != b.Llm.MaxHistoryTokens ||
+            !DictEqual(a.Llm.ApiKeys, b.Llm.ApiKeys) ||
+            !DictEqual(a.Llm.Models, b.Llm.Models))
             c |= RuntimeChange.RebuildLlm;
 
         if (a.Asr.Provider != b.Asr.Provider || a.Asr.ApiKey != b.Asr.ApiKey ||
             a.Asr.AppId != b.Asr.AppId || a.Asr.Model != b.Asr.Model ||
             a.Asr.LocalAsrUrl != b.Asr.LocalAsrUrl || a.Asr.PythonPath != b.Asr.PythonPath ||
-            a.Asr.PersistConnection != b.Asr.PersistConnection)
+            a.Asr.PersistConnection != b.Asr.PersistConnection ||
+            !DictEqual(a.Asr.ApiKeys, b.Asr.ApiKeys))
             c |= RuntimeChange.RebuildAsr;
         // Streaming toggles VAD→channel wiring inside StartAudio; ASR client rebuild alone is not enough.
         if (a.Asr.Streaming != b.Asr.Streaming)
@@ -57,7 +61,8 @@ public static class ConfigDiff
             a.Tts.GroupId != b.Tts.GroupId || a.Tts.Speed != b.Tts.Speed ||
             a.Tts.BaseUrl != b.Tts.BaseUrl || a.Tts.Language != b.Tts.Language ||
             a.Tts.Seed != b.Tts.Seed || a.Tts.NumSteps != b.Tts.NumSteps ||
-            a.Tts.GuidanceScale != b.Tts.GuidanceScale)
+            a.Tts.GuidanceScale != b.Tts.GuidanceScale ||
+            !DictEqual(a.Tts.ApiKeys, b.Tts.ApiKeys))
             c |= RuntimeChange.RebuildTts;
         // The player's WaveFormat and the virtual-mic buffer are built from this rate.
         if (a.Tts.SampleRate != b.Tts.SampleRate)
