@@ -6,5 +6,6 @@ namespace AIVTuber.Core.Ui;
 public static class FirstRunGuidance
 {
     public static bool NeedsGuidance(AppConfig config)
-        => string.IsNullOrEmpty(config.Llm.ApiKey) && string.IsNullOrEmpty(config.Tts.ApiKey);
+        => string.IsNullOrEmpty(config.Llm.ApiKey) && config.Llm.ApiKeys.Values.All(string.IsNullOrEmpty)
+            && string.IsNullOrEmpty(config.Tts.ApiKey) && config.Tts.ApiKeys.Values.All(string.IsNullOrEmpty);
 }

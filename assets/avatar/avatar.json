@@ -147,17 +147,10 @@
     "hold_ms": 60
   },
   "motion_layer": {
-<<<<<<< HEAD
-    "breath":  { "comment": "呼吸位移与缩放已关闭", "amp_px": 0, "scale_amp": 0, "period_ms": 3200 },
-    "bounce":  { "comment": "说话弹跳,由RMS驱动", "max_px": 14, "attack_ms": 40, "release_ms": 180 },
-    "drift":   { "comment": "微漂移仅保留上下;水平关闭避免整身左右晃", "amp_px": 0, "speed": 0.3 },
-    "sway":    { "comment": "整图旋转摆动已关(amp_deg=0)。歪头需头身分层,未做", "amp_deg": 0, "period_ms": 5200 },
-    "listening": { "comment": "Realtime VAD倾听歪头预留;SetListening 空实现,未接线", "tilt_deg": 5, "blink_interval_scale": 0.7 }
-=======
     "breath": {
-      "scale_amp": 0.008,
+      "scale_amp": 0,
       "period_ms": 3200,
-      "comment": "仅纵向缩放,锚点 meta.pivot(脚底)。禁止位移,amp_px 已废弃"
+      "comment": "呼吸缩放已关闭"
     },
     "bounce": {
       "comment": "说话弹跳,由RMS驱动",
@@ -167,12 +160,12 @@
       "gain": 4.0
     },
     "drift": {
-      "comment": "Perlin微漂移",
-      "amp_px": 2.5,
+      "comment": "水平漂移关闭,避免整身左右晃",
+      "amp_px": 0,
       "speed": 0.3
     },
     "sway": {
-      "comment": "整体轻微旋转摆动。默认关闭(0);需要时再开",
+      "comment": "整体旋转摆动关闭",
       "amp_deg": 0,
       "period_ms": 5200
     },
@@ -186,7 +179,6 @@
       "stiffness": 120,
       "damping": 14
     }
->>>>>>> 760135300e484868178424d0291b1b47c78fad0d
   },
   "stickers": {
     "comment": "overlay通道,弹出于头部右上方,任意PNG即插即用",

@@ -381,6 +381,40 @@ textarea { resize: vertical; min-height: 64px; }
 }
 .switch input { width: auto; }
 
+.bili-qr {
+  margin: 12px 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.bili-qr-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.bili-qr-box {
+  width: 168px;
+  padding: 10px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.bili-qr-box img,
+.bili-qr-box table,
+.bili-qr-box svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.bili-qr-status {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--mute);
+}
+.bili-qr-status.ok { color: var(--go); }
+.bili-qr-status.err { color: var(--signal); }
+
 .map-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
 .map-row {
   display: grid;

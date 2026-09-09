@@ -18,6 +18,16 @@ public class DashScopeProtocolTests
     }
 
     [Fact]
+    public void NormalizePair_TrimsVoiceAndModel()
+    {
+        var (model, voice) = DashScopeTtsClient.NormalizePair(
+            "  cosyvoice-v3.5-plus ",
+            " cosyvoice-v3.5-plus-whale-a5a94af4a69d42d6aa444a1987df0d64");
+        Assert.Equal("cosyvoice-v3.5-plus", model);
+        Assert.Equal("cosyvoice-v3.5-plus-whale-a5a94af4a69d42d6aa444a1987df0d64", voice);
+    }
+
+    [Fact]
     public void RunTaskTts_HasTtsTaskVoiceAndRate()
     {
         var json = DashScopeProtocol.RunTaskTts("t2", "cosyvoice-v3-flash", "longanyang", 44100, 1.0);

@@ -183,7 +183,37 @@
     renderMaps();
 
     if (data.status) setSaveStatus(data.status, data.ok === false ? "err" : "");
+    markBiliSecrets(draft.bilibili || {});
+    markApiKeySecrets(draft);
     suppressPatch = false;
+  }
+
+  function markApiKeySecrets(draft) {
+    [
+      ["llm.apiKey", !!(draft.llm && draft.llm.apiKeySet)],
+      ["asr.apiKey", !!(draft.asr && draft.asr.apiKeySet)],
+      ["tts.apiKey", !!(draft.tts && draft.tts.apiKeySet)],
+    ].forEach(([id, saved]) => {
+      const el = $(id);
+      if (!el) return;
+      el.placeholder = saved ? "已保存" : "留空不修改";
+      const hint = el.closest(".field")?.querySelector(".hint");
+      if (hint) hint.textContent = saved ? "已保存" : "留空不修改";
+    });
+  }
+
+  function markBiliSecrets(bili) {
+    [
+      ["bilibili.sessdata", !!(bili.sessdataSet || bili.sessdata)],
+      ["bilibili.biliJct", !!(bili.biliJctSet || bili.biliJct)],
+      ["bilibili.buvid3", !!(bili.buvid3Set || bili.buvid3)],
+    ].forEach(([id, saved]) => {
+      const el = $(id);
+      if (!el) return;
+      el.placeholder = saved ? "已保存" : "留空不修改";
+      const hint = el.closest(".field")?.querySelector(".hint");
+      if (hint) hint.textContent = saved ? "已保存" : "留空不修改";
+    });
   }
 
   function patchFromEl(el) {
@@ -203,6 +233,55 @@
     el.textContent = text || "";
     el.classList.remove("ok", "err");
     if (cls) el.classList.add(cls);
+  }
+
+  function renderBiliQr(data) {
+    const status = String(data.status || "").toLowerCase();
+    const box = $("biliQrBox");
+    const label = $("biliQrStatus");
+    const start = $("btnBiliQr");
+    const cancel = $("btnBiliQrCancel");
+    const busy = status === "waiting" || status === "scanned";
+    start.disabled = busy;
+    cancel.hidden = !busy;
+    label.classList.remove("ok", "err");
+    const texts = {
+      waiting: "等待扫码",
+      scanned: "已扫码",
+      succeeded: "已登录",
+      expired: "已过期",
+      failed: data.error || "失败",
+      cancelled: "",
+      idle: "",
+    };
+    label.textContent = texts[status] ?? "";
+    if (status === "succeeded") {
+      label.classList.add("ok");
+      if (data.sessdata) $("bilibili.sessdata").value = data.sessdata;
+      if (data.biliJct) $("bilibili.biliJct").value = data.biliJct;
+      if (data.buvid3) $("bilibili.buvid3").value = data.buvid3;
+      markBiliSecrets({
+        sessdata: data.sessdata,
+        biliJct: data.biliJct,
+        buvid3: data.buvid3,
+        sessdataSet: !!data.sessdata,
+        biliJctSet: !!data.biliJct,
+        buvid3Set: !!data.buvid3,
+      });
+    }
+    if (status === "expired" || status === "failed") label.classList.add("err");
+
+    const url = data.qrUrl;
+    if (busy && url && typeof qrcode === "function") {
+      box.hidden = false;
+      const qr = qrcode(0, "M");
+      qr.addData(url);
+      qr.make();
+      box.innerHTML = qr.createSvgTag(4, 2);
+    } else {
+      box.hidden = true;
+      box.innerHTML = "";
+    }
   }
 
   function renderState(data) {
@@ -459,6 +538,8 @@
   $("btnAddEmotion").addEventListener("click", () => send("addEmotion"));
   $("btnAddAction").addEventListener("click", () => send("addAction"));
   $("btnImportAnimations").addEventListener("click", () => send("importAnimations"));
+  $("btnBiliQr").addEventListener("click", () => send("startBiliQrLogin"));
+  $("btnBiliQrCancel").addEventListener("click", () => send("cancelBiliQrLogin"));
 
   // Field changes → patchConfig
   document.getElementById("setScroll").addEventListener("change", (e) => {
@@ -514,6 +595,7 @@
     if (msg.type === "state") renderState(msg.data || {});
     else if (msg.type === "config") populateConfig(msg.data || {});
     else if (msg.type === "memory") renderMemory(msg.data || {});
+    else if (msg.type === "biliQr") renderBiliQr(msg.data || {});
     else if (msg.type === "result") {
       const d = msg.data || {};
       const ok = d.ok !== false && !d.error;

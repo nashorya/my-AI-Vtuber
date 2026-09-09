@@ -81,6 +81,26 @@ class TestExtractOpponentRoomId:
         }}
         assert bridge.extract_opponent_room_id(payload, SELF_ROOM) == OPPONENT_ROOM
 
+    def test_init_id_and_match_id_are_room_ids(self):
+        payload = {"data": {
+            "init_info": {"init_id": SELF_ROOM, "uid": 1},
+            "match_info": {"match_id": OPPONENT_ROOM, "uid": 2, "uname": "对面"},
+        }}
+        assert bridge.extract_opponent_room_id(payload, SELF_ROOM) == OPPONENT_ROOM
+
+    def test_hint_reads_match_info(self):
+        payload = {"data": {
+            "init_info": {"init_id": SELF_ROOM, "uid": 11, "uname": "自己"},
+            "match_info": {"match_id": OPPONENT_ROOM, "uid": 22, "uname": "对面主播乙"},
+        }}
+        hint = bridge.extract_opponent_hint(payload, SELF_ROOM)
+        assert hint == {
+            "uid": "22",
+            "username": "对面主播乙",
+            "follower": 0,
+            "roomid": OPPONENT_ROOM,
+        }
+
 
 class TestDedupe:
     """PRE and START (and their _NEW variants) all fire for one PK match."""

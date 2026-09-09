@@ -32,5 +32,16 @@ AI-Vtuber/
 __pycache__/
 *.pyc
 
+# Go danmaku bridge binary (built locally / CI)
+danmaku-bridge/danmaku_bridge.exe
+danmaku-bridge/danmaku_bridge
+
+# Local Python / ASR
+.venv-asr/
+artifacts/*.log
+artifacts/**/*.log
+artifacts/**/*.exe
+artifacts/**/*.zip
+
 # ONNX model files (large, download separately)
 models/WebRtcVad.dll

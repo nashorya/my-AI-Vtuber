@@ -17,6 +17,12 @@ public sealed class DashScopeTtsClient : ITtsClient
 
     public DashScopeTtsClient(TtsConfig config) => _config = config;
 
+    internal static (string Model, string Voice) NormalizePair(string? model, string? voice)
+    {
+        var m = string.IsNullOrWhiteSpace(model) ? "cosyvoice-v3-flash" : model.Trim();
+        return (m, (voice ?? "").Trim());
+    }
+
     /// <summary>Surface Aliyun 418 (voice/model mismatch) with an actionable hint.</summary>
     internal static string FormatTaskFailed(string? err, string model, string voiceId)
     {
@@ -51,7 +57,7 @@ public sealed class DashScopeTtsClient : ITtsClient
         string? emotion,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var model = string.IsNullOrWhiteSpace(_config.Model) ? "cosyvoice-v3-flash" : _config.Model;
+        var (model, voice) = NormalizePair(_config.Model, voiceId);
 
         using var ws = new ClientWebSocket();
         ws.Options.SetRequestHeader("Authorization", $"bearer {_config.ApiKey}");
@@ -61,7 +67,7 @@ public sealed class DashScopeTtsClient : ITtsClient
         var taskId = DashScopeProtocol.NewTaskId();
         var instructions = MapToDashScopeInstruction(emotion);
         await DashScopeSocket.SendTextAsync(ws,
-            DashScopeProtocol.RunTaskTts(taskId, model, voiceId, _config.SampleRate, _config.Speed, instructions),
+            DashScopeProtocol.RunTaskTts(taskId, model, voice, _config.SampleRate, _config.Speed, instructions),
             cancellationToken);
 
         var textSent = false;
@@ -96,7 +102,7 @@ public sealed class DashScopeTtsClient : ITtsClient
 
                 case "task-failed":
                     await DashScopeSocket.CloseAsync(ws);
-                    throw new InvalidOperationException(FormatTaskFailed(err, model, voiceId));
+                    throw new InvalidOperationException(FormatTaskFailed(err, model, voice));
             }
         }
     }

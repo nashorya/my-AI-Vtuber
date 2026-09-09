@@ -7,9 +7,9 @@ public class ConfigDiffContractTests
 {
     private static readonly string[] RegisteredRuntimeFields =
     [
-        "Asr.Provider", "Asr.ApiKey", "Asr.AppId", "Asr.Model", "Asr.LocalAsrUrl", "Asr.PythonPath",
+        "Asr.Provider", "Asr.ApiKey", "Asr.ApiKeys", "Asr.AppId", "Asr.Model", "Asr.LocalAsrUrl", "Asr.PythonPath",
         "Asr.PersistConnection", "Asr.Streaming",
-        "Tts.Provider", "Tts.ApiKey", "Tts.VoiceId", "Tts.Model", "Tts.GroupId", "Tts.Speed",
+        "Tts.Provider", "Tts.ApiKey", "Tts.ApiKeys", "Tts.VoiceId", "Tts.Model", "Tts.GroupId", "Tts.Speed",
         "Tts.BaseUrl", "Tts.Language", "Tts.Seed", "Tts.NumSteps", "Tts.GuidanceScale", "Tts.SampleRate",
     ];
 
@@ -17,6 +17,7 @@ public class ConfigDiffContractTests
     {
         { "Asr.Provider", c => c.Asr.Provider = "local", RuntimeChange.RebuildAsr },
         { "Asr.ApiKey", c => c.Asr.ApiKey = "new-asr-key", RuntimeChange.RebuildAsr },
+        { "Asr.ApiKeys", c => c.Asr.ApiKeys["aliyun"] = "stashed-asr-key", RuntimeChange.RebuildAsr },
         { "Asr.AppId", c => c.Asr.AppId = "new-app-id", RuntimeChange.RebuildAsr },
         { "Asr.Model", c => c.Asr.Model = "qwen3-asr-flash", RuntimeChange.RebuildAsr },
         { "Asr.LocalAsrUrl", c => c.Asr.LocalAsrUrl = "http://localhost:9876", RuntimeChange.RebuildAsr },
@@ -25,6 +26,7 @@ public class ConfigDiffContractTests
         { "Asr.Streaming", c => c.Asr.Streaming = false, RuntimeChange.RebuildAsr | RuntimeChange.RestartAudio },
         { "Tts.Provider", c => c.Tts.Provider = "minimax", RuntimeChange.RebuildTts },
         { "Tts.ApiKey", c => c.Tts.ApiKey = "new-tts-key", RuntimeChange.RebuildTts },
+        { "Tts.ApiKeys", c => c.Tts.ApiKeys["minimax"] = "stashed-tts-key", RuntimeChange.RebuildTts },
         { "Tts.VoiceId", c => c.Tts.VoiceId = "new-voice", RuntimeChange.RebuildTts },
         { "Tts.Model", c => c.Tts.Model = "speech-2.8-hd", RuntimeChange.RebuildTts },
         { "Tts.GroupId", c => c.Tts.GroupId = "new-group", RuntimeChange.RebuildTts },

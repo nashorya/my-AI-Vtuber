@@ -50,6 +50,17 @@
   <!-- Check OutDir/PublishDir separately: RID projects often define PublishDir even on
        plain Build, and the old AfterTargets copy preferred PublishDir — leaving OutDir
        (where the exe actually runs) without WebRtcVad.dll. -->
+  <Target Name="BuildDanmakuBridge" BeforeTargets="BeforeBuild">
+    <PropertyGroup>
+      <_GoExe Condition="Exists('C:\Program Files\Go\bin\go.exe')">C:\Program Files\Go\bin\go.exe</_GoExe>
+      <_GoExe Condition="'$(_GoExe)' == ''">go</_GoExe>
+    </PropertyGroup>
+    <Exec Command="set GOPROXY=https://goproxy.cn,direct&amp;&amp; set GOSUMDB=off&amp;&amp; &quot;$(_GoExe)&quot; build -ldflags &quot;-s -w&quot; -o danmaku_bridge.exe ."
+          WorkingDirectory="$(MSBuildThisFileDirectory)..\danmaku-bridge"
+          IgnoreExitCode="true"
+          Condition="Exists('$(MSBuildThisFileDirectory)..\danmaku-bridge\go.mod')" />
+  </Target>
+
   <Target Name="EnsureWebRtcVadNative" AfterTargets="Build">
     <Error Condition="!Exists('$(OutDir)WebRtcVad.dll')"
            Text="WebRtcVad.dll missing from $(OutDir). WebRtcVadSharp native asset failed to copy." />
@@ -62,6 +73,12 @@
   <ItemGroup>
     <None Include="..\config.json.template" Link="config.json.template" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\danmaku_bridge.py" Link="danmaku_bridge.py" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="..\danmaku-bridge\danmaku_bridge.exe"
+          Condition="Exists('..\danmaku-bridge\danmaku_bridge.exe')"
+          Link="danmaku_bridge.exe"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" />
     <None Include="..\README.txt" Link="README.txt" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\asr_server.py" Link="sidecar\asr_server.py" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\sidecar\asr-sidecar.manifest.json" Link="sidecar\asr-sidecar.manifest.json" CopyToPublishDirectory="PreserveNewest" />
@@ -76,7 +93,6 @@
     <None Include="..\assets\avatar\**\*"
           Exclude="..\assets\avatar\layered\**\*;..\assets\avatar\contact_sheet.png"
           Link="assets\avatar\%(RecursiveDir)%(Filename)%(Extension)"
-          ExcludeFromSingleFile="true"
           CopyToOutputDirectory="PreserveNewest"
           CopyToPublishDirectory="PreserveNewest"
           ExcludeFromSingleFile="true" />

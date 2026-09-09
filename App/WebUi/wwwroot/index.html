@@ -269,6 +269,14 @@
                 <input type="checkbox" id="bilibili.enable" data-path="bilibili.enable" data-type="bool" />
                 启用 B 站弹幕
               </label>
+              <div class="bili-qr">
+                <div class="bili-qr-bar">
+                  <button type="button" class="btn" id="btnBiliQr">扫码登录</button>
+                  <button type="button" class="btn ghost" id="btnBiliQrCancel" hidden>取消</button>
+                  <span class="bili-qr-status" id="biliQrStatus"></span>
+                </div>
+                <div class="bili-qr-box" id="biliQrBox" hidden></div>
+              </div>
               <div class="row3">
                 <div class="field">
                   <label>房间号</label>
@@ -498,6 +506,7 @@
       </section>
     </div>
   </div>
+  <script src="vendor/qrcode.min.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

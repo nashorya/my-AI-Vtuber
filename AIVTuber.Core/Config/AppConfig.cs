@@ -66,7 +66,7 @@ public sealed class AvatarRuntimeConfig
     /// When true, use a fully transparent WPF window (AllowsTransparency).
     /// Default false — solid chroma key is the safer OBS path and keeps hardware acceleration.
     /// </summary>
-    public bool AllowsTransparency { get; set; } = false;
+    public bool AllowsTransparency { get; set; } = true;
 
     /// <summary>Window width in DIPs. 0 = derive from pack canvas (clamped).</summary>
     public double WindowWidth { get; set; } = 480;
@@ -151,6 +151,8 @@ public sealed class AsrConfig
 {
     public string Provider { get; set; } = "aliyun";
     public string ApiKey { get; set; } = string.Empty;
+    /// <summary>Keys keyed by <see cref="Provider"/> so switching vendors keeps the previous secret.</summary>
+    public Dictionary<string, string> ApiKeys { get; set; } = new();
     public string AppId { get; set; } = string.Empty;
     /// <summary>Model name. Provider-specific; empty = the provider's default
     /// (e.g. aliyun/dashscope → paraformer-realtime-v2).</summary>
@@ -167,22 +169,58 @@ public sealed class AsrConfig
     /// speaking, instead of waiting for the full VAD segment. Returns incremental results.
     /// Only applies to WebSocket-based providers (DashScope/Qwen). Default true.</summary>
     public bool Streaming { get; set; } = true;
+
+    internal string VendorId => ProviderSecrets.Slot(Provider, "aliyun");
+
+    public void RememberActiveKey() => ProviderSecrets.Remember(ApiKeys, VendorId, ApiKey);
+
+    public void ActivateStoredKey()
+    {
+        if (ProviderSecrets.TryActivate(ApiKeys, VendorId, out var key))
+            ApiKey = key;
+    }
+
+    public void StoreKey(string key)
+    {
+        ProviderSecrets.Remember(ApiKeys, VendorId, key);
+        ApiKey = key;
+    }
 }
 
 public sealed class LlmConfig
 {
     public string BaseUrl { get; set; } = "https://api.deepseek.com";
     public string ApiKey { get; set; } = string.Empty;
+    /// <summary>Keys keyed by vendor (deepseek / gemini / host) so switching models keeps the previous secret.</summary>
+    public Dictionary<string, string> ApiKeys { get; set; } = new();
     public string Model { get; set; } = "deepseek-chat";
     public string SystemPrompt { get; set; } =
         "你是直播中的 AI VTuber。口语短句回答，正文不超过80字（控制标记不计入），一句顶十句，别啰嗦、别列点。";
     public int MaxHistoryTokens { get; set; } = 4096;
+
+    internal string VendorId => ProviderSecrets.LlmVendor(BaseUrl);
+
+    public void RememberActiveKey() => ProviderSecrets.Remember(ApiKeys, VendorId, ApiKey);
+
+    public void ActivateStoredKey()
+    {
+        if (ProviderSecrets.TryActivate(ApiKeys, VendorId, out var key))
+            ApiKey = key;
+    }
+
+    public void StoreKey(string key)
+    {
+        ProviderSecrets.Remember(ApiKeys, VendorId, key);
+        ApiKey = key;
+    }
 }
 
 public sealed class TtsConfig
 {
     public string Provider { get; set; } = "fish-audio";
     public string ApiKey { get; set; } = string.Empty;
+    /// <summary>Keys keyed by <see cref="Provider"/> so switching vendors keeps the previous secret.</summary>
+    public Dictionary<string, string> ApiKeys { get; set; } = new();
     public string VoiceId { get; set; } = string.Empty;
     /// <summary>Model name. Provider-specific; empty = the provider's default
     /// (fish → s1, minimax → speech-2.8-hd, aliyun → cosyvoice-v3-flash, mimo → mimo-v2.5-tts).</summary>
@@ -206,6 +244,22 @@ public sealed class TtsConfig
     public int NumSteps { get; set; } = 10;
     /// <summary>dots.tts only: classifier-free guidance scale.</summary>
     public double GuidanceScale { get; set; } = 1.2;
+
+    internal string VendorId => ProviderSecrets.Slot(Provider, "fish-audio");
+
+    public void RememberActiveKey() => ProviderSecrets.Remember(ApiKeys, VendorId, ApiKey);
+
+    public void ActivateStoredKey()
+    {
+        if (ProviderSecrets.TryActivate(ApiKeys, VendorId, out var key))
+            ApiKey = key;
+    }
+
+    public void StoreKey(string key)
+    {
+        ProviderSecrets.Remember(ApiKeys, VendorId, key);
+        ApiKey = key;
+    }
 }
 
 public sealed class VtsConfig
@@ -325,7 +379,7 @@ public sealed class BilibiliConfig
     public int PushPort { get; set; } = 19876;
     /// <summary>Seconds between danmaku selections (avoid over-replying).</summary>
     public int SelectionIntervalSec { get; set; } = 8;
-    /// <summary>Python executable path. Defaults to "python".</summary>
+    /// <summary>Fallback Python executable when danmaku_bridge.exe is not beside the app.</summary>
     public string PythonPath { get; set; } = "python";
     /// <summary>Announce the opposing streamer when a PK match starts. Read by the bridge
     /// at startup, so changing it respawns the bridge process.</summary>

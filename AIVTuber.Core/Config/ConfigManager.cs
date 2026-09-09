@@ -67,6 +67,9 @@ public sealed class ConfigManager
         var json = File.ReadAllText(_configPath);
         var config = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
         ApplyLegacyCompatibility(json, config);
+        HydrateProviderKeys(config);
+        if (config.Interaction.IsPkMode && config.Bilibili.Enable)
+            config.Bilibili.PkNotice = true;
         return config;
     }
 
@@ -114,6 +117,13 @@ public sealed class ConfigManager
         {
             config.Audio.EnableLoopbackListen = legacyUseLoopback.GetBoolean();
         }
+    }
+
+    internal static void HydrateProviderKeys(AppConfig config)
+    {
+        config.Llm.RememberActiveKey();
+        config.Asr.RememberActiveKey();
+        config.Tts.RememberActiveKey();
     }
 
     /// <summary>

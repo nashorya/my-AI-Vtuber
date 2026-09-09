@@ -52,11 +52,10 @@ OBS 字幕设置
 
 B站弹幕设置
 -----------
-1. 浏览器登录B站 → F12 → Application → Cookies
-2. 复制 SESSDATA、bili_jct、buvid3 的值
-3. 需要安装 Python 及 bilibili-api-python 包:
-   pip install bilibili-api-python httpx
-4. 在 config.json 中设置 bilibili.enable = true 并填入房间号和 Cookie
+1. 控制台「直播集成」→ 扫码登录，手机确认后写入房间号和 Cookie。
+2. 勾选启用 B 站弹幕，保存并应用。
+   旁边有 danmaku_bridge.exe 时不需要再装 Python。
+3. 也可手动粘贴 SESSDATA / bili_jct / buvid3，或运行 scripts/Bili-QrLogin.ps1。
 
 CosyVoice 复刻音色配置
 ---------------------
@@ -84,14 +83,15 @@ CosyVoice 复刻音色配置
 - VTube Studio（嘴型和表情控制）
 - OBS Studio + WebSocket 插件（字幕显示，可选）
 - 本地 ASR 不依赖系统 Python；需要发布包内 sidecar/python/python.exe
-- Python 3.8+（仅 B站弹幕桥接，可选）
+- 弹幕桥优先使用同目录 danmaku_bridge.exe，无需 Python；没有 exe 时才回退 python danmaku_bridge.py
 
 文件说明
 --------
 AIVTuber.exe      - 主程序
 config.json       - 用户配置（启动后自动生成）
 config.json.template - 配置模板
-danmaku_bridge.py - B站弹幕桥接脚本
+danmaku_bridge.exe - B站弹幕桥（Go 二进制，分发用）
+danmaku_bridge.py - B站弹幕桥开发回退脚本
 sidecar/          - 本地 ASR 托管运行时、服务脚本和完整性 manifest
 models/bge-small-zh/ - 向量模型目录（可选）
 memory.db         - 记忆数据库（自动生成）

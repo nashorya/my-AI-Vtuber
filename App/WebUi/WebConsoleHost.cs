@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AIVTuber.Core.LiveStream;
 using AIVTuber.Core.ViewModels;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
@@ -35,6 +36,7 @@ public sealed class WebConsoleHost : IDisposable
     private bool _ready;
     private bool _disposed;
     private long _lastLevelPushMs;
+    private CancellationTokenSource? _biliQrCts;
     private const int LevelThrottleMs = 100;
 
     public WebConsoleHost(
@@ -233,6 +235,12 @@ public sealed class WebConsoleHost : IDisposable
                     PushMemory();
                     PushResult("extract", _memory.StatusMessage, !_memory.Extracting);
                     break;
+                case "startBiliQrLogin":
+                    _ = RunBiliQrLoginAsync();
+                    break;
+                case "cancelBiliQrLogin":
+                    StopBiliQrLogin(notify: true);
+                    break;
             }
         }
         catch (Exception ex)
@@ -400,6 +408,72 @@ public sealed class WebConsoleHost : IDisposable
         catch { /* ignore */ }
     }
 
+    private async Task RunBiliQrLoginAsync()
+    {
+        StopBiliQrLogin(notify: false);
+        var cts = new CancellationTokenSource();
+        _biliQrCts = cts;
+        try
+        {
+            using var client = BiliQrLoginClient.Create();
+            await foreach (var step in client.RunAsync(cts.Token))
+            {
+                if (_biliQrCts != cts) return;
+                PushBiliQr(step);
+                if (step.Status != BiliQrPollStatus.Succeeded || step.Credentials is null)
+                    continue;
+                await _webView.Dispatcher.InvokeAsync(() =>
+                {
+                    _config.ApplyBilibiliLogin(step.Credentials, step.RoomId);
+                });
+                await _config.SaveAsync();
+                PushConfig();
+                PushBiliQr(step);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            if (_biliQrCts == cts)
+                PushBiliQr(new BiliQrProgress(BiliQrPollStatus.Cancelled));
+        }
+        catch (Exception ex)
+        {
+            if (_biliQrCts != cts) return;
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[WebConsole] B站扫码登录失败: {ex.Message}");
+            PushBiliQr(new BiliQrProgress(BiliQrPollStatus.Failed, Error: ex.Message));
+        }
+    }
+
+    private void StopBiliQrLogin(bool notify)
+    {
+        var cts = _biliQrCts;
+        _biliQrCts = null;
+        try { cts?.Cancel(); }
+        catch { /* ignore */ }
+        cts?.Dispose();
+        if (notify)
+            PushBiliQr(new BiliQrProgress(BiliQrPollStatus.Cancelled));
+    }
+
+    private void PushBiliQr(BiliQrProgress progress)
+    {
+        if (_disposed || !_ready || _webView.CoreWebView2 is null) return;
+        Post(new
+        {
+            type = "biliQr",
+            data = new
+            {
+                status = progress.Status.ToString().ToLowerInvariant(),
+                qrUrl = progress.QrUrl,
+                roomId = progress.RoomId,
+                error = progress.Error,
+                sessdata = progress.Credentials?.Sessdata,
+                biliJct = progress.Credentials?.BiliJct,
+                buvid3 = progress.Credentials?.Buvid3,
+            },
+        });
+    }
+
     private void PushResult(string kind, string message, bool ok)
     {
         if (_disposed || !_ready || _webView.CoreWebView2 is null) return;
@@ -444,6 +518,7 @@ public sealed class WebConsoleHost : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        StopBiliQrLogin(notify: false);
         _monitor.PropertyChanged -= OnMonitorPropertyChanged;
         _monitor.OperationalEvents.CollectionChanged -= _eventsChanged;
         _config.PropertyChanged -= OnConfigPropertyChanged;

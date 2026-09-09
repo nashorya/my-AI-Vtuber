@@ -49,9 +49,15 @@ public partial class AvatarWindow : Window
 
     public AvatarWindow(PixelAvatarDriver driver, AvatarRuntimeConfig runtimeCfg)
     {
+        _runtimeCfg = runtimeCfg;
+        AllowsTransparency = runtimeCfg.AllowsTransparency;
+        if (runtimeCfg.AllowsTransparency)
+        {
+            WindowStyle = WindowStyle.None;
+            Background = Brushes.Transparent;
+        }
         InitializeComponent();
         _driver = driver;
-        _runtimeCfg = runtimeCfg;
         _pack = driver.Pack;
 
         TitleText.Text = driver.Pack.Meta.Name;

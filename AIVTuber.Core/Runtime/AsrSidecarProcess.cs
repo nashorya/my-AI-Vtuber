@@ -113,6 +113,9 @@ internal sealed class AsrSidecarProcess : IAsyncDisposable
             }
             if (!string.IsNullOrWhiteSpace(config.Model))
                 startInfo.Environment["ASR_MODEL"] = config.Model;
+            startInfo.Environment["ASR_DEVICE"] = "auto";
+            startInfo.Environment["ASR_LANGUAGE"] = "Chinese";
+            startInfo.Environment["HF_HUB_OFFLINE"] = "1";
 
             var process = new Process
             {

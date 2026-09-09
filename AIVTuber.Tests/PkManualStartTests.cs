@@ -15,6 +15,20 @@ public class PkManualStartTests
     };
 
     [Fact]
+    public void SetPkMode_WhenBilibiliEnabled_TurnsOnOpponentCapture()
+    {
+        var config = new AppConfig();
+        config.Bilibili.Enable = true;
+        config.Bilibili.PkNotice = false;
+        var rt = new BotRuntime(config, Path.GetTempPath());
+
+        rt.SetPkMode(true);
+
+        Assert.True(rt.IsPkMode);
+        Assert.True(rt.CurrentConfig.Bilibili.PkNotice);
+    }
+
+    [Fact]
     public void CurrentPkOpponent_StartsNull()
     {
         Assert.Null(Runtime().CurrentPkOpponent);
