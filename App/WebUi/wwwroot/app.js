@@ -292,6 +292,7 @@
 
     $("userText").textContent = dash(data.userText);
     $("assistantText").textContent = dash(data.assistantText);
+    $("pkOpponent").textContent = dash(data.pkOpponent);
     $("opponentText").textContent = dash(data.opponentText);
     $("emotion").textContent = dash(data.emotion);
     $("userEmotion").textContent = dash(data.userEmotion);

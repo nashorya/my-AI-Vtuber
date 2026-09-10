@@ -582,6 +582,14 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
                 wakeKeywords = Working.Interaction.WakeKeywords.ToList(),
                 wakeHoldSec = Working.Interaction.WakeHoldSec,
             },
+            identity = new
+            {
+                selfName = Working.Identity.SelfName ?? "",
+                selfUid = Working.Identity.SelfUid ?? "",
+                opponentName = Working.Identity.OpponentName ?? "",
+                danmakuLabel = Working.Identity.DanmakuLabel ?? "直播间弹幕",
+                extraNotes = Working.Identity.ExtraNotes ?? "",
+            },
             emotionRows = EmotionRows.Select(r => new { emotion = r.Emotion, hotkeyId = r.HotkeyId }).ToList(),
             actionRows = ActionRows.Select(r => new { action = r.Action, hotkeyId = r.HotkeyId }).ToList(),
             inputDevices = InputDevices.Select((name, i) => new { index = i, name }).ToList(),
@@ -775,6 +783,15 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
                 else if (wk.ValueKind == JsonValueKind.Array)
                     WakeKeywordsText = string.Join(", ", wk.EnumerateArray().Select(e => e.GetString() ?? ""));
             }
+        }
+
+        if (data.TryGetProperty("identity", out var id) && id.ValueKind == JsonValueKind.Object)
+        {
+            if (TryString(id, "selfName", out var sn)) Working.Identity.SelfName = sn;
+            if (TryString(id, "selfUid", out var su)) Working.Identity.SelfUid = su;
+            if (TryString(id, "opponentName", out var on)) Working.Identity.OpponentName = on;
+            if (TryString(id, "danmakuLabel", out var dl)) Working.Identity.DanmakuLabel = dl;
+            if (TryString(id, "extraNotes", out var en)) Working.Identity.ExtraNotes = en;
         }
 
         if (data.TryGetProperty("emotionRows", out var er) && er.ValueKind == JsonValueKind.Array)

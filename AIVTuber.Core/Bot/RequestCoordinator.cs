@@ -53,6 +53,7 @@ internal sealed class RequestCoordinator : IAsyncDisposable
     private Task _activeTask = Task.CompletedTask;
     private long _sequence;
     private long _currentGeneration;
+    private bool _hold;
     private bool _disposed;
 
     public RequestCoordinator(IMonotonicClock? clock = null)
@@ -90,6 +91,15 @@ internal sealed class RequestCoordinator : IAsyncDisposable
     public bool IsCurrent(RequestGeneration generation) =>
         generation.Value != 0 && generation.Value == CurrentGeneration;
 
+    /// <summary>
+    /// While held, non-manual enqueues are rejected without cancelling the active turn.
+    /// Manual (截停) still replaces the current generation.
+    /// </summary>
+    public void SetHold(bool hold)
+    {
+        lock (_sync) _hold = hold;
+    }
+
     public Task<bool> EnqueueAsync(
         InputSource source,
         Func<InputEnvelope, CancellationToken, Task> execute,
@@ -101,6 +111,9 @@ internal sealed class RequestCoordinator : IAsyncDisposable
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+
+            if (_hold && source != InputSource.Manual)
+                return Task.FromResult(false);
 
             if (source == InputSource.Loopback && (_pending is not null || !_activeTask.IsCompleted))
                 return Task.FromResult(false);

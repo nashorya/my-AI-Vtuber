@@ -46,6 +46,8 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
             OpponentText = t;
             AddOperationalEvent("内录", t);
         });
+        RefreshPkOpponent(_runtime.CurrentPkOpponent);
+        _runtime.PkOpponentChanged += (_, pk) => _dispatch(() => RefreshPkOpponent(pk));
         _runtime.AiStartSpeaking += (_, _) => _dispatch(RefreshConnections);
         _runtime.AiStopSpeaking += (_, _) => _dispatch(RefreshDanmaku);
         _runtime.MicLevelUpdated += (_, level) => _dispatch(() => MicLevel = level);
@@ -188,6 +190,23 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
 
     private string _opponentText = "";
     public string OpponentText { get => _opponentText; private set => SetField(ref _opponentText, value); }
+
+    private string _pkOpponentSummary = "";
+    public string PkOpponentSummary { get => _pkOpponentSummary; private set => SetField(ref _pkOpponentSummary, value); }
+
+    private void RefreshPkOpponent(PkOpponent? pk)
+    {
+        if (pk is null)
+        {
+            PkOpponentSummary = "";
+            return;
+        }
+        var parts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(pk.Username)) parts.Add(pk.Username);
+        if (!string.IsNullOrEmpty(pk.Uid)) parts.Add("UID " + pk.Uid);
+        if (pk.RoomId != 0) parts.Add("房间 " + pk.RoomId);
+        PkOpponentSummary = string.Join(" · ", parts);
+    }
 
     private string _lastError = "";
     /// <summary>Last pipeline error message; cleared when a new user transcript arrives.</summary>

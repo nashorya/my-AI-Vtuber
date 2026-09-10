@@ -1,5 +1,6 @@
 using System.Text;
 using AIVTuber.Core.Config;
+using AIVTuber.Core.LiveStream;
 using AIVTuber.Core.Memory;
 using AIVTuber.Core.Pipeline;
 
@@ -20,6 +21,9 @@ public sealed class ConversationManager
     // Memory injection fields
     private ViewerRepository? _viewerRepo;
     private FactRepository? _factRepo;
+    private PkTurnRepository? _pkTurnRepo;
+    private IdentityConfig? _identity;
+    private PkOpponent? _livePk;
 
     public ConversationManager(LlmConfig llmConfig)
     {
@@ -28,10 +32,25 @@ public sealed class ConversationManager
     }
 
     /// <summary>Inject memory repositories for context enrichment.</summary>
-    public void SetMemory(ViewerRepository? viewerRepo, FactRepository? factRepo)
+    public void SetMemory(ViewerRepository? viewerRepo, FactRepository? factRepo, PkTurnRepository? pkTurns = null)
     {
         _viewerRepo = viewerRepo;
         _factRepo = factRepo;
+        _pkTurnRepo = pkTurns;
+    }
+
+    public void SetIdentity(IdentityConfig? identity)
+    {
+        lock (_lock) { _identity = identity; }
+    }
+
+    /// <summary>
+    /// Pins the live PK opponent into the per-turn system context so the model
+    /// knows who is on the other side even when WakeGate drops the announce line.
+    /// </summary>
+    public void SetLivePkOpponent(PkOpponent? opponent)
+    {
+        lock (_lock) { _livePk = opponent; }
     }
 
     public void AddUserMessage(string content)
@@ -60,7 +79,10 @@ public sealed class ConversationManager
     /// relevant facts) is injected as a second system message immediately after, keeping it
     /// invisible to the LLM as "user speech" while still varying per-turn without breaking cache.
     /// </summary>
-    public List<Message> BuildMessages(string? viewerUid = null)
+    public List<Message> BuildMessages(
+        string? viewerUid = null,
+        string? query = null,
+        IReadOnlyList<string>? subjectUids = null)
     {
         lock (_lock)
         {
@@ -69,11 +91,7 @@ public sealed class ConversationManager
             if (!string.IsNullOrWhiteSpace(_llmConfig.SystemPrompt))
                 messages.Add(new Message { Role = MessageRole.System, Content = _llmConfig.SystemPrompt });
 
-            // Second system message carries dynamic memory. Placing it here (after the long
-            // static prompt) preserves prefix cache on the static part while still grounding
-            // the LLM with current viewer context. It is NOT in user role, so the LLM won't
-            // interpret or recite it as user speech.
-            var context = BuildMemoryContext(viewerUid);
+            var context = BuildMemoryContext(viewerUid, query, subjectUids);
             if (!string.IsNullOrEmpty(context))
                 messages.Add(new Message { Role = MessageRole.System, Content = context.TrimEnd() });
 
@@ -83,23 +101,45 @@ public sealed class ConversationManager
     }
 
     /// <summary>Builds viewer profile + relevant facts context block. Empty when no memory available.</summary>
-    private string BuildMemoryContext(string? viewerUid)
+    private string BuildMemoryContext(string? viewerUid, string? query, IReadOnlyList<string>? subjectUids)
     {
         var sb = new StringBuilder();
 
-        if (_viewerRepo is not null && !string.IsNullOrEmpty(viewerUid))
+        if (_livePk is { } pk)
         {
-            var viewer = _viewerRepo.GetAsync(viewerUid, "bilibili").GetAwaiter().GetResult();
-            if (viewer is not null)
+            sb.Append("【当前PK】对方主播：").Append(pk.Username);
+            if (pk.FollowerCount > 0)
+                sb.Append("，粉丝 ").Append(pk.FollowerCount);
+            if (pk.RoomId != 0)
+                sb.Append("，房间 ").Append(pk.RoomId);
+            if (!string.IsNullOrEmpty(pk.Uid))
+                sb.Append("，UID ").Append(pk.Uid);
+            sb.AppendLine();
+        }
+
+        var profileUids = new HashSet<string>(StringComparer.Ordinal);
+        if (!string.IsNullOrEmpty(viewerUid)) profileUids.Add(viewerUid);
+        if (subjectUids is not null)
+        {
+            foreach (var uid in subjectUids)
+                if (!string.IsNullOrEmpty(uid)) profileUids.Add(uid);
+        }
+
+        if (_viewerRepo is not null)
+        {
+            foreach (var uid in profileUids)
             {
-                sb.AppendLine($"【观众档案】UID: {viewer.Uid}, 昵称: {viewer.Nickname ?? "未知"}, " +
+                var viewer = _viewerRepo.GetAsync(uid, "bilibili").GetAwaiter().GetResult();
+                if (viewer is null) continue;
+                sb.AppendLine($"【档案】UID: {viewer.Uid}, 昵称: {viewer.Nickname ?? "未知"}, " +
                     $"互动次数: {viewer.InteractionCount}, 上次来访: {viewer.LastSeen}");
                 if (!string.IsNullOrEmpty(viewer.Notes))
                     sb.AppendLine($"备注: {viewer.Notes}");
             }
         }
 
-        AppendRelevantFacts(sb, viewerUid);
+        AppendRelevantFacts(sb, query, profileUids);
+        AppendOpponentPkTurns(sb);
         return sb.Length > 0 ? sb.AppendLine().ToString() : string.Empty;
     }
 
@@ -107,24 +147,37 @@ public sealed class ConversationManager
     /// Retrieves top relevant facts for the latest user turn (and the viewer when known)
     /// and appends them so the reply LLM can ground on stored memory — not just extract/store.
     /// </summary>
-    private void AppendRelevantFacts(StringBuilder sb, string? viewerUid)
+    private void AppendRelevantFacts(StringBuilder sb, string? queryOverride, HashSet<string> subjectUids)
     {
         if (_factRepo is null) return;
 
-        var query = LatestUserText();
-        if (string.IsNullOrWhiteSpace(query) && string.IsNullOrEmpty(viewerUid))
-            query = " "; // empty-ish query still ranks by recency/frequency via Score()
+        var query = !string.IsNullOrWhiteSpace(queryOverride) ? queryOverride : LatestUserText();
+        if (string.IsNullOrWhiteSpace(query) && subjectUids.Count == 0)
+            return;
+
+        if (string.IsNullOrWhiteSpace(query))
+            query = " ";
 
         var byId = new Dictionary<string, Fact>(StringComparer.Ordinal);
         try
         {
-            foreach (var (fact, _) in _factRepo.SearchAsync(query, subjectUid: null, topK: 5)
-                         .GetAwaiter().GetResult())
-                byId[fact.Id] = fact;
-
-            if (!string.IsNullOrEmpty(viewerUid))
+            if (!string.IsNullOrWhiteSpace(queryOverride) || !string.IsNullOrWhiteSpace(LatestUserText()))
             {
-                foreach (var (fact, _) in _factRepo.SearchAsync(query, viewerUid, topK: 3)
+                foreach (var (fact, _) in _factRepo.SearchAsync(query, subjectUid: null, topK: 5)
+                             .GetAwaiter().GetResult())
+                    byId[fact.Id] = fact;
+            }
+
+            var selfUid = _identity?.SelfUid;
+            if (!string.IsNullOrEmpty(selfUid))
+                subjectUids.Add(selfUid);
+            var opponentUid = _livePk?.Uid;
+            if (!string.IsNullOrEmpty(opponentUid))
+                subjectUids.Add(opponentUid);
+
+            foreach (var uid in subjectUids)
+            {
+                foreach (var (fact, _) in _factRepo.SearchAsync(query, uid, topK: 3)
                              .GetAwaiter().GetResult())
                     byId[fact.Id] = fact;
             }
@@ -145,6 +198,31 @@ public sealed class ConversationManager
                 sb.Append("（UID: ").Append(fact.SubjectUid).Append('）');
             sb.AppendLine();
             _ = _factRepo.UpdateWeightAsync(fact.Id, 1);
+        }
+    }
+
+    private void AppendOpponentPkTurns(StringBuilder sb)
+    {
+        var uid = _livePk?.Uid;
+        if (_pkTurnRepo is null || string.IsNullOrEmpty(uid)) return;
+        try
+        {
+            var turns = _pkTurnRepo.ListByOpponentAsync(uid, 3).GetAwaiter().GetResult();
+            if (turns.Count == 0) return;
+            sb.AppendLine("【对手往期对谈】");
+            foreach (var turn in turns)
+            {
+                if (string.Equals(turn.AssistantText.Trim(), "【PASS】", StringComparison.Ordinal))
+                    continue;
+                sb.Append("- 对面：").Append(turn.OpponentText);
+                if (!string.IsNullOrWhiteSpace(turn.AssistantText))
+                    sb.Append(" / 你：").Append(turn.AssistantText);
+                sb.AppendLine();
+            }
+        }
+        catch (Exception ex)
+        {
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[Memory] 检索PK对谈失败: {ex.Message}");
         }
     }
 

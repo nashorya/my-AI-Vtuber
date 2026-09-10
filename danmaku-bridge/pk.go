@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -43,35 +44,64 @@ func asMap(value any) map[string]any {
 	return typed
 }
 
+func containsRoom(self []int, room int) bool {
+	for _, id := range self {
+		if id != 0 && id == room {
+			return true
+		}
+	}
+	return false
+}
+
+func parseSelfRoomIDs(body any, configured int) []int {
+	ids := make([]int, 0, 3)
+	add := func(n int) {
+		if n == 0 || containsRoom(ids, n) {
+			return
+		}
+		ids = append(ids, n)
+	}
+	add(configured)
+	root := asMap(body)
+	if asRoomID(root["code"]) == 0 {
+		data := asMap(root["data"])
+		add(asRoomID(data["room_id"]))
+		add(asRoomID(data["short_id"]))
+	}
+	return ids
+}
+
 // extractOpponentRoomID pulls the opponent's room id out of a PK payload.
 // START carries both sides in init_info/match_info; PRE may only have data.room_id.
 func extractOpponentRoomID(payload any, selfRoomID int) *int {
-	root := asMap(payload)
-	if root == nil {
-		return nil
-	}
-	data := asMap(root["data"])
-	if data == nil {
-		return nil
-	}
+	return extractOpponentRoomIDAny(payload, []int{selfRoomID})
+}
 
+func extractOpponentRoomIDAny(payload any, self []int) *int {
+	root := asMap(payload)
+	data := asMap(root["data"])
 	initInfo := asMap(data["init_info"])
 	matchInfo := asMap(data["match_info"])
 	initRoom := roomFromSide(initInfo, "room_id", "init_id")
 	matchRoom := roomFromSide(matchInfo, "room_id", "match_id")
 
 	if initRoom != 0 && matchRoom != 0 {
-		if initRoom == selfRoomID && matchRoom == selfRoomID {
+		initSelf := containsRoom(self, initRoom)
+		matchSelf := containsRoom(self, matchRoom)
+		if initSelf && matchSelf {
 			return nil
 		}
-		if initRoom == selfRoomID {
+		if initSelf && !matchSelf {
 			return intPtr(matchRoom)
 		}
-		return intPtr(initRoom)
+		if matchSelf && !initSelf {
+			return intPtr(initRoom)
+		}
+		return nil
 	}
 
 	for _, candidate := range []int{initRoom, matchRoom, asRoomID(data["room_id"])} {
-		if candidate != 0 && candidate != selfRoomID {
+		if candidate != 0 && !containsRoom(self, candidate) {
 			return intPtr(candidate)
 		}
 	}
@@ -92,6 +122,10 @@ func roomFromSide(side map[string]any, keys ...string) int {
 // extractOpponentHint reads uid/uname from the opponent side of a START payload
 // so we can still announce when room_init / Master/info is unreachable.
 func extractOpponentHint(payload any, selfRoomID int) *pkPush {
+	return extractOpponentHintAny(payload, []int{selfRoomID})
+}
+
+func extractOpponentHintAny(payload any, self []int) *pkPush {
 	root := asMap(payload)
 	data := asMap(root["data"])
 	initInfo := asMap(data["init_info"])
@@ -102,16 +136,16 @@ func extractOpponentHint(payload any, selfRoomID int) *pkPush {
 	side := map[string]any{}
 	room := 0
 	if initRoom != 0 && matchRoom != 0 {
-		if initRoom == selfRoomID && matchRoom != selfRoomID {
+		initSelf := containsRoom(self, initRoom)
+		matchSelf := containsRoom(self, matchRoom)
+		if initSelf && !matchSelf {
 			side, room = matchInfo, matchRoom
-		} else if matchRoom == selfRoomID && initRoom != selfRoomID {
-			side, room = initInfo, initRoom
-		} else if initRoom != selfRoomID {
+		} else if matchSelf && !initSelf {
 			side, room = initInfo, initRoom
 		} else {
 			return nil
 		}
-	} else if roomID := extractOpponentRoomID(payload, selfRoomID); roomID != nil {
+	} else if roomID := extractOpponentRoomIDAny(payload, self); roomID != nil {
 		room = *roomID
 		if room == initRoom {
 			side = initInfo
@@ -159,6 +193,106 @@ func (d *dedupe) shouldProcess(key int, now time.Duration) bool {
 
 func (d *dedupe) clear() {
 	d.seen = map[int]time.Duration{}
+}
+
+type pkTracker struct {
+	window      time.Duration
+	lastSuccess map[int]time.Duration
+	inflight    map[int]bool
+}
+
+func newPkTracker(window time.Duration) *pkTracker {
+	return &pkTracker{
+		window:      window,
+		lastSuccess: map[int]time.Duration{},
+		inflight:    map[int]bool{},
+	}
+}
+
+func (t *pkTracker) evict(now time.Duration) {
+	fresh := make(map[int]time.Duration, len(t.lastSuccess))
+	for k, at := range t.lastSuccess {
+		if now-at < t.window {
+			fresh[k] = at
+		}
+	}
+	t.lastSuccess = fresh
+}
+
+func (t *pkTracker) begin(key int, now time.Duration) bool {
+	t.evict(now)
+	if _, ok := t.lastSuccess[key]; ok {
+		return false
+	}
+	if t.inflight[key] {
+		return false
+	}
+	t.inflight[key] = true
+	return true
+}
+
+func (t *pkTracker) markIncomplete(key int) {
+	delete(t.inflight, key)
+}
+
+func (t *pkTracker) markSuccess(key int, now time.Duration) {
+	delete(t.inflight, key)
+	t.lastSuccess[key] = now
+}
+
+func (t *pkTracker) clear() {
+	t.lastSuccess = map[int]time.Duration{}
+	t.inflight = map[int]bool{}
+}
+
+func opponentAcceptable(p *pkPush) bool {
+	if p == nil {
+		return false
+	}
+	return p.UID != "" || strings.TrimSpace(p.Username) != "" || p.RoomID != 0
+}
+
+func completeOpponent(hint *pkPush, roomInit any, master any) *pkPush {
+	out := &pkPush{}
+	if hint != nil {
+		*out = *hint
+	}
+	if roomInit != nil {
+		root := asMap(roomInit)
+		if asRoomID(root["code"]) == 0 {
+			data := asMap(root["data"])
+			if uid := stringifyID(data["uid"]); uid != "" {
+				out.UID = uid
+			}
+			if rid := asRoomID(data["room_id"]); rid != 0 && out.RoomID == 0 {
+				out.RoomID = rid
+			}
+		}
+	}
+	if master != nil {
+		room := out.RoomID
+		if filled := buildPkPayload(room, master); filled != nil {
+			if filled.UID != "" {
+				out.UID = filled.UID
+			}
+			if filled.Username != "" {
+				out.Username = filled.Username
+			}
+			if filled.Follower != 0 {
+				out.Follower = filled.Follower
+			}
+			if filled.RoomID != 0 {
+				out.RoomID = filled.RoomID
+			}
+		}
+	}
+	if strings.TrimSpace(out.Username) == "" && (out.UID != "" || out.RoomID != 0) {
+		out.Username = "对面主播"
+	}
+	if !opponentAcceptable(out) {
+		return nil
+	}
+	return out
 }
 
 type pkPush struct {

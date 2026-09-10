@@ -55,8 +55,9 @@ public sealed class MemoryExtractor
     /// <summary>
     /// Called after each user turn. Triggers extraction every N turns.
     /// </summary>
-    public async Task OnTurnAsync()
+    public async Task OnTurnAsync(bool persistEligible = true)
     {
+        if (!persistEligible) return;
         _turnCount++;
         if (_turnCount % _config.ExtractEveryNTurns != 0) return;
         if (_extracting) return; // Don't overlap extractions

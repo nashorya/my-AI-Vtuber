@@ -49,7 +49,10 @@ public sealed class PkOpponent
         try { push = JsonSerializer.Deserialize<PkPush>(body); }
         catch (JsonException) { return false; }
 
-        if (push is null || string.IsNullOrEmpty(push.Uid)) return false;
+        if (push is null) return false;
+        var name = (push.Username ?? "").Trim();
+        if (string.IsNullOrEmpty(push.Uid) && name.Length == 0 && push.RoomId == 0)
+            return false;
         // Reject end-shaped objects that somehow carry a uid but are typed as end
         // (already handled above); also ignore explicit type != start/default.
         if (!string.IsNullOrEmpty(push.Type)
@@ -58,7 +61,7 @@ public sealed class PkOpponent
 
         opponent = new PkOpponent
         {
-            Uid = push.Uid,
+            Uid = push.Uid ?? "",
             Username = string.IsNullOrWhiteSpace(push.Username) ? "对面主播" : push.Username,
             FollowerCount = push.Follower,
             RoomId = push.RoomId,

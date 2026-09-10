@@ -44,6 +44,7 @@
             <h3>对话</h3>
             <div class="lane"><label>用户 / 麦</label><p id="userText">—</p></div>
             <div class="lane reply"><label>助手</label><p id="assistantText">—</p></div>
+            <div class="lane"><label>PK 对手</label><p id="pkOpponent">—</p></div>
             <div class="lane"><label>对面内录</label><p id="opponentText">—</p></div>
             <div class="meta-row">
               <span>情绪 <strong id="emotion">—</strong></span>
@@ -365,6 +366,18 @@
                 <input type="checkbox" id="interaction.isPkMode" data-path="interaction.isPkMode" data-type="bool" />
                 PK 模式
               </label>
+              <div class="field">
+                <label>使用者</label>
+                <input id="identity.selfName" data-path="identity.selfName" type="text" />
+              </div>
+              <div class="field">
+                <label>对方主播</label>
+                <input id="identity.opponentName" data-path="identity.opponentName" type="text" />
+              </div>
+              <div class="field">
+                <label>直播间弹幕</label>
+                <input id="identity.danmakuLabel" data-path="identity.danmakuLabel" type="text" />
+              </div>
               <div class="field">
                 <label>唤醒关键词</label>
                 <input id="interaction.wakeKeywords" data-path="interaction.wakeKeywords" type="text" />

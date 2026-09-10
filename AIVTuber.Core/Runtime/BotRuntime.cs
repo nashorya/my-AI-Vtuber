@@ -65,6 +65,9 @@ public sealed class BotRuntime : IAsyncDisposable
     private BilibiliDanmakuClient? _danmaku;
     private DanmakuSelector? _selector;
     private readonly WakeGate _wakeGate = new();
+    private DualPartyTurnGate? _turnGate;
+    private string? _pendingTurnText;
+    private IReadOnlyList<TalkLine> _pendingTurnLines = [];
 
     private readonly PipelineStateTracker _stateTracker = new();
 
@@ -109,6 +112,8 @@ public sealed class BotRuntime : IAsyncDisposable
     public event EventHandler<string>? UserEmotionDetected;
     /// <summary>Fired with transcribed text from system audio (loopback/PC source).</summary>
     public event EventHandler<string>? LoopbackTranscript;
+    /// <summary>Fired when the parsed PK opponent snapshot changes (name/uid/room).</summary>
+    public event EventHandler<PkOpponent?>? PkOpponentChanged;
 
     public AppConfig CurrentConfig => ConfigManager.Clone(_activeConfig);
     public AppConfig? CandidateConfig => _candidateConfig is null ? null : ConfigManager.Clone(_candidateConfig);
@@ -129,7 +134,12 @@ public sealed class BotRuntime : IAsyncDisposable
 
     /// <summary>Immediately stops any in-progress AI generation/speech: cancels the pipeline,
     /// halts playback, and closes the VTS mouth. Safe to call when idle (no-op).</summary>
-    public void StopSpeaking() => _orchestrator?.Interrupt();
+    public void StopSpeaking()
+    {
+        _turnGate?.SetAiSpeaking(false);
+        _orchestrator?.SetHold(false);
+        _orchestrator?.Interrupt();
+    }
 
     // True while AI is speaking — loopback VAD feed is paused to prevent self-hearing.
     private volatile bool _loopbackVadMuted;
@@ -257,7 +267,10 @@ public sealed class BotRuntime : IAsyncDisposable
         _factRepo = new FactRepository(_memoryDb, _embedding);
         _pkTurnRepo = new PkTurnRepository(_memoryDb);
         _conversation = new ConversationManager(_config.Llm);
-        _conversation.SetMemory(_viewerRepo, _factRepo);
+        _conversation.SetMemory(_viewerRepo, _factRepo, _pkTurnRepo);
+        _conversation.SetIdentity(_config.Identity);
+        if (CurrentPkOpponent is not null)
+            _conversation.SetLivePkOpponent(CurrentPkOpponent);
         BuildMemoryExtractor();
     }
 
@@ -266,7 +279,7 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         _memoryLlm?.Dispose();
         _pkCuratorLlm?.Dispose();
-        _memoryLlm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, BuildLlmSystemPrompt());
+        _memoryLlm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, systemPrompt: "");
         // Curator must not inherit the VTuber prompt — that fights JSON keep-index output.
         _pkCuratorLlm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model, systemPrompt: "");
         _memoryExtractor = new MemoryExtractor(_memoryLlm, _factRepo, _config.Memory, _conversation);
@@ -530,6 +543,8 @@ public sealed class BotRuntime : IAsyncDisposable
             // Single stable tap: reads _virtualMic field, so mixer restarts pick up automatically.
             _player.PcmChunkPlayed += (_, chunk) => _virtualMic?.WriteTts(chunk);
         }
+        EnsureTurnGate();
+        _conversation?.SetIdentity(_config.Identity);
         _orchestrator = new BotOrchestrator(
             _asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts,
             ttsEmotionMap: _config.Avatar.EmotionMap);
@@ -542,21 +557,14 @@ public sealed class BotRuntime : IAsyncDisposable
 
         _orchestrator.OnError += (_, msg) => PipelineError?.Invoke(this, msg);
 
-        _orchestrator.OnUserTranscript += async (_, text) =>
+        _orchestrator.OnUserTranscript += (_, text) =>
         {
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风识别] 「{text}」");
             _stateTracker.TranscriptReady(Environment.TickCount64);
-            _conversation.AddUserMessage(text);
             UserTranscript?.Invoke(this, text);
-            await _memoryExtractor.OnTurnAsync();
         };
-        _orchestrator.OnSentenceReady += (_, s) =>
-        {
-            _conversation.AddAssistantMessage(s);
-            if (_pkBuffer.IsActive)
-                _pkBuffer.NoteAssistantChunk(s);
-            SentenceReady?.Invoke(this, s);
-        };
+        _orchestrator.OnReplyCommitted += (_, reply) => CommitReply(reply);
+        _orchestrator.OnSentenceReady += (_, s) => SentenceReady?.Invoke(this, s);
         _orchestrator.OnEmotionDetected += (_, e) => EmotionDetected?.Invoke(this, e);
         _orchestrator.OnActionDetected += (_, a) => ActionDetected?.Invoke(this, a);
         _orchestrator.OnUserEmotionDetected += (_, e) => UserEmotionDetected?.Invoke(this, e);
@@ -588,6 +596,7 @@ public sealed class BotRuntime : IAsyncDisposable
             _loopbackVadMuted = true;
             _loopbackVad?.Reset();
             AbandonLoopbackSpeechChannel();
+            _turnGate?.SetLoopbackSpeaking(false);
         };
         _orchestrator.OnAiStopSpeaking += (_, _) =>
         {
@@ -633,10 +642,189 @@ public sealed class BotRuntime : IAsyncDisposable
     private string BuildLlmSystemPrompt()
     {
         var extraEmotions = _config.Avatar.EmotionMap.Keys;
-        return _config.Vts.BuildSystemPrompt(
+        var basePrompt = _config.Vts.BuildSystemPrompt(
             _config.Llm.SystemPrompt,
             extraEmotions,
             ResolvePoseIdsForPrompt());
+        var self = IdentityPrompt.ResolveSelfName(_config.Identity.SelfName);
+        var opponent = IdentityPrompt.ResolveOpponentName(_config.Identity.OpponentName, CurrentPkOpponent);
+        var danmaku = IdentityPrompt.ResolveDanmakuLabel(_config.Identity.DanmakuLabel);
+        var protocol = IdentityPrompt.ProtocolAppendix(self, opponent, danmaku, _config.Interaction.WakeKeywords);
+        var extra = string.IsNullOrWhiteSpace(_config.Identity.ExtraNotes)
+            ? ""
+            : "\n" + _config.Identity.ExtraNotes.Trim();
+        return string.IsNullOrWhiteSpace(basePrompt) ? protocol + extra : basePrompt + "\n\n" + protocol + extra;
+    }
+
+    private void EnsureTurnGate()
+    {
+        if (_turnGate is not null) return;
+        _turnGate = new DualPartyTurnGate(TimeSpan.FromMilliseconds(80));
+        _turnGate.TurnReady += lines => SuperviseBackgroundTask(HandleTurnReadyAsync(lines));
+    }
+
+    private async Task HandleTurnReadyAsync(IReadOnlyList<TalkLine> lines)
+    {
+        if (_orchestrator is null || lines.Count == 0) return;
+        var formatted = IdentityPrompt.FormatTurn(lines);
+        if (string.IsNullOrWhiteSpace(formatted)) return;
+
+        _pendingTurnText = formatted;
+        _pendingTurnLines = lines;
+        var subjects = lines
+            .Select(l => l.SubjectUid)
+            .Where(uid => !string.IsNullOrEmpty(uid))
+            .Cast<string>()
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var viewerUid = lines.LastOrDefault(l => l.Identity == TalkIdentity.Danmaku).SubjectUid
+            ?? lines.LastOrDefault(l => l.Identity == TalkIdentity.Self).SubjectUid;
+        var history = _conversation.BuildMessages(viewerUid, formatted, subjects);
+
+        _turnGate?.SetAiSpeaking(true);
+        try
+        {
+            _stateTracker.TextInputStarted(Environment.TickCount64);
+            UserTranscript?.Invoke(this, formatted);
+            await _orchestrator.ProcessTextAsync(formatted, history, bypassWake: true).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            PipelineError?.Invoke(this, $"[回合] {ex.Message}");
+        }
+        finally
+        {
+            _turnGate?.SetAiSpeaking(false);
+        }
+    }
+
+    private void CommitReply(ClassifiedReply reply)
+    {
+        var userText = _pendingTurnText;
+        _pendingTurnText = null;
+        var lines = _pendingTurnLines;
+        _pendingTurnLines = [];
+
+        switch (reply.Kind)
+        {
+            case ReplyKind.Speak:
+                if (!string.IsNullOrWhiteSpace(userText))
+                    _conversation.AddUserMessage(userText);
+                _conversation.AddAssistantMessage(reply.Spoken);
+                NotePkPair(lines, reply.Spoken);
+                SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
+                break;
+            case ReplyKind.InnerThought:
+                if (!string.IsNullOrWhiteSpace(userText))
+                    _conversation.AddUserMessage(userText);
+                _conversation.AddAssistantMessage($"（{reply.Thought}）");
+                SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
+                break;
+            default:
+                break;
+        }
+    }
+
+    private void NotePkPair(IReadOnlyList<TalkLine> lines, string spoken)
+    {
+        if (!_pkBuffer.IsActive) return;
+        var opponent = lines.LastOrDefault(l => l.Identity == TalkIdentity.Opponent);
+        if (string.IsNullOrWhiteSpace(opponent.Text)) return;
+        _pkBuffer.NoteOpponentSpeech(opponent.Text, "loopback");
+        _pkBuffer.NoteAssistantChunk(spoken);
+        _pkBuffer.EndAssistantReply();
+    }
+
+    private string SelfDisplayName() => IdentityPrompt.ResolveSelfName(_config.Identity.SelfName);
+
+    private string OpponentDisplayName() =>
+        IdentityPrompt.ResolveOpponentName(_config.Identity.OpponentName, CurrentPkOpponent);
+
+    private string? SelfUidOrNull() =>
+        string.IsNullOrWhiteSpace(_config.Identity.SelfUid) ? null : _config.Identity.SelfUid.Trim();
+
+    private async Task ObserveMicSegmentAsync(SpeechSegment seg)
+    {
+        var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
+        AIVTuber.Core.Diagnostics.DebugLog.Write(
+            $"[麦克风段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
+            $"峰值={peak:F3} micMuted={_micMuted} streaming={_config.Asr.Streaming}");
+        var channel = Interlocked.Exchange(ref _micSpeechChannel, null);
+        channel?.Writer.TryComplete();
+        if (_micMuted || peak < MicAsrMinPeak)
+        {
+            if (peak < MicAsrMinPeak)
+                AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风段] 能量过低(<{MicAsrMinPeak})，跳过ASR");
+            _turnGate?.SetMicSpeaking(false);
+            return;
+        }
+
+        _stateTracker.InputStarted(Environment.TickCount64);
+        AsrResult result;
+        if (_config.Asr.Streaming)
+        {
+            var stream = channel is null
+                ? System.Linq.AsyncEnumerable.Empty<byte[]>()
+                : channel.Reader.ReadAllAsync();
+            result = await _orchestrator.TranscribeStreamAsync(stream, _cts.Token).ConfigureAwait(false);
+        }
+        else
+        {
+            result = await _orchestrator.TranscribeAsync(seg.AudioData, _cts.Token).ConfigureAwait(false);
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.Text))
+        {
+            var text = BotOrchestrator.AnnotateWithUserEmotion(result.Text, result.Emotion);
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风识别] 「{result.Text}」");
+            _stateTracker.TranscriptReady(Environment.TickCount64);
+            if (result.Emotion is not null)
+                UserEmotionDetected?.Invoke(this, result.Emotion);
+            UserTranscript?.Invoke(this, result.Text);
+            _turnGate?.AddLine(new TalkLine(TalkIdentity.Self, SelfDisplayName(), text, SelfUidOrNull()));
+        }
+        _turnGate?.SetMicSpeaking(false);
+    }
+
+    private async Task ObserveLoopbackSegmentAsync(SpeechSegment seg)
+    {
+        var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
+        AIVTuber.Core.Diagnostics.DebugLog.Write(
+            $"[内录段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
+            $"峰值={peak:F3} loopbackMuted={_loopbackVadMuted} streaming={_config.Asr.Streaming}");
+        var channel = Interlocked.Exchange(ref _loopbackSpeechChannel, null);
+        channel?.Writer.TryComplete();
+        if (peak < LoopbackAsrMinPeak)
+        {
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
+            _turnGate?.SetLoopbackSpeaking(false);
+            return;
+        }
+
+        AsrResult result;
+        if (_config.Asr.Streaming)
+        {
+            var stream = channel is null
+                ? System.Linq.AsyncEnumerable.Empty<byte[]>()
+                : channel.Reader.ReadAllAsync();
+            result = await _orchestrator.TranscribeStreamAsync(stream, _cts.Token).ConfigureAwait(false);
+        }
+        else
+        {
+            result = await _orchestrator.TranscribeAsync(seg.AudioData, _cts.Token).ConfigureAwait(false);
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.Text))
+        {
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录识别→对面] 「{result.Text}」");
+            LoopbackTranscript?.Invoke(this, result.Text);
+            _turnGate?.AddLine(new TalkLine(
+                TalkIdentity.Opponent,
+                OpponentDisplayName(),
+                result.Text,
+                string.IsNullOrEmpty(CurrentPkOpponent?.Uid) ? null : CurrentPkOpponent.Uid));
+        }
+        _turnGate?.SetLoopbackSpeaking(false);
     }
 
     private IEnumerable<string> ResolvePoseIdsForPrompt()
@@ -705,60 +893,19 @@ public sealed class BotRuntime : IAsyncDisposable
         _mic.LevelUpdated += (_, level) => MicLevelUpdated?.Invoke(this, level);
         _mic.ErrorOccurred += (_, ex) => PipelineError?.Invoke(this, $"[麦克风] {ex.Message}");
 
-        if (_config.Asr.Streaming)
+        _vad.SpeechFrame += (_, frame) =>
         {
-            // Streaming path: lazily create a channel on the first frame of a new segment,
-            // push every frame, and complete the channel when the segment ends (SpeechDetected).
-            _vad.SpeechFrame += (_, frame) =>
-            {
-                if (_micMuted) return;
-                _micSpeechChannel ??= NewSpeechChannel();
-                _micSpeechChannel.Writer.TryWrite(frame);
-            };
-            _vad.SpeechDetected += async (_, seg) =>
-            {
-                var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
-                AIVTuber.Core.Diagnostics.DebugLog.Write(
-                    $"[麦克风段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
-                    $"峰值={peak:F3} micMuted={_micMuted} streaming=true");
-                var channel = _micSpeechChannel;
-                _micSpeechChannel = null;
-                channel?.Writer.TryComplete();
-                if (_micMuted || peak < MicAsrMinPeak)
-                {
-                    if (peak < MicAsrMinPeak)
-                        AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风段] 能量过低(<{MicAsrMinPeak})，跳过ASR");
-                    return;
-                }
-                _stateTracker.InputStarted(Environment.TickCount64);
-                var history = _conversation.BuildMessages();
-                // Mic has highest priority: always interrupts (including any loopback processing)
-                var stream = channel is null
-                    ? System.Linq.AsyncEnumerable.Empty<byte[]>()
-                    : channel.Reader.ReadAllAsync();
-                await _orchestrator.ProcessSpeechStreamingAsync(stream, seg, history, _config.Input.MicTemplate);
-            };
-        }
-        else
+            if (_micMuted) return;
+            _turnGate?.SetMicSpeaking(true);
+            if (!_config.Asr.Streaming) return;
+            _micSpeechChannel ??= NewSpeechChannel();
+            _micSpeechChannel.Writer.TryWrite(frame);
+        };
+        _vad.SpeechDetected += async (_, seg) =>
         {
-            _vad.SpeechDetected += async (_, seg) =>
-            {
-                var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
-                AIVTuber.Core.Diagnostics.DebugLog.Write(
-                    $"[麦克风段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
-                    $"峰值={peak:F3} micMuted={_micMuted}");
-                if (_micMuted) return;
-                if (peak < MicAsrMinPeak)
-                {
-                    AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风段] 能量过低(<{MicAsrMinPeak})，跳过ASR");
-                    return;
-                }
-                _stateTracker.InputStarted(Environment.TickCount64);
-                var history = _conversation.BuildMessages();
-                // Mic has highest priority: always interrupts (including any loopback processing)
-                await _orchestrator.ProcessSpeechAsync(seg, history, _config.Input.MicTemplate);
-            };
-        }
+            try { await ObserveMicSegmentAsync(seg).ConfigureAwait(false); }
+            catch (Exception ex) { PipelineError?.Invoke(this, $"[麦克风] {ex.Message}"); }
+        };
         try
         {
             _mic.Start();
@@ -801,68 +948,19 @@ public sealed class BotRuntime : IAsyncDisposable
             {
                 _loopbackVad = new VadDetector(_config.Audio.VadAggressiveness, _config.Audio.PreSpeechPaddingMs, _config.Audio.PostSpeechSilenceMs);
 
-                if (_config.Asr.Streaming)
+                _loopbackVad.SpeechFrame += (_, frame) =>
                 {
-                    _loopbackVad.SpeechFrame += (_, frame) =>
-                    {
-                        if (_loopbackVadMuted) return;
-                        _loopbackSpeechChannel ??= NewSpeechChannel();
-                        _loopbackSpeechChannel.Writer.TryWrite(frame);
-                    };
-                    _loopbackVad.SpeechDetected += async (_, seg) =>
-                    {
-                        var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
-                        AIVTuber.Core.Diagnostics.DebugLog.Write(
-                            $"[内录段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
-                            $"峰值={peak:F3} loopbackMuted={_loopbackVadMuted} streaming=true");
-                        var channel = _loopbackSpeechChannel;
-                        _loopbackSpeechChannel = null;
-                        channel?.Writer.TryComplete();
-                        if (peak < LoopbackAsrMinPeak)
-                        {
-                            AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
-                            return;
-                        }
-                        var tagged = new AIVTuber.Core.Audio.SpeechSegment
-                        {
-                            AudioData = seg.AudioData,
-                            StartTime = seg.StartTime,
-                            EndTime = seg.EndTime,
-                            Source = AIVTuber.Core.Audio.AudioSource.Loopback,
-                        };
-                        var stream = channel is null
-                            ? System.Linq.AsyncEnumerable.Empty<byte[]>()
-                            : channel.Reader.ReadAllAsync();
-                        await _orchestrator.ProcessLoopbackSpeechStreamingAsync(
-                            stream, tagged, _conversation.BuildMessages(), _config.Input.LoopbackTemplate);
-                    };
-                }
-                else
+                    if (_loopbackVadMuted) return;
+                    _turnGate?.SetLoopbackSpeaking(true);
+                    if (!_config.Asr.Streaming) return;
+                    _loopbackSpeechChannel ??= NewSpeechChannel();
+                    _loopbackSpeechChannel.Writer.TryWrite(frame);
+                };
+                _loopbackVad.SpeechDetected += async (_, seg) =>
                 {
-                    _loopbackVad.SpeechDetected += async (_, seg) =>
-                    {
-                        var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
-                        AIVTuber.Core.Diagnostics.DebugLog.Write(
-                            $"[内录段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
-                            $"峰值={peak:F3} loopbackMuted={_loopbackVadMuted}");
-                        // Energy gate: the local ASR (Qwen) hallucinates plausible Chinese from silence/
-                        // near-silent noise. Real speech peaks ~0.4+, hallucination-prone segments ≤0.02.
-                        // Drop low-energy segments so they never reach ASR and get mislabeled as 对面.
-                        if (peak < LoopbackAsrMinPeak)
-                        {
-                            AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
-                            return;
-                        }
-                        var tagged = new AIVTuber.Core.Audio.SpeechSegment
-                        {
-                            AudioData = seg.AudioData,
-                            StartTime = seg.StartTime,
-                            EndTime = seg.EndTime,
-                            Source = AIVTuber.Core.Audio.AudioSource.Loopback,
-                        };
-                        await _orchestrator.ProcessLoopbackSpeechAsync(tagged, _conversation.BuildMessages(), _config.Input.LoopbackTemplate);
-                    };
-                }
+                    try { await ObserveLoopbackSegmentAsync(seg).ConfigureAwait(false); }
+                    catch (Exception ex) { PipelineError?.Invoke(this, $"[内录] {ex.Message}"); }
+                };
 
                 if (!string.IsNullOrWhiteSpace(_config.Audio.LoopbackProcessName))
                 {
@@ -944,19 +1042,19 @@ public sealed class BotRuntime : IAsyncDisposable
             HandlePkEnded();
 
         CurrentPkOpponent = pk;
+        _conversation?.SetLivePkOpponent(pk);
+        PkOpponentChanged?.Invoke(this, pk);
         AIVTuber.Core.Diagnostics.DebugLog.Write(
             $"[PK] 对手 {pk.Username}（{pk.FollowerCount} 粉，房间 {pk.RoomId}）");
 
         var matchId = _pkBuffer.Start(pk);
         SuperviseBackgroundTask(StartPkMatchAsync(pk, matchId));
 
-        var text = _config.Input.PkTemplate
-            .Replace("{uname}", pk.Username)
-            .Replace("{follower}", pk.FollowerCount.ToString())
-            .Replace("{uid}", pk.Uid)
-            .Replace("{roomid}", pk.RoomId.ToString());
-        _pkBuffer.NoteOpponentSpeech(text, "pk_announce");
-        FeedPkText(text, pk.Uid);
+        var summary = $"PK 开始，对手是 {pk.Username}";
+        if (pk.FollowerCount > 0) summary += $"，粉丝 {pk.FollowerCount}";
+        if (pk.RoomId != 0) summary += $"，房间 {pk.RoomId}";
+        if (!string.IsNullOrEmpty(pk.Uid)) summary += $"，UID {pk.Uid}";
+        _turnGate?.AddLine(new TalkLine(TalkIdentity.System, "系统", summary, pk.Uid));
     }
 
     private async Task StartPkMatchAsync(PkOpponent pk, string matchId)
@@ -988,6 +1086,8 @@ public sealed class BotRuntime : IAsyncDisposable
         var turns = _pkBuffer.Snapshot();
         _pkBuffer.Clear();
         CurrentPkOpponent = null;
+        _conversation?.SetLivePkOpponent(null);
+        PkOpponentChanged?.Invoke(this, null);
         AIVTuber.Core.Diagnostics.DebugLog.Write(
             $"[PK] 结束（缓冲 {turns.Count} 对，对手 {opponent?.Username ?? "?"}）");
 
@@ -1063,24 +1163,10 @@ public sealed class BotRuntime : IAsyncDisposable
         if (_pkBuffer.IsActive)
             HandlePkEnded();
         CurrentPkOpponent = null;
+        _conversation?.SetLivePkOpponent(null);
+        PkOpponentChanged?.Invoke(this, null);
         AIVTuber.Core.Diagnostics.DebugLog.Write("[PK] 手动标记新一场 PK");
-        FeedPkText(_config.Input.PkManualTemplate, uid: "pk-manual");
-    }
-
-    /// <summary>Pushes a PK line straight into the pipeline. No-ops before the pipeline is
-    /// initialized, so UI controls stay safe to press while the bot is stopped.</summary>
-    private async void FeedPkText(string text, string uid)
-    {
-        if (_orchestrator is null) return;
-        try
-        {
-            _stateTracker.TextInputStarted(Environment.TickCount64);
-            await _orchestrator.ProcessTextAsync(text, _conversation.BuildMessages(uid));
-        }
-        catch (Exception ex)
-        {
-            PipelineError?.Invoke(this, $"[PK] 播报失败：{ex.Message}");
-        }
+        _turnGate?.AddLine(new TalkLine(TalkIdentity.System, "系统", "新的一场 PK 开始了，还不知道对手是谁", null));
     }
 
     /// <summary>Creates a DanmakuSelector with its selection handler wired. Speaking state is
@@ -1093,11 +1179,12 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             _stateTracker.TextInputStarted(Environment.TickCount64);
             await _viewerRepo.RecordInteractionAsync(d.Uid, d.Platform, d.Username);
-            var history = _conversation.BuildMessages(d.Uid);
-            var text = _config.Input.DanmakuTemplate
-                .Replace("{username}", d.Username)
-                .Replace("{content}", d.Content);
-            await _orchestrator.ProcessTextAsync(text, history, wakeProbe: d.Content);
+            var label = IdentityPrompt.ResolveDanmakuLabel(_config.Identity.DanmakuLabel);
+            _turnGate?.AddLine(new TalkLine(
+                TalkIdentity.Danmaku,
+                string.IsNullOrWhiteSpace(d.Username) ? label : d.Username,
+                d.Content,
+                string.IsNullOrEmpty(d.Uid) ? null : d.Uid));
         };
         return selector;
     }
@@ -1285,6 +1372,8 @@ public sealed class BotRuntime : IAsyncDisposable
         if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); }
         if (_obs is not null) { await _obs.DisconnectAsync(); _obs.Dispose(); }
         await _asrSidecar.DisposeAsync();
+        _turnGate?.Dispose();
+        _turnGate = null;
         _orchestrator?.Dispose();
         (_tts as IDisposable)?.Dispose();
         _llm?.Dispose();

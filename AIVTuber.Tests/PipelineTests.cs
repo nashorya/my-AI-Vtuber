@@ -1,6 +1,7 @@
 using AIVTuber.Core.Pipeline;
 using AIVTuber.Core.Bot;
 using AIVTuber.Core.Config;
+using AIVTuber.Core.LiveStream;
 
 namespace AIVTuber.Tests;
 
@@ -343,6 +344,65 @@ public class ConversationManagerTests
         {
             try { File.Delete(path); } catch { /* ignore */ }
         }
+    }
+
+    [Fact]
+    public async Task BuildMessages_WithoutQuery_DoesNotDumpLibrary()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "aivt-mem-" + Guid.NewGuid().ToString("N") + ".db");
+        try
+        {
+            var db = new AIVTuber.Core.Memory.MemoryDb(path);
+            await db.InitializeAsync();
+            var facts = new AIVTuber.Core.Memory.FactRepository(db);
+            await facts.InsertAsync(new AIVTuber.Core.Memory.Fact
+            {
+                Content = "路人甲喜欢吃辣",
+                Importance = 3,
+            });
+
+            var mgr = CreateManager();
+            mgr.SetMemory(null, facts);
+            var messages = mgr.BuildMessages();
+            Assert.DoesNotContain(messages, m => m.Content.Contains("相关记忆"));
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void BuildMessages_InjectsLivePkOpponentWithoutNeedingWake()
+    {
+        var mgr = CreateManager();
+        mgr.SetLivePkOpponent(new PkOpponent
+        {
+            Uid = "u2",
+            Username = "沅依utatte",
+            FollowerCount = 310,
+            RoomId = 1907447144,
+        });
+        mgr.AddUserMessage("小娜打个招呼");
+
+        var messages = mgr.BuildMessages();
+        var ctx = messages.FirstOrDefault(m =>
+            m.Role == MessageRole.System && m.Content.Contains("当前PK"));
+        Assert.NotNull(ctx);
+        Assert.Contains("沅依utatte", ctx!.Content);
+        Assert.Contains("310", ctx.Content);
+        Assert.Contains("1907447144", ctx.Content);
+    }
+
+    [Fact]
+    public void BuildMessages_ClearsLivePkOpponent()
+    {
+        var mgr = CreateManager();
+        mgr.SetLivePkOpponent(new PkOpponent { Username = "小云柒吖", Uid = "1" });
+        mgr.SetLivePkOpponent(null);
+
+        var messages = mgr.BuildMessages();
+        Assert.DoesNotContain(messages, m => m.Content.Contains("当前PK"));
     }
 }
 

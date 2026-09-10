@@ -75,38 +75,57 @@ func main() {
 	})
 
 	if pkNotice && pkPushURL != "" {
-		pk := newDedupe(60 * time.Second)
+		selfIDs := resolveRoomIDs(httpClient, roomID)
+		pk := newPkTracker(60 * time.Second)
 		onStart := func(raw string) {
 			defer func() {
 				if rec := recover(); rec != nil {
 					fmt.Printf("[PK] handler error: %v\n", rec)
 				}
 			}()
+			preview := raw
+			if len(preview) > 400 {
+				preview = preview[:400]
+			}
+			fmt.Printf("[PK] raw=%s\n", preview)
 			var payload any
 			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 				return
 			}
-			hint := extractOpponentHint(payload, roomID)
-			oppRoom := extractOpponentRoomID(payload, roomID)
+			hint := extractOpponentHintAny(payload, selfIDs)
+			oppRoom := extractOpponentRoomIDAny(payload, selfIDs)
 			if oppRoom == nil && hint != nil && hint.RoomID != 0 {
 				oppRoom = intPtr(hint.RoomID)
 			}
-			if oppRoom == nil {
-				fmt.Println("[PK] start event missing opponent room")
+			if oppRoom == nil && hint == nil {
+				fmt.Println("[PK] start event unresolved opponent")
 				return
 			}
-			if !pk.shouldProcess(*oppRoom, time.Duration(time.Now().UnixNano())) {
+			key := 0
+			if oppRoom != nil {
+				key = *oppRoom
+			}
+			now := time.Duration(time.Now().UnixNano())
+			if !pk.begin(key, now) {
 				return
 			}
-			opponent := fetchOpponent(httpClient, *oppRoom)
-			if opponent == nil {
-				opponent = hint
+			var roomInit, master any
+			if oppRoom != nil {
+				roomInit, master = fetchOpponentParts(httpClient, *oppRoom)
 			}
-			if opponent == nil || opponent.UID == "" {
-				fmt.Printf("[PK] fetch failed and payload had no uid for room %d\n", *oppRoom)
+			opponent := completeOpponent(hint, roomInit, master)
+			if !opponentAcceptable(opponent) {
+				pk.markIncomplete(key)
+				fmt.Printf("[PK] incomplete opponent room=%d\n", key)
 				return
 			}
-			fmt.Printf("[PK] opponent: %s (%d fans, room %d)\n", opponent.Username, opponent.Follower, opponent.RoomID)
+			if opponent.UID == "" {
+				pk.markIncomplete(key)
+			} else {
+				pk.markSuccess(key, now)
+			}
+			fmt.Printf("[PK] opponent: %s (%d fans, room %d uid=%s)\n",
+				opponent.Username, opponent.Follower, opponent.RoomID, opponent.UID)
 			postJSON(httpClient, pkPushURL, opponent)
 		}
 		onEnd := func(string) {
@@ -152,33 +171,46 @@ func buildCookie(sessdata, biliJct, buvid3 string) string {
 	return strings.Join(parts, "; ")
 }
 
-func fetchOpponent(httpClient *http.Client, roomID int) *pkPush {
+func resolveRoomIDs(httpClient *http.Client, configured int) []int {
+	headers := map[string]string{"User-Agent": apiUA}
+	body, err := getJSON(httpClient, "https://api.live.bilibili.com/room/v1/Room/room_init", map[string]string{
+		"id": strconv.Itoa(configured),
+	}, headers)
+	if err != nil {
+		fmt.Printf("[PK] self room_init failed: %v\n", err)
+		return []int{configured}
+	}
+	ids := parseSelfRoomIDs(body, configured)
+	fmt.Printf("[PK] self rooms %v\n", ids)
+	return ids
+}
+
+func fetchOpponentParts(httpClient *http.Client, roomID int) (any, any) {
 	headers := map[string]string{"User-Agent": apiUA}
 	room, err := getJSON(httpClient, "https://api.live.bilibili.com/room/v1/Room/room_init", map[string]string{
 		"id": strconv.Itoa(roomID),
 	}, headers)
 	if err != nil {
-		fmt.Printf("[PK] fetch failed for room %d: %v\n", roomID, err)
-		return nil
+		fmt.Printf("[PK] room_init error room=%d: %v\n", roomID, err)
+		return nil, nil
 	}
 	root := asMap(room)
 	if asRoomID(root["code"]) != 0 {
-		fmt.Printf("[PK] room_init failed for %d: code=%v\n", roomID, root["code"])
-		return nil
+		fmt.Printf("[PK] room_init failed room=%d code=%v\n", roomID, root["code"])
+		return room, nil
 	}
 	uid := stringifyID(asMap(root["data"])["uid"])
 	if uid == "" {
-		return nil
+		return room, nil
 	}
-
 	master, err := getJSON(httpClient, "https://api.live.bilibili.com/live_user/v1/Master/info", map[string]string{
 		"uid": uid,
 	}, headers)
 	if err != nil {
-		fmt.Printf("[PK] fetch failed for room %d: %v\n", roomID, err)
-		return nil
+		fmt.Printf("[PK] Master/info error uid=%s: %v\n", uid, err)
+		return room, nil
 	}
-	return buildPkPayload(roomID, master)
+	return room, master
 }
 
 func getJSON(httpClient *http.Client, rawURL string, query, headers map[string]string) (any, error) {

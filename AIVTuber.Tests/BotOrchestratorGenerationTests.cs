@@ -9,61 +9,59 @@ namespace AIVTuber.Tests;
 public sealed class BotOrchestratorGenerationTests
 {
     [Fact]
-    public async Task NewTurn_SuppressesLateOldStateAudioAndActionAndAwaitsNewCommand()
+    public async Task HeldTurn_DropsIncomingTextWithoutCancel()
     {
         var llm = new ControlledLlm();
         var tts = new FakeTts();
         using var player = new AudioPlayer();
         var played = new List<string>();
-        var actions = new List<string>();
-        var actionCompleted = NewSignal();
-        var config = new VtsConfig
-        {
-            ActionMap = new Dictionary<string, string>
-            {
-                ["old-action"] = "old-hotkey",
-                ["new-action"] = "new-hotkey",
-            },
-        };
         using var orchestrator = new BotOrchestrator(
-            new FakeAsr(), llm, tts, player, new TtsConfig(), null, config,
+            new FakeAsr(), llm, tts, player, new TtsConfig(), null, null,
             async (chunks, ct) =>
             {
                 await foreach (var chunk in chunks.WithCancellation(ct))
                     played.Add(System.Text.Encoding.UTF8.GetString(chunk));
             },
             () => { },
-            async (hotkey, ct) =>
-            {
-                if (hotkey == "new-hotkey") await actionCompleted.Task.WaitAsync(ct);
-                actions.Add(hotkey);
-            });
+            triggerHotkeyAsync: null);
         var sentences = new List<string>();
-        var emotions = new List<string>();
-        var starts = 0;
-        var stops = 0;
         orchestrator.OnSentenceReady += (_, sentence) => sentences.Add(sentence);
-        orchestrator.OnEmotionDetected += (_, emotion) => emotions.Add(emotion);
-        orchestrator.OnAiStartSpeaking += (_, _) => starts++;
-        orchestrator.OnAiStopSpeaking += (_, _) => stops++;
 
         var oldTurn = orchestrator.ProcessTextAsync("old", []);
         await llm.OldStarted.Task;
-        var newTurn = orchestrator.ProcessTextAsync("new", []);
+        var dropped = orchestrator.ProcessTextAsync("new", []);
+        await dropped;
         llm.ReleaseOld.TrySetResult();
-        await llm.NewStarted.Task;
+        await oldTurn;
 
-        Assert.False(newTurn.IsCompleted);
-        actionCompleted.TrySetResult();
-        await Task.WhenAll(oldTurn, newTurn);
-
-        Assert.Equal(["new sentence."], sentences);
-        Assert.Equal(["happy"], emotions);
-        Assert.Equal(["new sentence."], played);
-        Assert.Equal(["new-hotkey"], actions);
-        Assert.Equal(1, starts);
-        Assert.Equal(1, stops);
+        Assert.False(llm.NewStarted.Task.IsCompleted);
+        Assert.Equal(["old sentence."], sentences);
+        Assert.Equal(["old sentence."], played);
         Assert.False(orchestrator.IsProcessing);
+    }
+
+    [Fact]
+    public async Task Interrupt_CancelsHeldTurn()
+    {
+        var llm = new ControlledLlm();
+        var tts = new FakeTts();
+        using var player = new AudioPlayer();
+        using var orchestrator = new BotOrchestrator(
+            new FakeAsr(), llm, tts, player, new TtsConfig(), null, null,
+            async (chunks, ct) =>
+            {
+                await foreach (var _ in chunks.WithCancellation(ct)) { }
+            },
+            () => { },
+            triggerHotkeyAsync: null);
+
+        var turn = orchestrator.ProcessTextAsync("old", []);
+        await llm.OldStarted.Task;
+        orchestrator.Interrupt();
+        await turn;
+
+        Assert.False(orchestrator.IsProcessing);
+        Assert.False(llm.NewStarted.Task.IsCompleted);
     }
 
     private static TaskCompletionSource NewSignal() =>
@@ -74,13 +72,10 @@ public sealed class BotOrchestratorGenerationTests
         public event EventHandler<string>? OnSentenceReady;
         public event EventHandler<string>? OnEmotionDetected;
         public event EventHandler<string>? OnActionDetected;
-
         public event EventHandler<string>? OnPoseDetected;
         public TaskCompletionSource OldStarted { get; } = NewSignal();
         public TaskCompletionSource ReleaseOld { get; } = NewSignal();
         public TaskCompletionSource NewStarted { get; } = NewSignal();
-
-        public void EmitEmotion(string emotion) => OnEmotionDetected?.Invoke(this, emotion);
 
         public async IAsyncEnumerable<string> StreamAsync(
             List<Message> history,
@@ -90,17 +85,14 @@ public sealed class BotOrchestratorGenerationTests
             if (userInput == "old")
             {
                 OldStarted.TrySetResult();
-                await ReleaseOld.Task;
+                await ReleaseOld.Task.WaitAsync(cancellationToken);
                 OnEmotionDetected?.Invoke(this, "sad");
-                OnActionDetected?.Invoke(this, "old-action");
                 OnSentenceReady?.Invoke(this, "old sentence.");
                 yield return "old sentence.";
                 yield break;
             }
 
             NewStarted.TrySetResult();
-            OnEmotionDetected?.Invoke(this, "happy");
-            OnActionDetected?.Invoke(this, "new-action");
             OnSentenceReady?.Invoke(this, "new sentence.");
             yield return "new sentence.";
         }

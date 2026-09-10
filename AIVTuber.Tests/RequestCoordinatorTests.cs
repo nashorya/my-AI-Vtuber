@@ -94,6 +94,44 @@ public sealed class RequestCoordinatorTests
     }
 
     [Fact]
+    public async Task Hold_DropsNonManualWithoutCancelling()
+    {
+        await using var coordinator = new RequestCoordinator();
+        var started = NewSignal();
+        var release = NewSignal();
+        var active = coordinator.EnqueueAsync(InputSource.Danmaku, async (_, _) =>
+        {
+            started.TrySetResult();
+            await release.Task;
+        });
+        await started.Task;
+        coordinator.SetHold(true);
+
+        Assert.False(await coordinator.EnqueueAsync(InputSource.Microphone, (_, _) => Task.CompletedTask));
+        Assert.False(await coordinator.EnqueueAsync(InputSource.Danmaku, (_, _) => Task.CompletedTask));
+        release.TrySetResult();
+        Assert.True(await active);
+    }
+
+    [Fact]
+    public async Task Hold_AllowsManualToCancel()
+    {
+        await using var coordinator = new RequestCoordinator();
+        var started = NewSignal();
+        var active = coordinator.EnqueueAsync(InputSource.Danmaku, async (_, ct) =>
+        {
+            started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        });
+        await started.Task;
+        coordinator.SetHold(true);
+
+        var manual = coordinator.EnqueueAsync(InputSource.Manual, (_, _) => Task.CompletedTask);
+        Assert.False(await active);
+        Assert.True(await manual);
+    }
+
+    [Fact]
     public async Task Loopback_IsDroppedWhileAnotherRequestIsBusy()
     {
         await using var coordinator = new RequestCoordinator();
