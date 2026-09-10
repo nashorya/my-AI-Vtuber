@@ -712,7 +712,7 @@ public sealed class BotOrchestrator : IDisposable
                 await foreach (var chunk in _tts.StreamAsync(
                                    sentence,
                                    _ttsConfig.VoiceId,
-                                   ResolveTtsEmotion(_currentEmotion),
+                                   ResolveTtsEmotion(PeekPendingEmotion(pendingReply)),
                                    streamCt))
                 {
                     if (!IsCurrent(envelope, streamCt)) yield break;
@@ -794,6 +794,15 @@ public sealed class BotOrchestrator : IDisposable
                 return;
         }
     }
+    private string? PeekPendingEmotion(ClassifiedReply? reply)
+    {
+        // Synthesis needs the emotion before public commit. Reading the staged value
+        // must not fire the pixel avatar, hotkeys or subtitles while TTS is pending.
+        var tag = reply?.StagedControls.LastOrDefault(t => t.StartsWith("[emotion:", StringComparison.OrdinalIgnoreCase));
+        if (tag is not null) return tag[9..^1].Trim();
+        lock (_deferredEmotions) return _deferredEmotions.LastOrDefault() ?? _currentEmotion;
+    }
+
     private string? ResolveTtsEmotion(string? emotion)
     {
         if (string.IsNullOrWhiteSpace(emotion)) return null;

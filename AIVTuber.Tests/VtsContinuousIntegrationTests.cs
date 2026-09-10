@@ -113,7 +113,8 @@ internal sealed class FakeVts : IAsyncDisposable
         await _sendGate.WaitAsync(_life.Token);
         try
         {
-            var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(value));
+            var bytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(value, new JsonSerializerOptions
+            { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }));
             // Deliberately fragment inside UTF-8 characters and across the client's 8 KiB buffer.
             for (var offset = 0; offset < bytes.Length; offset += 97)
             {
@@ -206,6 +207,12 @@ public sealed class VtsContinuousIntegrationTests : IDisposable
         Assert.Empty(session.AllowedChannels);
         Assert.Throws<InvalidOperationException>(() => session.ConfirmTrial(profile, head));
         await session.ApplyAsync(config); Assert.Empty(session.AllowedChannels);
+        server.ModelId = "22222222222222222222222222222222";
+        await server.EventAsync("ModelLoadedEvent", new { modelLoaded = true, modelID = server.ModelId });
+        await WaitUntilAsync(() => session.Model?.Id == server.ModelId);
+        await session.ApplyAsync(config);
+        Assert.Empty(session.AllowedChannels);
+        Assert.All(session.CreateDraft(config).Channels, b => Assert.False(b.Verified));
         await client.DisconnectAsync();
     }
     [Fact]

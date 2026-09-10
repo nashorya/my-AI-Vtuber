@@ -44,11 +44,13 @@ public class ContinuousReplyPipelineTests
     private sealed class Tts : ITtsClient
     {
         public readonly List<string> Texts = [];
+        public readonly List<string?> Emotions = [];
         public bool Fail;
         public async IAsyncEnumerable<byte[]> StreamAsync(string text, string voiceId, string? emotion,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             Texts.Add(text);
+            Emotions.Add(emotion);
             if (Fail) throw new IOException("synthesis failed");
             yield return new byte[40];
             await Task.CompletedTask;
@@ -85,6 +87,7 @@ public class ContinuousReplyPipelineTests
         });
         await orchestrator.ProcessTextAsync("hello", [], bypassWake: true);
         Assert.Equal(expectedMoves, sink.Submits); Assert.Equal(expectedTts, tts.Texts.Count); Assert.Equal(0, hotkeys);
+        if (expectedTts > 0) Assert.Equal("happy", Assert.Single(tts.Emotions));
         Assert.All(tts.Texts.Concat(subtitles), text => { Assert.DoesNotContain("avatar", text); Assert.DoesNotContain("targets", text); });
         if (expectedTts == 0) Assert.Empty(subtitles);
         if (reply == "【PASS】") Assert.Equal(ReplyKind.Pass, committed!.Value.Kind);
