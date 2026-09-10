@@ -1,211 +1,226 @@
+using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using AIVTuber.Core.Config;
+using AIVTuber.Core.Avatar;
 
 namespace AIVTuber.Core.Vts;
 
-/// <summary>
-/// VTube Studio Plugin API client (ws://host:port, default 8001). Implements the real protocol:
-/// the "VTubeStudioPublicAPI" envelope with a messageType, the two-step auth flow
-/// (AuthenticationTokenRequest → AuthenticationRequest), parameter injection via parameterValues,
-/// and hotkey triggering. Responses are routed by requestID. High-frequency injects (lip-sync) are
-/// fire-and-forget; all sends are serialized (ClientWebSocket allows only one outstanding send).
-/// </summary>
-public sealed class VtsClient : IDisposable
+public sealed class VtsApiException(string message, int errorId = -1) : Exception(message)
 {
+    public int ErrorId { get; } = errorId;
+    public bool AuthorizationDenied => ErrorId is 50;
+}
+
+/// <summary>One authenticated socket, one receive task and serialized sends. No hidden retries.</summary>
+public sealed class VtsClient : IDisposable, IAvatarParameterBackend
+{
+    public const string MouthParameterId = "AIVTuberMouthOpen";
     private const string PluginName = "AIVTuber";
     private const string PluginDeveloper = "AIVTuberDev";
-
-    /// <summary>
-    /// VTS rejects InjectParameterDataRequest for built-in Live2D parameters like
-    /// ParamMouthOpenY ("only for tracking parameters"). We create our own custom
-    /// tracking parameter and inject into that instead. The user must map it to the
-    /// model's mouth-open parameter once in VTS (Settings → Live2D Parameter Mapping,
-    /// or drag it onto ParamMouthOpenY in the model's parameter list).
-    /// </summary>
-    public const string MouthParameterId = "AIVTuberMouthOpen";
-
     private readonly VtsConfig _config;
+    private readonly string _tokenPath;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
-    private readonly Dictionary<string, TaskCompletionSource<VtsResponse>> _pending = new();
-    private readonly object _lock = new();
+    private readonly SemaphoreSlim _connectLock = new(1, 1);
+    private readonly ConcurrentDictionary<string, TaskCompletionSource<VtsResponse>> _pending = new();
     private ClientWebSocket? _ws;
-    private string? _authToken;
-    private bool _disposed;
-
+    private CancellationTokenSource? _session;
+    private Task? _receiveTask;
+    private bool _authenticated, _disposed;
     public event EventHandler? OnConnected;
     public event EventHandler<string>? OnDisconnected;
     public event EventHandler<string>? OnError;
+    public event EventHandler<string>? OnStateChanged;
+    public event EventHandler<VtsResponse>? OnEvent;
+    public string State { get; private set; } = "未连接";
+    public bool IsConnected => _authenticated && _ws?.State == WebSocketState.Open;
+    internal int PendingCount => _pending.Count;
 
-    public VtsClient(VtsConfig config) => _config = config;
+    public VtsClient(VtsConfig config) : this(config, Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AIVTuber", "vts",
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes($"{config.Host}:{config.Port}")))[..16] + ".token")) { }
+    internal VtsClient(VtsConfig config, string tokenPath) { _config = config; _tokenPath = tokenPath; }
+    private void SetState(string value) { State = value; OnStateChanged?.Invoke(this, value); }
 
-    /// <summary>True only while the WebSocket is actually open (not just "ConnectAsync was called once").</summary>
-    public bool IsConnected => _ws?.State == WebSocketState.Open;
-
-    /// <summary>Connects and authenticates. The user must approve the plugin in the VTS UI the first
-    /// time (the token request). Each connect fetches a fresh token.</summary>
     public async Task ConnectAsync(CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        _ws = new ClientWebSocket();
-        await _ws.ConnectAsync(new Uri($"ws://{_config.Host}:{_config.Port}"), ct).ConfigureAwait(false);
-        _ = ReceiveLoopAsync(ct);
-
-        // Step 1: request an auth token (prompts the user to allow the plugin in VTS).
-        var tokenResp = await RequestAsync("AuthenticationTokenRequest", new Dictionary<string, object>
+        await _connectLock.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            ["pluginName"] = PluginName,
-            ["pluginDeveloper"] = PluginDeveloper,
-        }, ct).ConfigureAwait(false);
-
-        _authToken = tokenResp?.Data?.TryGetProperty("authenticationToken", out var t) == true
-            ? t.GetString()
-            : throw new InvalidOperationException("VTS did not return an authentication token (was the plugin denied?)");
-
-        // Step 2: authenticate the session with the token.
-        var authResp = await RequestAsync("AuthenticationRequest", new Dictionary<string, object>
-        {
-            ["pluginName"] = PluginName,
-            ["pluginDeveloper"] = PluginDeveloper,
-            ["authenticationToken"] = _authToken!,
-        }, ct).ConfigureAwait(false);
-
-        var authenticated = authResp?.Data?.TryGetProperty("authenticated", out var a) == true && a.GetBoolean();
-        if (!authenticated)
-        {
-            var reason = authResp?.Data?.TryGetProperty("reason", out var r) == true ? r.GetString() : "unknown";
-            throw new InvalidOperationException($"VTS authentication failed: {reason}");
+            await DisconnectAsync().ConfigureAwait(false);
+            SetState("连接中");
+            _session = new CancellationTokenSource();
+            var socket = new ClientWebSocket();
+            _ws = socket;
+            await socket.ConnectAsync(new Uri($"ws://{_config.Host}:{_config.Port}"), ct).ConfigureAwait(false);
+            _receiveTask = ReceiveLoopAsync(socket, _session.Token);
+            string? token = File.Exists(_tokenPath) ? (await File.ReadAllTextAsync(_tokenPath, ct).ConfigureAwait(false)).Trim() : null;
+            var accepted = !string.IsNullOrEmpty(token) && await AuthenticateAsync(token, ct).ConfigureAwait(false);
+            if (!accepted)
+            {
+                SetState("等待 VTS 授权");
+                var response = await RequestAsync("AuthenticationTokenRequest", new()
+                {
+                    ["pluginName"] = PluginName, ["pluginDeveloper"] = PluginDeveloper
+                }, ct, TimeSpan.FromSeconds(120)).ConfigureAwait(false);
+                token = response.Data!.Value.GetProperty("authenticationToken").GetString()!;
+                if (!await AuthenticateAsync(token, ct).ConfigureAwait(false))
+                    throw new VtsApiException("VTS 拒绝授权", 50);
+                Directory.CreateDirectory(Path.GetDirectoryName(_tokenPath)!);
+                var temp = _tokenPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try { await File.WriteAllTextAsync(temp, token, ct).ConfigureAwait(false); File.Move(temp, _tokenPath, true); }
+                finally { if (File.Exists(temp)) File.Delete(temp); }
+            }
+            _authenticated = true;
+            await CreateParameterAsync(MouthParameterId, 0, 1, 0, ct).ConfigureAwait(false);
+            SetState("已连接");
+            OnConnected?.Invoke(this, EventArgs.Empty);
         }
-
-        // Built-in Live2D parameters (e.g. ParamMouthOpenY) can't be injected directly —
-        // VTS only allows injection into custom tracking parameters. Create ours once;
-        // if it already exists VTS returns an APIError, which we ignore.
-        await RequestAsync("ParameterCreationRequest", new Dictionary<string, object>
+        catch
         {
-            ["parameterName"] = MouthParameterId,
-            ["explanation"] = "AIVTuber lip-sync (RMS-driven mouth open)",
-            ["min"] = 0f,
-            ["max"] = 1f,
-            ["defaultValue"] = 0f,
-        }, ct).ConfigureAwait(false);
+            await DisconnectAsync().ConfigureAwait(false);
+            SetState("连接失败 / 授权未完成");
+            throw;
+        }
+        finally { _connectLock.Release(); }
+    }
 
-        OnConnected?.Invoke(this, EventArgs.Empty);
+    private async Task<bool> AuthenticateAsync(string token, CancellationToken ct)
+    {
+        var response = await RequestAsync("AuthenticationRequest", new()
+        {
+            ["pluginName"] = PluginName, ["pluginDeveloper"] = PluginDeveloper, ["authenticationToken"] = token
+        }, ct).ConfigureAwait(false);
+        return response.Data!.Value.GetProperty("authenticated").GetBoolean();
     }
 
     public async Task DisconnectAsync()
     {
-        if (_ws is not null && _ws.State == WebSocketState.Open)
-        {
-            try { await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None); }
-            catch { }
-        }
-        OnDisconnected?.Invoke(this, "Disconnected");
+        _authenticated = false;
+        _session?.Cancel();
+        _ws?.Abort();
+        FailPending(new IOException("VTS connection closed"));
+        if (_receiveTask is not null) await _receiveTask.ConfigureAwait(false);
+        _receiveTask = null;
+        _ws?.Dispose(); _ws = null;
+        _session?.Dispose(); _session = null;
     }
 
-    /// <summary>Injects a parameter value (e.g. ParamMouthOpenY). Fire-and-forget — we don't await the
-    /// VTS response, so the ~30ms lip-sync loop never blocks on a round-trip.</summary>
+    public Task CreateParameterAsync(string id, float min, float max, float neutral, CancellationToken ct = default)
+        => RequestAsync("ParameterCreationRequest", new()
+        {
+            ["parameterName"] = id, ["explanation"] = "AIVTuber continuous control: map input/output to identical calibrated ranges",
+            ["min"] = min, ["max"] = max, ["defaultValue"] = neutral
+        }, ct);
+    public Task InjectAsync(IReadOnlyDictionary<string, float> values, CancellationToken ct)
+        => RequestAuthenticatedAsync("InjectParameterDataRequest", new()
+        {
+            ["faceFound"] = true, ["mode"] = "set",
+            ["parameterValues"] = values.Select(p => new { id = p.Key, value = p.Value, weight = 1f }).ToArray()
+        }, ct);
     public Task InjectParameterAsync(string paramId, float value, CancellationToken ct = default)
-        => FireAsync("InjectParameterDataRequest", VtsProtocol.InjectParameterData(paramId, value), ct);
-
-    /// <summary>Triggers a VTS hotkey by ID (expression change). Fire-and-forget.</summary>
+        => InjectAsync(new Dictionary<string, float> { [paramId] = value }, ct);
+    public Task SetMouthAsync(float rms, CancellationToken ct = default)
+        => InjectParameterAsync(MouthParameterId, Math.Clamp(rms * _config.MouthScale, 0, 1), ct);
+    public Task CloseMouthAsync(CancellationToken ct = default) => InjectParameterAsync(MouthParameterId, 0, ct);
     public Task TriggerHotkeyAsync(string hotkeyId, CancellationToken ct = default)
-        => FireAsync("HotkeyTriggerRequest", new Dictionary<string, object> { ["hotkeyID"] = hotkeyId }, ct);
-
-    /// <summary>Lists hotkeys in the current model.</summary>
+        => RequestAuthenticatedAsync("HotkeyTriggerRequest", new() { ["hotkeyID"] = hotkeyId }, ct);
     public async Task<List<VtsHotkeyInfo>> GetHotkeyListAsync(CancellationToken ct = default)
     {
-        var resp = await RequestAsync("HotkeysInCurrentModelRequest", new Dictionary<string, object>(), ct).ConfigureAwait(false);
-        if (resp?.Data is null) return [];
-        return JsonSerializer.Deserialize<VtsHotkeyListResponse>(resp.Data.Value.GetRawText())?.Hotkeys ?? [];
+        var response = await RequestAuthenticatedAsync("HotkeysInCurrentModelRequest", new(), ct).ConfigureAwait(false);
+        return response.Data!.Value.Deserialize<VtsHotkeyListResponse>()?.Hotkeys ?? [];
     }
+    public async Task<JsonElement> QueryAsync(string type, CancellationToken ct = default)
+        => (await RequestAuthenticatedAsync(type, new(), ct).ConfigureAwait(false)).Data!.Value;
+    public Task SubscribeAsync(string eventName, CancellationToken ct = default)
+        => RequestAuthenticatedAsync("EventSubscriptionRequest", new()
+        { ["eventName"] = eventName, ["subscribe"] = true, ["config"] = new { } }, ct);
 
-    public Task SetMouthAsync(float rms, CancellationToken ct = default)
-        => InjectParameterAsync(MouthParameterId, Math.Clamp(rms * _config.MouthScale, 0f, 1f), ct);
-
-    public Task CloseMouthAsync(CancellationToken ct = default)
-        => InjectParameterAsync(MouthParameterId, 0f, ct);
-
-    /// <summary>Send a request and wait for the matching response (by requestID), with a 30s timeout.</summary>
-    private async Task<VtsResponse?> RequestAsync(string messageType, Dictionary<string, object> data, CancellationToken ct)
+    private Task<VtsResponse> RequestAuthenticatedAsync(string type, Dictionary<string, object> data, CancellationToken ct)
     {
-        var requestId = Guid.NewGuid().ToString("N");
-        var tcs = new TaskCompletionSource<VtsResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (_lock) { _pending[requestId] = tcs; }
-
-        await SendRawAsync(VtsProtocol.BuildMessage(messageType, requestId, data), ct).ConfigureAwait(false);
-
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(30));
-        await using var reg = timeout.Token.Register(() =>
-        {
-            lock (_lock) { _pending.Remove(requestId); }
-            tcs.TrySetCanceled();
-        });
-        return await tcs.Task.ConfigureAwait(false);
+        if (!IsConnected) throw new InvalidOperationException("VTS 未连接或未授权");
+        return RequestAsync(type, data, ct);
     }
-
-    /// <summary>Send a request without awaiting a response (for high-frequency / don't-care messages).</summary>
-    private Task FireAsync(string messageType, Dictionary<string, object> data, CancellationToken ct)
-        => SendRawAsync(VtsProtocol.BuildMessage(messageType, Guid.NewGuid().ToString("N"), data), ct);
-
-    private async Task SendRawAsync(string json, CancellationToken ct)
+    private async Task<VtsResponse> RequestAsync(string type, Dictionary<string, object> data, CancellationToken ct, TimeSpan? timeout = null)
     {
-        if (_ws is null || _ws.State != WebSocketState.Open)
-            throw new InvalidOperationException("VTS WebSocket not connected");
-        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+        var socket = _ws;
+        if (socket is null || socket.State != WebSocketState.Open) throw new IOException("VTS socket closed");
+        var id = Guid.NewGuid().ToString("N");
+        var source = new TaskCompletionSource<VtsResponse>(type, TaskCreationOptions.RunContinuationsAsynchronously);
+        _pending[id] = source;
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct, _session?.Token ?? CancellationToken.None);
+        deadline.CancelAfter(timeout ?? TimeSpan.FromSeconds(5));
         try
         {
-            await _ws.SendAsync(new ArraySegment<byte>(Encoding.UTF8.GetBytes(json)),
-                WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
-        }
-        finally { _sendLock.Release(); }
-    }
-
-    private async Task ReceiveLoopAsync(CancellationToken ct)
-    {
-        var buf = new byte[8192];
-        var sb = new StringBuilder();
-        try
-        {
-            while (!ct.IsCancellationRequested && _ws is not null && _ws.State == WebSocketState.Open)
+            await _sendLock.WaitAsync(deadline.Token).ConfigureAwait(false);
+            try
             {
-                var r = await _ws.ReceiveAsync(new ArraySegment<byte>(buf), ct).ConfigureAwait(false);
-                if (r.MessageType == WebSocketMessageType.Close) { OnDisconnected?.Invoke(this, "Closed"); break; }
-                sb.Append(Encoding.UTF8.GetString(buf, 0, r.Count));
-                if (!r.EndOfMessage) continue;
-                HandleMessage(sb.ToString());
-                sb.Clear();
+                var bytes = Encoding.UTF8.GetBytes(VtsProtocol.BuildMessage(type, id, data));
+                await socket.SendAsync(bytes.AsMemory(), WebSocketMessageType.Text, true, deadline.Token).ConfigureAwait(false);
+            }
+            finally { _sendLock.Release(); }
+            return await source.Task.WaitAsync(deadline.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && _session?.IsCancellationRequested != true)
+        { throw new TimeoutException($"VTS {type} 等待响应超时"); }
+        finally { _pending.TryRemove(id, out _); }
+    }
+    private async Task ReceiveLoopAsync(ClientWebSocket socket, CancellationToken ct)
+    {
+        string reason = "VTS 已断开";
+        try
+        {
+            var buffer = new byte[8192];
+            using var message = new MemoryStream();
+            while (!ct.IsCancellationRequested && socket.State == WebSocketState.Open)
+            {
+                var part = await socket.ReceiveAsync(buffer.AsMemory(), ct).ConfigureAwait(false);
+                if (part.MessageType == WebSocketMessageType.Close) break;
+                message.Write(buffer, 0, part.Count);
+                if (message.Length > 4 * 1024 * 1024) throw new IOException("VTS 响应超过 4 MiB");
+                if (!part.EndOfMessage) continue;
+                var response = JsonSerializer.Deserialize<VtsResponse>(message.GetBuffer().AsSpan(0, (int)message.Length));
+                message.SetLength(0);
+                if (response is null) continue;
+                if (response.RequestId is not null && _pending.TryRemove(response.RequestId, out var pending))
+                {
+                    if (response.MessageType == "APIError")
+                    {
+                        var body = response.Data!.Value;
+                        var error = new VtsApiException(body.TryGetProperty("message", out var m) ? m.GetString()! : "VTS API error",
+                            body.TryGetProperty("errorID", out var number) ? number.GetInt32() : -1);
+                        pending.TrySetException(error);
+                        OnError?.Invoke(this, $"{pending.Task.AsyncState} request={response.RequestId}: {error.Message}");
+                    }
+                    else pending.TrySetResult(response);
+                }
+                else if (response.MessageType?.EndsWith("Event", StringComparison.Ordinal) == true)
+                    OnEvent?.Invoke(this, response);
             }
         }
-        catch (OperationCanceledException) { }
-        catch (WebSocketException) { }
-        catch (Exception ex) { OnError?.Invoke(this, ex.Message); }
-    }
-
-    private void HandleMessage(string json)
-    {
-        VtsResponse? resp;
-        try { resp = JsonSerializer.Deserialize<VtsResponse>(json); }
-        catch (JsonException) { return; }
-        if (resp is null) return;
-
-        if (resp.RequestId is not null)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex) { reason = ex.Message; }
+        finally
         {
-            TaskCompletionSource<VtsResponse>? tcs;
-            lock (_lock) { _pending.Remove(resp.RequestId, out tcs); }
-            tcs?.TrySetResult(resp);
+            _authenticated = false;
+            FailPending(new IOException(reason));
+            if (!ct.IsCancellationRequested) { SetState("已断开"); OnDisconnected?.Invoke(this, reason); }
         }
-
-        if (resp.MessageType == "APIError" && resp.Data?.TryGetProperty("message", out var m) == true)
-            OnError?.Invoke(this, m.GetString() ?? "VTS API error");
     }
-
+    private void FailPending(Exception error)
+    {
+        foreach (var pair in _pending)
+            if (_pending.TryRemove(pair.Key, out var pending)) pending.TrySetException(error);
+    }
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
-        _sendLock.Dispose();
+        _authenticated = false;
+        _session?.Cancel(); _ws?.Abort();
+        FailPending(new ObjectDisposedException(nameof(VtsClient)));
         _ws?.Dispose();
     }
 }

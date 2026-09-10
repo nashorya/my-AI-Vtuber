@@ -178,7 +178,10 @@ public sealed class AudioPlayer : IDisposable
     /// WaveOut is created once; chunks are written to a StreamingAudioStream as they
     /// arrive, so there is no gap or re-init between sentences.
     /// </summary>
-    public async Task PlayChunksAsync(IAsyncEnumerable<byte[]> chunks, CancellationToken cancellationToken = default)
+    public Task PlayChunksAsync(IAsyncEnumerable<byte[]> chunks, CancellationToken cancellationToken = default)
+        => PlayChunksAsync(chunks, cancellationToken, null);
+
+    public async Task PlayChunksAsync(IAsyncEnumerable<byte[]> chunks, CancellationToken cancellationToken, Action? firstPcmRead)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         Stop();
@@ -207,13 +210,19 @@ public sealed class AudioPlayer : IDisposable
             // Fire PcmChunkPlayed when WaveOut actually reads the bytes (playback time),
             // not when chunks arrive in the buffer, so CABLE and speakers stay in sync.
             var pcmEvent = PcmChunkPlayed;
-            if (pcmEvent is not null)
+            if (pcmEvent is not null || firstPcmRead is not null)
             {
+                var firstRead = 0;
                 reader.OnRead = (buf, off, len) =>
                 {
-                    var copy = new byte[len];
-                    Array.Copy(buf, off, copy, 0, len);
-                    pcmEvent.Invoke(this, copy);
+                    if (len > 0 && !ct.IsCancellationRequested && Interlocked.Exchange(ref firstRead, 1) == 0)
+                        firstPcmRead?.Invoke();
+                    if (pcmEvent is not null)
+                    {
+                        var copy = new byte[len];
+                        Array.Copy(buf, off, copy, 0, len);
+                        pcmEvent.Invoke(this, copy);
+                    }
                 };
             }
             _waveOut = new WaveOutEvent { DeviceNumber = _deviceIndex };

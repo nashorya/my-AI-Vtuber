@@ -342,6 +342,22 @@
                   <input id="vts.mouthScale" data-path="vts.mouthScale" data-type="float" type="number" step="0.1" />
                 </div>
               </div>
+              <section id="continuousPanel" class="continuous-panel">
+                <label class="switch"><input type="checkbox" data-path="vts.continuousControl.enabled" data-type="bool" />VTS 连续控制实验（保存后生效）</label>
+                <p class="hint">先使用自带模型验证。关闭对应通道的面捕、自动眨眼等重复驱动，保留头发和衣服物理。通道正方向以画面为准。</p>
+                <p id="continuousStatus" role="status" aria-live="polite">尚未连接</p>
+                <div class="map-actions">
+                  <button type="button" class="btn ghost sm" data-vts-operation="connect">重新连接 / 授权</button>
+                  <button type="button" class="btn ghost sm" data-vts-operation="refresh">刷新模型与通道</button>
+                  <button type="button" class="btn ghost sm" data-vts-operation="prepare">创建输入参数</button>
+                  <button type="button" class="btn ghost sm" data-vts-operation="resume">恢复已保存的控制</button>
+                  <button type="button" class="btn ghost sm" data-vts-operation="stop">回中并停止控制</button>
+                  <button type="button" class="btn ghost sm" id="btnExportContinuous">导出通道配置</button>
+                  <button type="button" class="btn ghost sm" id="btnImportContinuous">导入通道配置</button>
+                </div>
+                <p class="hint">创建输入后，在 VTS 将下表输入映射至目标参数，IN 与 OUT 均使用表中范围。名称匹配仅为候选，先从中立值试动，再确认；最后点击页面保存。改映射后需刷新并重新验证。</p>
+                <div class="continuous-table"><table><thead><tr><th>通道 / 输入</th><th>模型参数</th><th>最小 / 中立 / 最大</th><th>反向</th><th>试动（完成后回中）</th><th>验证</th></tr></thead><tbody id="continuousRows"></tbody></table></div>
+              </section>
               <div class="map-actions">
                 <button type="button" class="btn ghost sm" id="btnQueryHotkeys">查询现有热键</button>
               </div>

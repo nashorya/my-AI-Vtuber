@@ -5,6 +5,17 @@ namespace AIVTuber.Tests;
 public sealed class RequestCoordinatorTests
 {
     [Fact]
+    public async Task AwaitedCompletionPublishesIdleBeforeReturningToCaller()
+    {
+        await using var coordinator = new RequestCoordinator();
+        for (var i = 0; i < 100; i++)
+        {
+            Assert.True(await coordinator.EnqueueAsync(InputSource.Danmaku, async (_, _) => await Task.Yield()));
+            Assert.False(coordinator.IsBusy);
+        }
+    }
+
+    [Fact]
     public void Capacity_IsOne()
     {
         Assert.Equal(1, RequestCoordinator.Capacity);

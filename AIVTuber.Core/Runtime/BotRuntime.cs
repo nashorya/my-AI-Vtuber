@@ -45,6 +45,8 @@ public sealed class BotRuntime : IAsyncDisposable
     private LlmClient _memoryLlm = null!; // owned by BotRuntime so it can be disposed (MemoryExtractor is not IDisposable)
     private LlmClient _pkCuratorLlm = null!; // dedicated client: no character system prompt
     private VtsClient? _vts;
+    private VtsContinuousSession? _continuousVts;
+    public VtsContinuousSession? ContinuousVts => _continuousVts;
     private PixelAvatarDriver? _pixelAvatar;
     private AvatarConfigWatcher? _avatarConfigWatcher;
     private EventHandler<float>? _avatarRmsHandler;
@@ -299,22 +301,24 @@ public sealed class BotRuntime : IAsyncDisposable
         _pkCurator = new PkMemoryCurator(_pkCuratorLlm, _pkTurnRepo);
     }
 
+    public Task ConnectContinuousVtsAsync() => _continuousVts is not null
+        ? _continuousVts.ConnectAsync(_cts.Token)
+        : Task.FromException(new InvalidOperationException("请在 config.json 将 avatar.backend 设为 vts 或 both，再重启应用"));
+
     private async Task InitVtsAsync()
     {
+        _vts = new VtsClient(_config.Vts);
+        _vts.OnError += (_, msg) => PipelineError?.Invoke(this, $"[VTS] {msg}");
+        _continuousVts = new VtsContinuousSession(_vts, _config.Vts.ContinuousControl);
         try
         {
-            _vts = new VtsClient(_config.Vts);
-            _vts.OnError += (_, msg) => PipelineError?.Invoke(this, $"[VTS] {msg}");
-            _vts.OnDisconnected += (_, reason) => PipelineError?.Invoke(this, $"[VTS] 已断开: {reason}");
-            await _vts.ConnectAsync(_cts.Token);
-            Console.WriteLine("[VTS] 已连接 VTube Studio");
+            if (_config.Vts.ContinuousControl.Enabled) await _continuousVts.ConnectAsync(_cts.Token);
+            else await _vts.ConnectAsync(_cts.Token);
         }
         catch (Exception ex)
         {
-            var msg = $"[VTS] 连接失败: {ex.Message}";
-            Console.WriteLine(msg);
-            PipelineError?.Invoke(this, msg);
-            _vts = null;
+            PipelineError?.Invoke(this, $"[VTS] 连接失败: {ex.Message}");
+            // Keep the session so the settings panel can retry without restarting the app.
         }
     }
 
@@ -542,7 +546,9 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             _llm?.Dispose();
             _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model,
-                BuildLlmSystemPrompt());
+                BuildLlmSystemPrompt(),
+                _config.Avatar.UsesVts && _config.Vts.ContinuousControl.Enabled
+                    ? () => _continuousVts?.AllowedChannels ?? [] : null);
         }
         if (_tts is null || rebuild.HasFlag(RuntimeChange.RebuildTts))
         {
@@ -561,6 +567,8 @@ public sealed class BotRuntime : IAsyncDisposable
         _orchestrator = new BotOrchestrator(
             _asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts,
             ttsEmotionMap: _config.Avatar.EmotionMap);
+        if (_config.Avatar.UsesVts && _config.Vts.ContinuousControl.Enabled && _continuousVts is not null)
+            _orchestrator.ConfigureContinuousControl(_continuousVts);
         _orchestrator.ShouldSpeak = probe => _wakeGate.ShouldSpeak(
             _config.Interaction.IsPkMode,
             _config.Interaction.WakeKeywords,
@@ -932,6 +940,7 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             if (_micMuted) return;
             _turnGate?.SetMicSpeaking(true);
+            _continuousVts?.NoteListening();
             if (!_config.Asr.Streaming) return;
             _micSpeechChannel ??= NewSpeechChannel();
             _micSpeechChannel.Writer.TryWrite(frame);
@@ -988,6 +997,7 @@ public sealed class BotRuntime : IAsyncDisposable
                     if (_loopbackVadMuted) return;
                     _capturedOpponent ??= CaptureOpponent();
                     _turnGate?.SetLoopbackSpeaking(true);
+                    _continuousVts?.NoteListening();
                     if (!_config.Asr.Streaming) return;
                     _loopbackSpeechChannel ??= NewSpeechChannel();
                     _loopbackSpeechChannel.Writer.TryWrite(frame);
@@ -1306,6 +1316,15 @@ public sealed class BotRuntime : IAsyncDisposable
         if (change.HasFlag(RuntimeChange.RestartDanmaku)) await RestartDanmakuAsync();
         else if (change.HasFlag(RuntimeChange.RebuildDanmakuSelector)) RebuildSelector(); // light: in-memory only
 
+        if (change.HasFlag(RuntimeChange.UpdateVtsParams) && _continuousVts is not null)
+        {
+            _orchestrator?.Dispose();
+            // Subscribe/discover on first enable. Applying profiles must not create a second writer.
+            if (_config.Vts.ContinuousControl.Enabled && _continuousVts.Model is null)
+                await _continuousVts.ConnectAsync(_cts.Token);
+            await _continuousVts.ApplyAsync(_config.Vts.ContinuousControl, _cts.Token);
+        }
+
         // Light: memory extraction cadence updated in place.
         if (change.HasFlag(RuntimeChange.UpdateMemoryParams)) BuildMemoryExtractor();
 
@@ -1350,6 +1369,7 @@ public sealed class BotRuntime : IAsyncDisposable
 
     private async Task ReconnectVtsAsync()
     {
+        if (_continuousVts is not null) { await _continuousVts.DisposeAsync(); _continuousVts = null; }
         if (!_config.Avatar.UsesVts)
         {
             if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); _vts = null; }
@@ -1405,6 +1425,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _loopbackVad?.Dispose();
         _virtualMic?.Stop(); _virtualMic?.Dispose(); _virtualMic = null;
         if (_danmaku is not null) { await _danmaku.StopAsync(); _danmaku.Dispose(); }
+        if (_continuousVts is not null) { await _continuousVts.DisposeAsync(); _continuousVts = null; }
         if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); }
         if (_obs is not null) { await _obs.DisconnectAsync(); _obs.Dispose(); }
         await _asrSidecar.DisposeAsync();

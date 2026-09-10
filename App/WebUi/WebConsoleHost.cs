@@ -161,6 +161,29 @@ public sealed class WebConsoleHost : IDisposable
                     _config.RefreshOutputDevices();
                     PushConfig();
                     break;
+                case "continuousVts":
+                    try { await _config.ContinuousCommandAsync(ReadString(data, "operation") ?? "", data); }
+                    finally { Post(new { type = "continuousVts", data = _config.BuildContinuousState() }); }
+                    break;
+                case "exportContinuousVts":
+                    var exportDialog = new Microsoft.Win32.SaveFileDialog
+                    { Filter = "JSON 文件|*.json", FileName = "vts-continuous-profiles.json" };
+                    if (exportDialog.ShowDialog() == true)
+                        File.WriteAllText(exportDialog.FileName, _config.ExportContinuousProfiles());
+                    break;
+                case "importContinuousVts":
+                    var importDialog = new Microsoft.Win32.OpenFileDialog { Filter = "JSON 文件|*.json" };
+                    if (importDialog.ShowDialog() == true)
+                    {
+                        if (new FileInfo(importDialog.FileName).Length > 262144) throw new InvalidOperationException("通道配置超过 256 KiB");
+                        _config.ImportContinuousProfiles(File.ReadAllText(importDialog.FileName));
+                        Post(new { type = "continuousVts", data = _config.BuildContinuousState() });
+                        PushResult("continuousVts", "已导入候选配置，请刷新、试动并重新确认后保存", true);
+                    }
+                    break;
+                case "getContinuousVts":
+                    Post(new { type = "continuousVts", data = _config.BuildContinuousState() });
+                    break;
                 case "queryVtsHotkeys":
                     await _config.QueryVtsHotkeysAsync();
                     PushConfig();

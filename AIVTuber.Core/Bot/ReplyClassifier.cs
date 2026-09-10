@@ -9,7 +9,8 @@ internal readonly record struct ClassifiedReply(
     ReplyKind Kind,
     string Spoken,
     string Thought,
-    IReadOnlyList<string> StagedControls)
+    IReadOnlyList<string> StagedControls,
+    AIVTuber.Core.Avatar.AvatarIntent? AvatarIntent = null)
 {
     public static ClassifiedReply Invalid { get; } = new(ReplyKind.Invalid, "", "", []);
 }

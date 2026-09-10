@@ -281,6 +281,7 @@ public sealed class TtsConfig
 
 public sealed class VtsConfig
 {
+    public AIVTuber.Core.Avatar.ContinuousControlConfig ContinuousControl { get; set; } = new();
     public string Host { get; set; } = "localhost";
     public int Port { get; set; } = 8001;
     public float MouthScale { get; set; } = 1.5f;

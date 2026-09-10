@@ -78,6 +78,8 @@ public static class ConfigDiff
             !DictEqual(a.Vts.EmotionMap, b.Vts.EmotionMap) ||
             !DictEqual(a.Vts.ActionMap, b.Vts.ActionMap))
             c |= RuntimeChange.UpdateVtsParams;
+        if (System.Text.Json.JsonSerializer.Serialize(a.Vts.ContinuousControl) != System.Text.Json.JsonSerializer.Serialize(b.Vts.ContinuousControl))
+            c |= RuntimeChange.UpdateVtsParams | RuntimeChange.RebuildLlm;
         if (a.Vts.Host != b.Vts.Host || a.Vts.Port != b.Vts.Port)
             c |= RuntimeChange.ReconnectVts;
 

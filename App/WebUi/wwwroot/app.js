@@ -590,6 +590,49 @@
   $("actionList").addEventListener("change", onMapInput);
 
   // Host → SPA
+  let lastContinuousShape = "";
+  function renderContinuous(data) {
+    $("continuousStatus").textContent = data.status || "未连接";
+    document.querySelectorAll("[data-vts-operation]").forEach(el => {
+      el.disabled = !!data.busy && el.dataset.vtsOperation !== "stop";
+    });
+    const shape = JSON.stringify([data.profile, data.model?.revision, data.model?.inputs]);
+    if (shape === lastContinuousShape) return;
+    lastContinuousShape = shape;
+    const descriptors = data.descriptors || [];
+    const rows = data.profile?.channels || [];
+    $("continuousRows").innerHTML = rows.map((b, i) => {
+      const d = descriptors.find(x => x.name === b.channel) || {};
+      const inputExists = (data.model?.inputs || []).includes(b.inputId);
+      const neutralFraction = (b.neutral - b.minimum) / (b.maximum - b.minimum);
+      const neutral = d.unipolar && Number.isFinite(neutralFraction) ? Math.max(0, Math.min(1, b.inverted ? 1 - neutralFraction : neutralFraction)) : 0;
+      const options = (data.model?.parameters || []).map(p => `<option value="${esc(p.id)}" ${p.id === b.parameterId ? "selected" : ""}>${esc(p.id)}</option>`).join("");
+      const field = (name, value) => `<input type="number" step="0.01" aria-label="${esc(d.label)} ${name}" data-vts-field="${name}" data-index="${i}" value="${Number(value)}" />`;
+      return `<tr><td>${esc(d.label || b.channel)}<small>${esc(b.inputId)} · ${inputExists ? "输入存在" : "尚未创建"}</small></td>` +
+        `<td><select aria-label="${esc(d.label)} 目标参数" data-vts-field="parameterId" data-index="${i}"><option value="">未绑定</option>${options}</select></td>` +
+        `<td>${field("minimum", b.minimum)}${field("neutral", b.neutral)}${field("maximum", b.maximum)}</td>` +
+        `<td><input type="checkbox" aria-label="${esc(d.label)} 反向" data-vts-field="inverted" data-index="${i}" ${b.inverted ? "checked" : ""} /></td>` +
+        `<td><input type="range" min="${d.unipolar ? 0 : -1}" max="1" step="0.05" value="${neutral}" aria-label="${esc(d.label)} 试动" data-vts-slider="${i}" />` +
+        [neutral, .2, .4, .7].map((v, n) => `<button type="button" class="btn ghost sm" data-vts-operation="test" data-index="${i}" data-value="${v}">${["中立", "低", "中", "高"][n]}</button>`).join("") + `</td>` +
+        `<td><button type="button" class="btn ghost sm" data-vts-operation="verify" data-index="${i}">${b.verified && data.profile?.revision === data.model?.revision ? "已视觉确认" : "确认试动正确"}</button></td></tr>`;
+    }).join("");
+  }
+  $("continuousPanel").addEventListener("click", event => {
+    const button = event.target.closest("[data-vts-operation]");
+    if (!button) return;
+    send("continuousVts", { operation: button.dataset.vtsOperation, index: Number(button.dataset.index), value: Number(button.dataset.value) });
+    if (button.dataset.vtsOperation !== "stop") button.disabled = true;
+  });
+  $("continuousPanel").addEventListener("change", event => {
+    const el = event.target;
+    if (el.dataset.vtsField) send("continuousVts", { operation: "edit", index: Number(el.dataset.index), field: el.dataset.vtsField,
+      value: el.type === "checkbox" ? el.checked : el.tagName === "SELECT" ? el.value : Number(el.value) });
+    if (el.dataset.vtsSlider !== undefined) send("continuousVts", { operation: "test", index: Number(el.dataset.vtsSlider), value: Number(el.value) });
+  });
+  setInterval(() => { if (!document.hidden) send("getContinuousVts"); }, 2000);
+  $("btnExportContinuous").addEventListener("click", () => send("exportContinuousVts"));
+  $("btnImportContinuous").addEventListener("click", () => send("importContinuousVts"));
+
   function onHostMessage(event) {
     const msg = event.data;
     if (!msg || !msg.type) return;
@@ -597,6 +640,7 @@
     else if (msg.type === "config") populateConfig(msg.data || {});
     else if (msg.type === "memory") renderMemory(msg.data || {});
     else if (msg.type === "biliQr") renderBiliQr(msg.data || {});
+    else if (msg.type === "continuousVts") renderContinuous(msg.data || {});
     else if (msg.type === "result") {
       const d = msg.data || {};
       const ok = d.ok !== false && !d.error;

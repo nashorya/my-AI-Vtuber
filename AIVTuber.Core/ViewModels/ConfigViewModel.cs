@@ -54,7 +54,7 @@ public enum ConfigSaveState
 /// testable — WPF passes MicrophoneCapture.ListDevices()), and on save persists + hot-applies
 /// via injected delegates (ConfigManager.Save + BotRuntime.ApplyConfigAsync).
 /// </summary>
-public sealed class ConfigViewModel : INotifyPropertyChanged
+public sealed partial class ConfigViewModel : INotifyPropertyChanged
 {
     private readonly Action<AppConfig> _save;
     private readonly Func<AppConfig, Task> _applyAsync;
@@ -66,13 +66,17 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
 
     public ConfigViewModel(AppConfig current, IReadOnlyList<string> inputDevices,
                            Action<AppConfig> save, Func<AppConfig, Task> applyAsync,
-                           Func<Task<List<VtsHotkeyInfo>>>? getVtsHotkeys = null)
+                           Func<Task<List<VtsHotkeyInfo>>>? getVtsHotkeys = null,
+                           Func<VtsContinuousSession?>? getContinuousVts = null,
+                           Func<Task>? connectContinuousVts = null)
     {
         _original = ConfigManager.Clone(current);
         Working = ConfigManager.Clone(current);
         InputDevices = inputDevices;
         _save = save;
         _applyAsync = applyAsync;
+        _getContinuousVts = getContinuousVts ?? (() => null);
+        _connectContinuousVts = connectContinuousVts ?? (() => Task.CompletedTask);
         _getVtsHotkeys = getVtsHotkeys ?? (() => Task.FromResult(new List<VtsHotkeyInfo>()));
         RefreshLoopbackSources();
         RefreshOutputDevices();
@@ -561,6 +565,7 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
                 host = Working.Vts.Host,
                 port = Working.Vts.Port,
                 mouthScale = Working.Vts.MouthScale,
+                continuousControl = Working.Vts.ContinuousControl,
             },
             input = new
             {
@@ -747,6 +752,9 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
 
         if (data.TryGetProperty("vts", out var vts) && vts.ValueKind == JsonValueKind.Object)
         {
+            if (vts.TryGetProperty("continuousControl", out var continuous) && continuous.ValueKind == JsonValueKind.Object &&
+                continuous.TryGetProperty("enabled", out var enabled) && enabled.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                Working.Vts.ContinuousControl.Enabled = enabled.GetBoolean();
             if (TryString(vts, "host", out var h)) Working.Vts.Host = h;
             if (TryInt(vts, "port", out var port)) Working.Vts.Port = port;
             if (TryDouble(vts, "mouthScale", out var ms)) Working.Vts.MouthScale = (float)ms;
@@ -881,6 +889,12 @@ public sealed class ConfigViewModel : INotifyPropertyChanged
         ValidateMappings(EmotionRows.Select(r => (r.Emotion, r.HotkeyId)), "情绪", errors);
         ValidateMappings(ActionRows.Select(r => (r.Action, r.HotkeyId)), "动作", errors);
         if (Working.Vts.Port is < 1 or > 65535) errors.Add("VTS 端口必须在 1 到 65535 之间。");
+        foreach (var profile in Working.Vts.ContinuousControl.Profiles.Values)
+        {
+            if (profile.Channels.GroupBy(b => b.Channel).Any(g => g.Count() > 1)) errors.Add("VTS 通道重复。");
+            if (profile.Channels.Where(b => b.Verified).Any(b => !b.IsValid)) errors.Add("VTS 已验证通道范围无效。");
+            if (profile.Channels.Where(b => b.Verified).GroupBy(b => b.ParameterId).Any(g => g.Count() > 1)) errors.Add("同一模型参数不能由多个通道控制。");
+        }
         if (Working.Tts.Speed is < 0.5 or > 2.0) errors.Add("语速必须在 0.5 到 2.0 之间。");
         ValidationMessage = string.Join(" ", errors);
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasValidationErrors)));

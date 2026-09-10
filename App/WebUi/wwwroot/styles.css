@@ -592,3 +592,13 @@ textarea { resize: vertical; min-height: 64px; }
   .row2, .row3 { grid-template-columns: 1fr; }
   .map-row { grid-template-columns: 1fr; }
 }
+
+.continuous-panel { margin: 16px 0; padding: 16px; border: 1px solid var(--border, #d5d8de); border-radius: 10px; }
+.continuous-table { overflow-x: auto; max-height: 460px; }
+.continuous-table table { min-width: 890px; width: 100%; border-collapse: collapse; }
+.continuous-table td, .continuous-table th { padding: 8px; text-align: left; border-bottom: 1px solid var(--border, #d5d8de); }
+.continuous-table td small { display: block; font-size: 10px; opacity: .65; }
+.continuous-table input[type=number] { width: 65px; margin: 2px; }
+.continuous-table input[type=range] { width: 160px; display: block; }
+.continuous-table select { width: 170px; }
+.continuous-table .btn { padding: 4px 7px; }
