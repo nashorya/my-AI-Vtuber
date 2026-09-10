@@ -466,7 +466,7 @@ try {
         $integrityErrors.Add("Publish output is empty.")
     }
     $requiredPublishFiles = @(
-        "AIVTuber.exe", "config.json.template", "sidecar/asr_server.py",
+        "AIVTuber.exe", "danmaku_bridge.exe", "config.json.template", "sidecar/asr_server.py",
         "sidecar/asr-sidecar.manifest.json", "sidecar/requirements.lock",
         "scripts/Test-SidecarPackage.ps1", "scripts/Test-G005PublishContract.ps1"
     )
