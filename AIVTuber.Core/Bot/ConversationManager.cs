@@ -65,6 +65,11 @@ public sealed class ConversationManager
         }
     }
 
+    public bool HasTransientContext
+    {
+        get { lock (_lock) return _transient.Count != 0; }
+    }
+
     public List<Message> GetPersistableHistory()
     {
         lock (_lock) { return _history.Where(m => !_transient.Contains(m)).ToList(); }

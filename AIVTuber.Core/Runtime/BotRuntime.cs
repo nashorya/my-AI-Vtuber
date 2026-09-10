@@ -739,7 +739,10 @@ public sealed class BotRuntime : IAsyncDisposable
                 if (!string.IsNullOrWhiteSpace(userText))
                     _conversation.AddUserMessage(userText);
                 _conversation.AddAssistantMessage(reply.Spoken);
-                NotePkPair(lines, reply.Spoken);
+                // PK curation also reads assistant text; it must not provide a
+                // second persistence route for a paraphrased PASS observation.
+                if (!_conversation.HasTransientContext)
+                    NotePkPair(lines, reply.Spoken);
                 SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
                 break;
             case ReplyKind.InnerThought:

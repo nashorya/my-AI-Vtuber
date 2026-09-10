@@ -53,11 +53,14 @@ public sealed class PkTurnSafetyTests
         conversation.AddUserMessage("我想去杭州", persistEligible: false);
         conversation.AddUserMessage("你觉得那里怎么样");
         conversation.AddAssistantMessage("可以一起讨论行程");
+        Assert.True(conversation.HasTransientContext);
         Assert.Contains(conversation.BuildMessages(), m => m.Content == "我想去杭州");
         Assert.DoesNotContain(conversation.GetPersistableHistory(), m => m.Content.Contains("杭州"));
         conversation.ReplaceWithSummary("使用者想去杭州");
         Assert.Contains(conversation.BuildMessages(), m => m.Content.Contains("杭州"));
         Assert.DoesNotContain(conversation.GetPersistableHistory(), m => m.Content.Contains("杭州"));
+        conversation.Clear();
+        Assert.False(conversation.HasTransientContext);
     }
 
     [Fact]
