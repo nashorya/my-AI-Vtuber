@@ -71,7 +71,7 @@ public sealed class MemoryExtractor
     /// <summary>Force extraction regardless of turn count.</summary>
     public async Task ExtractFactsAsync()
     {
-        var history = _conversation.GetHistory();
+        var history = _conversation.GetPersistableHistory();
         if (history.Count == 0) return;
 
         // Build conversation text

@@ -61,6 +61,57 @@ public sealed class BotOrchestratorReplyTests
         Assert.Equal(0, tts.CallCount);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NewSpeechBeforePlayback_DiscardsReplyWithoutPublicEffects(bool duringTts)
+    {
+        var valid = true;
+        var llm = new FixedLlm("你好");
+        var tts = new CountingTts { BeforeChunk = () => valid = false };
+        using var player = new AudioPlayer();
+        var played = 0;
+        using var orchestrator = new BotOrchestrator(
+            new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
+            async (chunks, ct) =>
+            {
+                await foreach (var _ in chunks.WithCancellation(ct)) played++;
+            }, () => { }, triggerHotkeyAsync: null);
+        var committed = 0;
+        var starts = 0;
+        var subtitles = 0;
+        orchestrator.OnReplyCommitted += (_, _) => committed++;
+        orchestrator.OnAiStartSpeaking += (_, _) => starts++;
+        orchestrator.OnSentenceReady += (_, _) => subtitles++;
+        if (!duringTts) valid = false;
+        await orchestrator.ProcessTextAsync("你好", [], bypassWake: true, canCommit: () => valid);
+        Assert.Equal(0, played);
+        Assert.Equal(0, committed);
+        Assert.Equal(0, starts);
+        Assert.Equal(0, subtitles);
+        Assert.Equal(duringTts ? 1 : 0, tts.CallCount);
+    }
+
+    [Fact]
+    public async Task NewSpeechAfterPlaybackStarts_DoesNotInterruptAudio()
+    {
+        var valid = true;
+        var tts = new CountingTts { AfterFirstChunk = () => valid = false };
+        using var player = new AudioPlayer();
+        var played = 0;
+        using var orchestrator = new BotOrchestrator(
+            new UnusedAsr(), new FixedLlm("你好"), tts, player, new TtsConfig(), null, null,
+            async (chunks, ct) =>
+            {
+                await foreach (var _ in chunks.WithCancellation(ct)) played++;
+            }, () => { }, triggerHotkeyAsync: null);
+        var committed = 0;
+        orchestrator.OnReplyCommitted += (_, _) => committed++;
+        await orchestrator.ProcessTextAsync("你好", [], bypassWake: true, canCommit: () => valid);
+        Assert.Equal(2, played);
+        Assert.Equal(1, committed);
+    }
+
     private sealed class FixedLlm(string text) : ILlmClient
     {
         public event EventHandler<string>? OnSentenceReady;
@@ -82,6 +133,8 @@ public sealed class BotOrchestratorReplyTests
     private sealed class CountingTts : ITtsClient
     {
         public int CallCount { get; private set; }
+        public Action? BeforeChunk { get; init; }
+        public Action? AfterFirstChunk { get; init; }
 
         public async IAsyncEnumerable<byte[]> StreamAsync(
             string text,
@@ -90,7 +143,13 @@ public sealed class BotOrchestratorReplyTests
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             CallCount++;
+            BeforeChunk?.Invoke();
             yield return System.Text.Encoding.UTF8.GetBytes(text);
+            if (AfterFirstChunk is not null)
+            {
+                AfterFirstChunk();
+                yield return System.Text.Encoding.UTF8.GetBytes(text);
+            }
             await Task.CompletedTask;
         }
     }

@@ -28,6 +28,24 @@ public sealed class PkMatchBuffer
         get { lock (_lock) return _matchId is not null; }
     }
 
+    public (string? MatchId, PkOpponent? Opponent) CaptureIdentity()
+    {
+        lock (_lock) return (_matchId, _opponent);
+    }
+
+    /// <summary>Commit a pair only to the match that supplied its audio.</summary>
+    public bool TryAddPair(string? matchId, string opponentText, string assistantText)
+    {
+        lock (_lock)
+        {
+            if (matchId is null || matchId != _matchId) return false;
+            NoteOpponentSpeech(opponentText);
+            NoteAssistantChunk(assistantText);
+            EndAssistantReply();
+            return true;
+        }
+    }
+
     /// <summary>Opens a new match buffer; discards any previous unfinished match.</summary>
     public string Start(PkOpponent opponent)
     {
