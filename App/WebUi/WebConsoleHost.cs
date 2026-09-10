@@ -333,6 +333,7 @@ public sealed class WebConsoleHost : IDisposable
                     userText = _monitor.UserText,
                     assistantText = _monitor.AssistantText,
                     opponentText = _monitor.OpponentText,
+                    pkOpponent = _monitor.PkOpponentSummary,
                     emotion = _monitor.Emotion,
                     userEmotion = _monitor.UserEmotion,
                     lastError = _monitor.LastError,

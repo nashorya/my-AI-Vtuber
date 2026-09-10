@@ -14,10 +14,21 @@ public sealed class AppConfig
     public MemoryConfig Memory { get; set; } = new();
     public BilibiliConfig Bilibili { get; set; } = new();
     public InputTemplateConfig Input { get; set; } = new();
-    /// <summary>Normal vs PK interaction (wake-keyword gate).</summary>
+    /// <summary>Normal vs PK interaction (wake keywords become name aliases).</summary>
     public InteractionConfig Interaction { get; set; } = new();
+    /// <summary>Display names for 使用者 / 对方主播 / 直播间弹幕.</summary>
+    public IdentityConfig Identity { get; set; } = new();
     /// <summary>In-process PNG avatar + backend selection (vts / pixel / both).</summary>
     public AvatarRuntimeConfig Avatar { get; set; } = new();
+}
+
+public sealed class IdentityConfig
+{
+    public string SelfName { get; set; } = "";
+    public string SelfUid { get; set; } = "";
+    public string OpponentName { get; set; } = "";
+    public string DanmakuLabel { get; set; } = "直播间弹幕";
+    public string ExtraNotes { get; set; } = "";
 }
 
 /// <summary>

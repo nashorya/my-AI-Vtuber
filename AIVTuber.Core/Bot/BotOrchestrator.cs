@@ -43,6 +43,10 @@ public sealed class BotOrchestrator : IDisposable
     private volatile bool _disposed;
     // Last emotion detected in the current LLM stream; reset each new turn.
     private volatile string? _currentEmotion;
+    private volatile bool _deferLlmEvents;
+    private readonly List<string> _deferredEmotions = [];
+    private readonly List<string> _deferredActions = [];
+    private readonly List<string> _deferredPoses = [];
 
     public event EventHandler? OnAiStartSpeaking;
     public event EventHandler? OnAiStopSpeaking;
@@ -51,6 +55,7 @@ public sealed class BotOrchestrator : IDisposable
     public event EventHandler<string>? OnActionDetected;
     public event EventHandler<string>? OnPoseDetected;
     public event EventHandler<string>? OnSentenceReady;
+    internal event EventHandler<ClassifiedReply>? OnReplyCommitted;
     public event EventHandler<string>? OnUserTranscript;
     /// <summary>Fired when Qwen-ASR returns a non-neutral emotion for the user's speech.</summary>
     public event EventHandler<string>? OnUserEmotionDetected;
@@ -104,31 +109,40 @@ public sealed class BotOrchestrator : IDisposable
         _sentenceReadyHandler = (_, sentence) =>
         {
             var context = CurrentEventContext();
-            if (context is null) return;
-            OnSentenceReady?.Invoke(this, sentence);
-            if (_assistantOutputCommand is not null)
-                QueueCommand(context, "[OBS] assistant subtitle",
-                    ct => _assistantOutputCommand(sentence, ct));
+            if (context is null || _deferLlmEvents) return;
+            PublishSpokenSentence(context, sentence);
         };
         _emotionDetectedHandler = (_, emotion) =>
         {
             var context = CurrentEventContext();
             if (context is null) return;
-            _currentEmotion = emotion;
-            OnEmotionDetected?.Invoke(this, emotion);
-            QueueMappedHotkey(context, _vtsConfig.EmotionMap, emotion, "emotion");
+            if (_deferLlmEvents)
+            {
+                lock (_deferredEmotions) _deferredEmotions.Add(emotion);
+                return;
+            }
+            ApplyEmotion(context, emotion);
         };
         _actionDetectedHandler = (_, action) =>
         {
             var context = CurrentEventContext();
             if (context is null) return;
-            OnActionDetected?.Invoke(this, action);
-            QueueMappedHotkey(context, _vtsConfig.ActionMap, action, "action");
+            if (_deferLlmEvents)
+            {
+                lock (_deferredActions) _deferredActions.Add(action);
+                return;
+            }
+            ApplyAction(context, action);
         };
         _poseDetectedHandler = (_, pose) =>
         {
             var context = CurrentEventContext();
             if (context is null) return;
+            if (_deferLlmEvents)
+            {
+                lock (_deferredPoses) _deferredPoses.Add(pose);
+                return;
+            }
             OnPoseDetected?.Invoke(this, pose);
         };
         _llm.OnSentenceReady += _sentenceReadyHandler;
@@ -164,6 +178,84 @@ public sealed class BotOrchestrator : IDisposable
     {
         _assistantOutputCommand = assistantOutputCommand;
         _userOutputCommand = userOutputCommand;
+    }
+
+    public void SetHold(bool hold) => _coordinator.SetHold(hold);
+
+    public Task<AsrResult> TranscribeAsync(byte[] pcm16k, CancellationToken cancellationToken = default) =>
+        _asr.RecognizeAsync(pcm16k, cancellationToken);
+
+    public Task<AsrResult> TranscribeStreamAsync(
+        IAsyncEnumerable<byte[]> audioStream, CancellationToken cancellationToken = default) =>
+        CollectStreamedAsync(audioStream, cancellationToken);
+
+    private void PublishSpokenSentence(RequestContext context, string sentence)
+    {
+        OnSentenceReady?.Invoke(this, sentence);
+        if (_assistantOutputCommand is not null)
+            QueueCommand(context, "[OBS] assistant subtitle",
+                ct => _assistantOutputCommand(sentence, ct));
+    }
+
+    private void ApplyEmotion(RequestContext context, string emotion)
+    {
+        _currentEmotion = emotion;
+        OnEmotionDetected?.Invoke(this, emotion);
+        QueueMappedHotkey(context, _vtsConfig.EmotionMap, emotion, "emotion");
+    }
+
+    private void ApplyAction(RequestContext context, string action)
+    {
+        OnActionDetected?.Invoke(this, action);
+        QueueMappedHotkey(context, _vtsConfig.ActionMap, action, "action");
+    }
+
+    private void ApplyStagedControls(RequestContext context, IReadOnlyList<string> tags)
+    {
+        foreach (var tag in tags)
+        {
+            var body = tag.Trim('[', ']');
+            var colon = body.IndexOf(':');
+            if (colon <= 0 || colon >= body.Length - 1) continue;
+            var kind = body[..colon];
+            var value = body[(colon + 1)..].Trim();
+            if (kind.Equals("emotion", StringComparison.OrdinalIgnoreCase))
+                ApplyEmotion(context, value);
+            else if (kind.Equals("action", StringComparison.OrdinalIgnoreCase))
+                ApplyAction(context, value);
+            else if (kind.Equals("pose", StringComparison.OrdinalIgnoreCase))
+                OnPoseDetected?.Invoke(this, value);
+        }
+    }
+
+    private void FlushDeferredControls(RequestContext context)
+    {
+        string[] emotions, actions, poses;
+        lock (_deferredEmotions)
+        {
+            emotions = [.. _deferredEmotions];
+            _deferredEmotions.Clear();
+        }
+        lock (_deferredActions)
+        {
+            actions = [.. _deferredActions];
+            _deferredActions.Clear();
+        }
+        lock (_deferredPoses)
+        {
+            poses = [.. _deferredPoses];
+            _deferredPoses.Clear();
+        }
+        foreach (var e in emotions) ApplyEmotion(context, e);
+        foreach (var a in actions) ApplyAction(context, a);
+        foreach (var p in poses) OnPoseDetected?.Invoke(this, p);
+    }
+
+    private void ClearDeferredControls()
+    {
+        lock (_deferredEmotions) _deferredEmotions.Clear();
+        lock (_deferredActions) _deferredActions.Clear();
+        lock (_deferredPoses) _deferredPoses.Clear();
     }
 
     private void QueueMappedHotkey(
@@ -443,12 +535,14 @@ public sealed class BotOrchestrator : IDisposable
         return new AsrResult(transcript.ToString(), emotion);
     }
 
-    /// <summary>Process text directly (e.g., from danmaku or PK announce). Interrupts ongoing processing.</summary>
+    /// <summary>Process text directly (e.g., from danmaku or a dual-silence turn).</summary>
     /// <param name="wakeProbe">Text used for wake matching; defaults to <paramref name="text"/>.</param>
+    /// <param name="bypassWake">When true, the model decides PASS / thought / speak.</param>
     public Task ProcessTextAsync(
         string text,
         List<Message> history,
-        string? wakeProbe = null)
+        string? wakeProbe = null,
+        bool bypassWake = false)
     {
         if (string.IsNullOrWhiteSpace(text)) return Task.CompletedTask;
         return _coordinator.EnqueueAsync(InputSource.Danmaku, async (envelope, ct) =>
@@ -457,7 +551,7 @@ public sealed class BotOrchestrator : IDisposable
             var pipelineStarted = false;
             try
             {
-                if (!AllowSpeak(wakeProbe ?? text)) return;
+                if (!bypassWake && !AllowSpeak(wakeProbe ?? text)) return;
                 pipelineStarted = true;
                 await RunStreamingPipelineAsync(history, text, envelope, ct).ConfigureAwait(false);
             }
@@ -484,8 +578,11 @@ public sealed class BotOrchestrator : IDisposable
     /// <summary>Interrupt any ongoing processing and stop playback immediately.</summary>
     public void Interrupt()
     {
+        _coordinator.SetHold(false);
         _coordinator.CancelCurrentAsync().GetAwaiter().GetResult();
         _currentEmotion = null;
+        _deferLlmEvents = false;
+        ClearDeferredControls();
         _stopPlayback();
         if (_vts is not null)
         {
@@ -519,6 +616,7 @@ public sealed class BotOrchestrator : IDisposable
         CancellationToken ct)
     {
         AIVTuber.Core.Diagnostics.DebugLog.Write($"[LLM输入] {userInput}");
+        _coordinator.SetHold(true);
         var sentenceChannel = Channel.CreateBounded<string>(3);
         var context = new RequestContext(envelope.Generation, ct);
 
@@ -527,34 +625,26 @@ public sealed class BotOrchestrator : IDisposable
             var rawAll = new StringBuilder();
             var previousContext = _eventContext.Value;
             _eventContext.Value = context;
+            _deferLlmEvents = true;
+            ClearDeferredControls();
             try
             {
-                // One TTS utterance per turn — do not split on punctuation (。，. etc.).
-                var buffer = new StringBuilder();
                 await foreach (var token in _llm.StreamAsync(history, userInput, ct))
                 {
                     if (!IsCurrent(envelope, ct)) break;
                     rawAll.Append(token);
-                    buffer.Append(token);
                 }
 
-                var spoken = LlmClient.StripActionText(
-                    LlmClient.StripControlTags(
-                        LlmClient.StripPartialTags(buffer.ToString()))).Trim();
-                if (IsCurrent(envelope, ct) && LlmClient.IsSpeakableText(spoken))
-                {
-                    await sentenceChannel.Writer.WriteAsync(spoken, ct);
-                }
-                else if (IsCurrent(envelope, ct) && !string.IsNullOrWhiteSpace(rawAll.ToString()))
-                {
-                    var preview = rawAll.ToString().Trim();
-                    if (preview.Length > 80) preview = preview[..80] + "…";
-                    ReportCurrentError(envelope.Generation,
-                        $"[LLM] 本轮回复被完全过滤掉了（可能整段都是动作/情绪标记），原始内容: {preview}");
-                }
+                if (!IsCurrent(envelope, ct)) return;
+                var classified = ReplyClassifier.Classify(rawAll.ToString());
+                _deferLlmEvents = false;
+                CommitClassifiedReply(context, classified, rawAll.ToString());
+                if (classified.Kind == ReplyKind.Speak)
+                    await sentenceChannel.Writer.WriteAsync(classified.Spoken, ct);
             }
             finally
             {
+                _deferLlmEvents = false;
                 _eventContext.Value = previousContext;
                 sentenceChannel.Writer.TryComplete();
             }
@@ -604,11 +694,40 @@ public sealed class BotOrchestrator : IDisposable
         }
         finally
         {
-            if (IsCurrent(envelope, ct, allowCancellation: true))
+            _coordinator.SetHold(false);
+            if (ttsStarted && IsCurrent(envelope, ct, allowCancellation: true))
                 OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
         }
 
         if (pipelineEx is not null) throw pipelineEx;
+    }
+
+    private void CommitClassifiedReply(RequestContext context, ClassifiedReply classified, string raw)
+    {
+        OnReplyCommitted?.Invoke(this, classified);
+        switch (classified.Kind)
+        {
+            case ReplyKind.Speak:
+                FlushDeferredControls(context);
+                ApplyStagedControls(context, classified.StagedControls);
+                PublishSpokenSentence(context, classified.Spoken);
+                return;
+            case ReplyKind.InnerThought:
+                ClearDeferredControls();
+                AIVTuber.Core.Diagnostics.DebugLog.Write($"[心里话] （{classified.Thought}）");
+                return;
+            case ReplyKind.Pass:
+                ClearDeferredControls();
+                AIVTuber.Core.Diagnostics.DebugLog.Write("[PASS] 本轮不接话");
+                return;
+            default:
+                ClearDeferredControls();
+                var preview = raw.Trim();
+                if (preview.Length > 80) preview = preview[..80] + "…";
+                ReportCurrentError(context.Generation,
+                    $"[LLM] 回复不符合协议，已丢弃: {preview}");
+                return;
+        }
     }
     private string? ResolveTtsEmotion(string? emotion)
     {
@@ -619,7 +738,7 @@ public sealed class BotOrchestrator : IDisposable
         return emotion;
     }
 
-    private static string AnnotateWithUserEmotion(string text, string? emotion) => emotion switch
+    internal static string AnnotateWithUserEmotion(string text, string? emotion) => emotion switch
     {
         null or "neutral" => text,
         "happy" => $"[用户当前情绪：愉快] {text}",

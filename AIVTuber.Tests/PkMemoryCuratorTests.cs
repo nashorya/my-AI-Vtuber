@@ -103,6 +103,19 @@ public class PkMemoryCuratorTests : IAsyncLifetime
     }
 
     [Fact]
+    public void FallbackKeep_SkipsPassAndThought()
+    {
+        var turns = new List<BufferedPkTurn>
+        {
+            new(0, "哈喽", "【PASS】", "loopback", "t0"),
+            new(1, "在吗", "（先听着）", "loopback", "t1"),
+            new(2, "你怎么看", "我觉得可以。", "loopback", "t2"),
+        };
+        var keep = PkMemoryCurator.FallbackKeep(turns);
+        Assert.Equal(new HashSet<int> { 2 }, keep);
+    }
+
+    [Fact]
     public async Task PersistMatch_WithFakeLlm_StoresOnlyKeptPairs()
     {
         var llm = new ScriptedLlm("""{"keep":[1],"reason":"挑衅"}""");

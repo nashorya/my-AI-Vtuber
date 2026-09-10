@@ -140,6 +140,8 @@
                                     <TextBlock Text="{Binding UserText, TargetNullValue=（等待输入）}" TextWrapping="Wrap" Foreground="{DynamicResource AppTextPrimaryBrush}" />
                                     <TextBlock Text="AI 回复" Margin="0,12,0,2" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource AppTextSecondaryBrush}" />
                                     <TextBlock Text="{Binding AssistantText, TargetNullValue=（等待回复）}" TextWrapping="Wrap" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+                                    <TextBlock Text="PK 对手" Margin="0,12,0,2" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                                    <TextBlock Text="{Binding PkOpponentSummary, TargetNullValue=（无）}" TextWrapping="Wrap" Foreground="{DynamicResource AppTextPrimaryBrush}" />
                                     <TextBlock Text="内录" Margin="0,12,0,2" FontSize="{StaticResource FontSizeCaption}" Foreground="{DynamicResource AppTextSecondaryBrush}" />
                                     <TextBlock Text="{Binding OpponentText, TargetNullValue=（无）}" TextWrapping="Wrap" Foreground="{DynamicResource AppTextPrimaryBrush}" />
                                 </StackPanel>

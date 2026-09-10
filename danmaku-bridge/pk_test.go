@@ -35,10 +35,16 @@ func TestExtractOpponentRoomID(t *testing.T) {
 			t.Fatalf("got %v", got)
 		}
 	})
-	t.Run("neither is self falls back to init_info", func(t *testing.T) {
+	t.Run("neither is self is unresolved", func(t *testing.T) {
 		payload := parseJSON(t, `{"data":{"init_info":{"room_id":11111},"match_info":{"room_id":22222}}}`)
-		got := extractOpponentRoomID(payload, selfRoom)
-		if got == nil || *got != 11111 {
+		if extractOpponentRoomIDAny(payload, []int{selfRoom}) != nil {
+			t.Fatal("expected unresolved when neither side is self")
+		}
+	})
+	t.Run("short or long self id matches", func(t *testing.T) {
+		payload := parseJSON(t, `{"data":{"init_info":{"init_id":21347320,"uid":1,"uname":"自己"},"match_info":{"match_id":545068,"uid":2,"uname":"对面"}}}`)
+		got := extractOpponentRoomIDAny(payload, []int{12345, 21347320})
+		if got == nil || *got != 545068 {
 			t.Fatalf("got %v", got)
 		}
 	})
@@ -188,4 +194,43 @@ func TestBuildPkPayload(t *testing.T) {
 			t.Fatalf("got %+v", got)
 		}
 	})
+}
+
+func TestCompleteOpponent_KeepsUidWhenMasterFails(t *testing.T) {
+	hint := &pkPush{Username: "笑笑", RoomID: opponentRoom}
+	roomInit := parseJSON(t, `{"code":0,"data":{"uid":8739477,"room_id":67890}}`)
+	got := completeOpponent(hint, roomInit, nil)
+	if got == nil || got.UID != "8739477" || got.Username != "笑笑" || got.RoomID != opponentRoom {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestCompleteOpponent_HintOnlyIsAcceptable(t *testing.T) {
+	got := completeOpponent(&pkPush{Username: "沅依utatte", RoomID: 1907447144}, nil, nil)
+	if !opponentAcceptable(got) || got.UID != "" || got.Username != "沅依utatte" {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestPkTracker_FailedPreAllowsStart(t *testing.T) {
+	tr := newPkTracker(60 * time.Second)
+	if !tr.begin(opponentRoom, 1000*time.Second) {
+		t.Fatal("first PRE should begin")
+	}
+	tr.markIncomplete(opponentRoom)
+	if !tr.begin(opponentRoom, 1001*time.Second) {
+		t.Fatal("START after incomplete PRE must retry")
+	}
+	tr.markSuccess(opponentRoom, 1001*time.Second)
+	if tr.begin(opponentRoom, 1002*time.Second) {
+		t.Fatal("success must block duplicate announce")
+	}
+}
+
+func TestParseSelfRoomIDs(t *testing.T) {
+	body := parseJSON(t, `{"code":0,"data":{"room_id":21347320,"short_id":12345}}`)
+	got := parseSelfRoomIDs(body, 12345)
+	if !containsRoom(got, 12345) || !containsRoom(got, 21347320) {
+		t.Fatalf("got %v", got)
+	}
 }

@@ -67,14 +67,21 @@ def _room_from_side(side, *keys) -> int:
     return 0
 
 
-def extract_opponent_room_id(payload, self_room_id: int) -> int | None:
+def _self_ids(self_room_id) -> set[int]:
+    if isinstance(self_room_id, (set, list, tuple)):
+        return {int(x) for x in self_room_id if x}
+    return {int(self_room_id)} if self_room_id else set()
+
+
+def extract_opponent_room_id(payload, self_room_id) -> int | None:
     """Pull the opponent's room id out of a PK payload.
 
     START carries both sides in init_info/match_info — whichever isn't ours is the
     opponent. PRE appears to be pushed per-room with the opponent inline, so a flat
-    data.room_id is accepted as a fallback. Returns None when nothing usable is found;
-    callers must treat that as "skip this event", never as an error.
+    data.room_id is accepted as a fallback. Returns None when nothing usable is found
+    or both sides are unknown (do not default to init).
     """
+    self_ids = _self_ids(self_room_id)
     data = _pk_data(payload)
     if not isinstance(data, dict):
         return None
@@ -83,18 +90,24 @@ def extract_opponent_room_id(payload, self_room_id: int) -> int | None:
     match_room = _room_from_side(data.get("match_info"), "room_id", "match_id")
 
     if init_room and match_room:
-        if init_room == self_room_id and match_room == self_room_id:
+        init_self = init_room in self_ids
+        match_self = match_room in self_ids
+        if init_self and match_self:
             return None
-        return match_room if init_room == self_room_id else init_room
+        if init_self and not match_self:
+            return match_room
+        if match_self and not init_self:
+            return init_room
+        return None
 
-    # Only one of the pair present, or the flat PRE shape.
     for candidate in (init_room, match_room, _as_room_id(data.get("room_id"))):
-        if candidate and candidate != self_room_id:
+        if candidate and candidate not in self_ids:
             return candidate
     return None
 
 
-def extract_opponent_hint(payload, self_room_id: int) -> dict | None:
+def extract_opponent_hint(payload, self_room_id) -> dict | None:
+    self_ids = _self_ids(self_room_id)
     data = _pk_data(payload)
     if not isinstance(data, dict):
         return None
@@ -103,16 +116,16 @@ def extract_opponent_hint(payload, self_room_id: int) -> dict | None:
     init_room = _room_from_side(init_info, "room_id", "init_id")
     match_room = _room_from_side(match_info, "room_id", "match_id")
     if init_room and match_room:
-        if init_room == self_room_id and match_room != self_room_id:
+        init_self = init_room in self_ids
+        match_self = match_room in self_ids
+        if init_self and not match_self:
             side, room = match_info, match_room
-        elif match_room == self_room_id and init_room != self_room_id:
-            side, room = init_info, init_room
-        elif init_room != self_room_id:
+        elif match_self and not init_self:
             side, room = init_info, init_room
         else:
             return None
     else:
-        room = extract_opponent_room_id(payload, self_room_id)
+        room = extract_opponent_room_id(payload, self_ids)
         if not room:
             return None
         side = init_info if room == init_room else match_info if room == match_room else {}
@@ -186,13 +199,19 @@ async def fetch_opponent(room_id: int) -> dict | None:
             print(f"[PK] room_init failed for {room_id}: code={room.get('code')}", flush=True)
             return None
         uid = (room.get("data") or {}).get("uid")
+        base = {
+            "uid": str(uid) if uid else "",
+            "username": "",
+            "follower": 0,
+            "roomid": room_id,
+        }
         if not uid:
-            return None
+            return base if room_id else None
 
         r = await _client.get(
             "https://api.live.bilibili.com/live_user/v1/Master/info",
             params={"uid": uid}, headers=headers)
-        return build_pk_payload(room_id, r.json())
+        return build_pk_payload(room_id, r.json()) or base
     except Exception as e:
         print(f"[PK] fetch failed for room {room_id}: {e}", flush=True)
         return None
@@ -247,8 +266,12 @@ async def main():
             opponent = await fetch_opponent(room_id)
             if opponent is None:
                 opponent = hint
-            if opponent is None or not opponent.get("uid"):
-                print(f"[PK] fetch failed and payload had no uid for room {room_id}", flush=True)
+            if opponent is None or (
+                not opponent.get("uid")
+                and not (opponent.get("username") or "").strip()
+                and not opponent.get("roomid")
+            ):
+                print(f"[PK] incomplete opponent room={room_id}", flush=True)
                 return
             print(f"[PK] opponent: {opponent['username']} "
                   f"({opponent['follower']} fans, room {room_id})", flush=True)

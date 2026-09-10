@@ -34,12 +34,28 @@ public class PkOpponentTests
     }
 
     [Fact]
-    public void TryParse_MissingUid_ReturnsFalse()
+    public void TryParse_AcceptsUsernameWithoutUid()
     {
-        // Without a uid the payload cannot identify an opponent; refuse it rather than
-        // announcing a nameless PK.
-        const string json = """{"username":"someone","follower":100,"roomid":1}""";
-        Assert.False(PkOpponent.TryParse(json, out _));
+        Assert.True(PkOpponent.TryParse(
+            """{"username":"笑笑","follower":12,"roomid":545068}""", out var pk));
+        Assert.Equal("笑笑", pk!.Username);
+        Assert.Equal("", pk.Uid);
+        Assert.Equal(545068, pk.RoomId);
+    }
+
+    [Fact]
+    public void TryParse_AcceptsRoomIdOnly()
+    {
+        Assert.True(PkOpponent.TryParse("""{"roomid":1907447144}""", out var pk));
+        Assert.Equal(1907447144, pk!.RoomId);
+        Assert.Equal("对面主播", pk.Username);
+        Assert.Equal("", pk.Uid);
+    }
+
+    [Fact]
+    public void TryParse_EmptyIdentity_ReturnsFalse()
+    {
+        Assert.False(PkOpponent.TryParse("""{"follower":12}""", out _));
     }
 
     [Fact]

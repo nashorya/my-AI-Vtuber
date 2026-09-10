@@ -26,13 +26,19 @@ class TestExtractOpponentRoomId:
         }}
         assert bridge.extract_opponent_room_id(payload, SELF_ROOM) == OPPONENT_ROOM
 
-    def test_neither_is_self_falls_back_to_init_info(self):
-        # Shouldn't happen, but must not crash or return our own id.
+    def test_neither_is_self_is_unresolved(self):
         payload = {"data": {
             "init_info": {"room_id": 11111},
             "match_info": {"room_id": 22222},
         }}
-        assert bridge.extract_opponent_room_id(payload, SELF_ROOM) == 11111
+        assert bridge.extract_opponent_room_id(payload, SELF_ROOM) is None
+
+    def test_short_or_long_self_id_matches(self):
+        payload = {"data": {
+            "init_info": {"init_id": 21347320, "uid": 1, "uname": "自己"},
+            "match_info": {"match_id": 545068, "uid": 2, "uname": "对面"},
+        }}
+        assert bridge.extract_opponent_room_id(payload, {12345, 21347320}) == 545068
 
     def test_both_are_self_returns_none(self):
         payload = {"data": {

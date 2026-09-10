@@ -51,20 +51,21 @@ public sealed class PkMemoryCurator
             Status = "active",
         }).ConfigureAwait(false);
 
-        if (turns.Count == 0)
+        var persistable = turns.Where(IsPersistable).ToList();
+        if (persistable.Count == 0)
         {
             await _repo.EndMatchAsync(matchId, DateTime.UtcNow.ToString("o")).ConfigureAwait(false);
             return;
         }
 
-        var keep = await SelectKeepIndicesAsync(opponentName, turns, ct).ConfigureAwait(false);
+        var keep = await SelectKeepIndicesAsync(opponentName, persistable, ct).ConfigureAwait(false);
         if (keep is null)
         {
             AIVTuber.Core.Diagnostics.DebugLog.Write("[PK记忆] 策展失败，降级为长度过滤落盘");
             keep = FallbackKeep(turns);
         }
 
-        var selected = turns.Where(t => keep.Contains(t.Index)).ToList();
+        var selected = persistable.Where(t => keep.Contains(t.Index)).ToList();
         var toStore = selected.Select(t => new PkTurn
         {
             Id = Guid.NewGuid().ToString("N"),
@@ -83,11 +84,20 @@ public sealed class PkMemoryCurator
             $"[PK记忆] 落盘 {selected.Count}/{turns.Count} 对（对手 {opponentName ?? opponentUid ?? "?"}）");
     }
 
+    internal static bool IsPersistable(BufferedPkTurn turn)
+    {
+        var assistant = turn.AssistantText.Trim();
+        if (assistant.Length == 0 || assistant == "【PASS】") return false;
+        if (assistant.StartsWith('（') && assistant.EndsWith('）')) return false;
+        return !string.IsNullOrWhiteSpace(turn.OpponentText);
+    }
+
     internal static HashSet<int> FallbackKeep(IReadOnlyList<BufferedPkTurn> turns, int minChars = MinCharsFallback)
     {
         var keep = new HashSet<int>();
         foreach (var t in turns)
         {
+            if (!IsPersistable(t)) continue;
             if (t.OpponentText.Trim().Length >= minChars && t.AssistantText.Trim().Length >= minChars)
                 keep.Add(t.Index);
         }
@@ -160,7 +170,8 @@ public sealed class PkMemoryCurator
             var response = new StringBuilder();
             await foreach (var token in _llm.StreamAsync(messages, "只输出 JSON，不要改写原文。", timeout.Token).ConfigureAwait(false))
                 response.Append(token);
-            return ParseKeepIndices(response.ToString(), turns.Count);
+            var bound = turns.Count == 0 ? 0 : turns.Max(t => t.Index) + 1;
+            return ParseKeepIndices(response.ToString(), bound);
         }
         catch (Exception ex)
         {

@@ -100,6 +100,16 @@ public class ConfigDiffTests
     }
 
     [Fact]
+    public void IdentityChange_IsLightRebuildLlm()
+    {
+        var b = Base();
+        b.Identity.SelfName = "小明";
+        var c = ConfigDiff.Compute(Base(), b);
+        Assert.Equal(RuntimeChange.RebuildLlm, c);
+        Assert.False(ConfigDiff.IsHeavy(c));
+    }
+
+    [Fact]
     public void MultipleChanges_AreCombined()
     {
         var b = Base();

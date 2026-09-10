@@ -43,7 +43,13 @@ public static class ConfigDiff
             a.Llm.SystemPrompt != b.Llm.SystemPrompt ||
             a.Llm.MaxHistoryTokens != b.Llm.MaxHistoryTokens ||
             !DictEqual(a.Llm.ApiKeys, b.Llm.ApiKeys) ||
-            !DictEqual(a.Llm.Models, b.Llm.Models))
+            !DictEqual(a.Llm.Models, b.Llm.Models) ||
+            a.Identity.SelfName != b.Identity.SelfName ||
+            a.Identity.SelfUid != b.Identity.SelfUid ||
+            a.Identity.OpponentName != b.Identity.OpponentName ||
+            a.Identity.DanmakuLabel != b.Identity.DanmakuLabel ||
+            a.Identity.ExtraNotes != b.Identity.ExtraNotes ||
+            !ListEqual(a.Interaction.WakeKeywords, b.Interaction.WakeKeywords))
             c |= RuntimeChange.RebuildLlm;
 
         if (a.Asr.Provider != b.Asr.Provider || a.Asr.ApiKey != b.Asr.ApiKey ||
@@ -119,6 +125,15 @@ public static class ConfigDiff
         if (x.Count != y.Count) return false;
         foreach (var kv in x)
             if (!y.TryGetValue(kv.Key, out var v) || v != kv.Value) return false;
+        return true;
+    }
+
+    private static bool ListEqual(List<string>? x, List<string>? y)
+    {
+        x ??= []; y ??= [];
+        if (x.Count != y.Count) return false;
+        for (var i = 0; i < x.Count; i++)
+            if (!string.Equals(x[i], y[i], StringComparison.Ordinal)) return false;
         return true;
     }
 }

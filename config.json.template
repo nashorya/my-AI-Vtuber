@@ -87,6 +87,13 @@
     "wake_keywords": [],
     "wake_hold_sec": 45
   },
+  "identity": {
+    "self_name": "",
+    "self_uid": "",
+    "opponent_name": "",
+    "danmaku_label": "直播间弹幕",
+    "extra_notes": ""
+  },
   "avatar": {
     "backend": "vts",
     "assets_path": "assets/avatar",
