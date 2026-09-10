@@ -145,6 +145,16 @@ public class ContinuousControlTests
         director.Cancel(10); clock.Advance(300); Assert.Equal(0, director.Sample()["AIVTuberHeadRoll"]);
     }
     [Fact]
+    public async Task IdleEyesUseCalibratedNeutralInsteadOfSurprisedMaximum()
+    {
+        var clock = new ManualClock();
+        var eye = Binding("eyeOpenL"); eye.Minimum = 0; eye.Maximum = 1.5f; eye.Neutral = 1;
+        await using var director = new AvatarMotionDirector(new CaptureBackend(), [eye], clock);
+        clock.Advance(1000);
+        Assert.Equal(1, director.Sample()[eye.InputId], 3);
+    }
+
+    [Fact]
     public async Task BlinkMultipliesEyelidAndAudioOwnsMouth()
     {
         var clock = new ManualClock();

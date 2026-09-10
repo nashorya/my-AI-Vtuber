@@ -12,11 +12,11 @@ public class ContinuousReplyPipelineTests
 {
     private sealed class Sink : IAvatarMotionSink
     {
-        public int Submits, Cancels;
+        public int Submits, Cancels, AudioSamples;
         public long LastGeneration;
         public void Submit(long generation, AvatarIntent intent) { Submits++; LastGeneration = generation; }
         public void Cancel(long generation) { if (generation == LastGeneration) Cancels++; }
-        public void OnRms(float rms) { }
+        public void OnRms(float rms) { if (rms > 0) AudioSamples++; }
     }
     private sealed class Llm(string reply) : ILlmClient, IAvatarReplySource
     {
@@ -110,15 +110,23 @@ public class ContinuousReplyPipelineTests
     {
         var llm = new Llm("（想吃蛋糕）"); var sink = new Sink();
         using var player = new AudioPlayer();
+        using var vts = new AIVTuber.Core.Vts.VtsClient(new());
+        // Exercise the real audio event subscribers without opening a Windows sound card.
+        void EmitAudio() => ((EventHandler<float>?)typeof(AudioPlayer)
+            .GetField(nameof(AudioPlayer.RmsUpdated), System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(player))?.Invoke(player, .4f);
         for (var i = 0; i < 20; i++)
         {
-            using var orchestrator = new BotOrchestrator(new Asr(), llm, new Tts(), player, new(), null, null,
+            using var orchestrator = new BotOrchestrator(new Asr(), llm, new Tts(), player, new(), vts, null,
                 async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } }, () => { }, null);
             orchestrator.ConfigureContinuousControl(sink, async (chunks, ct, start) => { await foreach (var _ in chunks.WithCancellation(ct)) start(); });
             Assert.Equal(1, llm.Subscriptions);
+            EmitAudio();
+            Assert.Equal(i + 1, sink.AudioSamples);
             await orchestrator.ProcessTextAsync("hello", [], bypassWake: true);
         }
         Assert.Equal(0, llm.Subscriptions); Assert.Equal(20, sink.Submits);
+        EmitAudio(); Assert.Equal(20, sink.AudioSamples);
     }
     [Fact]
     public async Task CancelledLateLlmEventCannotMove()

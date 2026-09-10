@@ -97,7 +97,7 @@ public sealed class AvatarMotionDirector : IAsyncDisposable
                 var name = binding.Channel;
                 float baseline = name switch
                 {
-                    "eyeOpenL" or "eyeOpenR" => 1,
+                    "eyeOpenL" or "eyeOpenR" => EyeRest(binding),
                     "mouthOpen" => _mouth,
                     "breath" => (float)(.5 + .5 * Math.Sin(now * 1.3)),
                     "gazeX" => (float)(.025 * Math.Sin(now * 1.1)),
@@ -138,6 +138,13 @@ public sealed class AvatarMotionDirector : IAsyncDisposable
 
     private static float Ease(double value) { var t = (float)Math.Clamp(value, 0, 1); return t * t * (3 - 2 * t); }
     private static float Lerp(float a, float b, float t) => a + (b - a) * t;
+    private static float EyeRest(AvatarChannelBinding binding)
+    {
+        // Some rigs reserve the upper end for wide/surprised eyes. Idle uses the
+        // calibrated neutral opening, not necessarily the maximum opening.
+        var normalized = (binding.Neutral - binding.Minimum) / (binding.Maximum - binding.Minimum);
+        return binding.Inverted ? 1 - normalized : normalized;
+    }
 
     private async Task SampleLoopAsync()
     {

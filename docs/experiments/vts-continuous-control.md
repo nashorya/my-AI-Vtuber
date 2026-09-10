@@ -50,7 +50,9 @@
 
 自动测试覆盖协议分类/隔离、插值/口型/眨眼、慢发送、授权/分片/APIError、映射失效、人工接管与重建订阅。Windows quality gate 负责完整 Release 构建、测试和打包。
 
-2026-09-10 本地验证：macOS ARM64 以 AnyCPU 构建测试项目，相关回归 137/137 通过。Windows WPF 项目跨平台 Release 编译通过（0 警告、0 错误）。Web 设置页在浏览器用 16 通道样例检查布局，未出现脚本错误；这不等于 Windows WebView2/VTS 端到端验收。
+2026-09-10 本地验证：macOS ARM64 以 AnyCPU 构建测试项目，相关回归 138/138 通过。Windows WPF 项目跨平台 Release 编译通过（0 警告、0 错误）。Web 设置页在浏览器用 16 通道样例检查布局，未出现脚本错误；这不等于 Windows WebView2/VTS 端到端验收。
+
+试用包附 `verification/summary.json` 和 `publish-manifest.json`，记录所构建的精确 commit、完整 Windows 测试计数、各阶段结果和文件 SHA256。构建脚本已恢复 Go 工具链校验，并将 `danmaku_bridge.exe` 列为必需交付文件，避免仅有主程序却遗漏弹幕桥。
 
 本地测试命令（仅开发机覆盖运行架构，产品仍为 Windows x64）：
 
