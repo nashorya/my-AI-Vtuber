@@ -542,7 +542,8 @@ public sealed class BotOrchestrator : IDisposable
         string text,
         List<Message> history,
         string? wakeProbe = null,
-        bool bypassWake = false)
+        bool bypassWake = false,
+        Func<bool>? canCommit = null)
     {
         if (string.IsNullOrWhiteSpace(text)) return Task.CompletedTask;
         return _coordinator.EnqueueAsync(InputSource.Danmaku, async (envelope, ct) =>
@@ -553,7 +554,7 @@ public sealed class BotOrchestrator : IDisposable
             {
                 if (!bypassWake && !AllowSpeak(wakeProbe ?? text)) return;
                 pipelineStarted = true;
-                await RunStreamingPipelineAsync(history, text, envelope, ct).ConfigureAwait(false);
+                await RunStreamingPipelineAsync(history, text, envelope, ct, canCommit).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             catch (Exception ex)
@@ -613,12 +614,15 @@ public sealed class BotOrchestrator : IDisposable
         List<Message> history,
         string userInput,
         InputEnvelope envelope,
-        CancellationToken ct)
+        CancellationToken ct,
+        Func<bool>? canCommit = null)
     {
         AIVTuber.Core.Diagnostics.DebugLog.Write($"[LLM输入] {userInput}");
         _coordinator.SetHold(true);
         var sentenceChannel = Channel.CreateBounded<string>(3);
         var context = new RequestContext(envelope.Generation, ct);
+        ClassifiedReply? pendingReply = null;
+        string pendingRaw = "";
 
         var producerTask = Task.Run(async () =>
         {
@@ -638,9 +642,14 @@ public sealed class BotOrchestrator : IDisposable
                 if (!IsCurrent(envelope, ct)) return;
                 var classified = ReplyClassifier.Classify(rawAll.ToString());
                 _deferLlmEvents = false;
-                CommitClassifiedReply(context, classified, rawAll.ToString());
+                if (canCommit is not null && !canCommit()) return;
                 if (classified.Kind == ReplyKind.Speak)
+                {
+                    pendingReply = classified;
+                    pendingRaw = rawAll.ToString();
                     await sentenceChannel.Writer.WriteAsync(classified.Spoken, ct);
+                }
+                else CommitClassifiedReply(context, classified, rawAll.ToString());
             }
             finally
             {
@@ -658,13 +667,6 @@ public sealed class BotOrchestrator : IDisposable
             {
                 if (!IsCurrent(envelope, streamCt)) yield break;
                 if (!LlmClient.IsSpeakableText(sentence)) continue;
-                if (!ttsStarted)
-                {
-                    if (!IsCurrent(envelope, streamCt)) yield break;
-                    ttsStarted = true;
-                    OnFirstSentenceToTts?.Invoke(this, EventArgs.Empty);
-                    OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
-                }
                 await foreach (var chunk in _tts.StreamAsync(
                                    sentence,
                                    _ttsConfig.VoiceId,
@@ -672,6 +674,16 @@ public sealed class BotOrchestrator : IDisposable
                                    streamCt))
                 {
                     if (!IsCurrent(envelope, streamCt)) yield break;
+                    if (!ttsStarted)
+                    {
+                        // Recheck after synthesis too: people may have resumed while
+                        // the LLM or TTS was waiting on the network. No public effects yet.
+                        if (canCommit is not null && !canCommit()) yield break;
+                        ttsStarted = true;
+                        CommitClassifiedReply(context, pendingReply!.Value, pendingRaw);
+                        OnFirstSentenceToTts?.Invoke(this, EventArgs.Empty);
+                        OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
+                    }
                     yield return chunk;
                 }
             }

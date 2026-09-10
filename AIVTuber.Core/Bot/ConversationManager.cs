@@ -16,6 +16,7 @@ public sealed class ConversationManager
     private readonly int _maxHistoryTokens;
     private readonly List<Message> _history = [];
     private readonly object _lock = new();
+    private readonly HashSet<Message> _transient = [];
     private const int TokensPerMessageOverhead = 4;
 
     // Memory injection fields
@@ -53,14 +54,33 @@ public sealed class ConversationManager
         lock (_lock) { _livePk = opponent; }
     }
 
-    public void AddUserMessage(string content)
+    public void AddUserMessage(string content, bool persistEligible = true)
     {
-        lock (_lock) { _history.Add(new Message { Role = MessageRole.User, Content = content }); TrimHistory(); }
+        lock (_lock)
+        {
+            var message = new Message { Role = MessageRole.User, Content = content };
+            _history.Add(message);
+            if (!persistEligible) _transient.Add(message);
+            TrimHistory();
+        }
+    }
+
+    public List<Message> GetPersistableHistory()
+    {
+        lock (_lock) { return _history.Where(m => !_transient.Contains(m)).ToList(); }
     }
 
     public void AddAssistantMessage(string content)
     {
-        lock (_lock) { _history.Add(new Message { Role = MessageRole.Assistant, Content = content }); TrimHistory(); }
+        lock (_lock)
+        {
+            var message = new Message { Role = MessageRole.Assistant, Content = content };
+            // An answer can paraphrase a PASS observation still visible to the model.
+            // Keep that derived text out of extraction as well.
+            if (_transient.Count > 0) _transient.Add(message);
+            _history.Add(message);
+            TrimHistory();
+        }
     }
 
     public List<Message> GetHistory()
@@ -243,7 +263,7 @@ public sealed class ConversationManager
 
     public void Clear()
     {
-        lock (_lock) { _history.Clear(); }
+        lock (_lock) { _history.Clear(); _transient.Clear(); }
     }
 
     /// <summary>Replaces earliest messages with an LLM-generated summary to save tokens.</summary>
@@ -252,8 +272,12 @@ public sealed class ConversationManager
         lock (_lock)
         {
             if (_history.Count <= 2) return;
+            var containsTransient = _history.Any(m => _transient.Contains(m));
             _history.RemoveRange(0, _history.Count - 2);
-            _history.Insert(0, new Message { Role = MessageRole.Assistant, Content = $"[对话摘要] {summary}" });
+            var message = new Message { Role = MessageRole.Assistant, Content = $"[对话摘要] {summary}" };
+            _history.Insert(0, message);
+            // Summarizing must not turn a PASS observation into persistent evidence.
+            if (containsTransient) _transient.Add(message);
             TrimHistory();
         }
     }
@@ -262,6 +286,7 @@ public sealed class ConversationManager
     {
         while (_history.Count > 1 && GetEstimatedTokenCountInternal() > _maxHistoryTokens)
             _history.RemoveAt(0);
+        _transient.IntersectWith(_history);
     }
 
     private int GetEstimatedTokenCountInternal()

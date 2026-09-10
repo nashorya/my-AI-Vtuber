@@ -68,6 +68,19 @@ public sealed class BotRuntime : IAsyncDisposable
     private DualPartyTurnGate? _turnGate;
     private string? _pendingTurnText;
     private IReadOnlyList<TalkLine> _pendingTurnLines = [];
+    private sealed record CapturedOpponent(string Name, string? Uid, string? MatchId);
+    private CapturedOpponent? _capturedOpponent;
+
+    private CapturedOpponent CaptureOpponent()
+    {
+        var (matchId, opponent) = _pkBuffer.CaptureIdentity();
+        return new(IdentityPrompt.ResolveOpponentName(_config.Identity.OpponentName, opponent),
+            opponent?.Uid, matchId);
+    }
+
+    private bool IsCurrentMatch(TalkLine line) =>
+        line.Identity != TalkIdentity.Opponent && line.Identity != TalkIdentity.System ||
+        line.MatchId == _pkBuffer.MatchId;
 
     private readonly PipelineStateTracker _stateTracker = new();
 
@@ -595,6 +608,7 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             _loopbackVadMuted = true;
             _loopbackVad?.Reset();
+            Interlocked.Exchange(ref _capturedOpponent, null);
             AbandonLoopbackSpeechChannel();
             _turnGate?.SetLoopbackSpeaking(false);
         };
@@ -602,6 +616,7 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             _loopbackVadMuted = false;
             _loopbackVad?.Reset();
+            Interlocked.Exchange(ref _capturedOpponent, null);
             AbandonLoopbackSpeechChannel();
             if (_pkBuffer.IsActive)
                 _pkBuffer.EndAssistantReply();
@@ -665,28 +680,37 @@ public sealed class BotRuntime : IAsyncDisposable
 
     private async Task HandleTurnReadyAsync(IReadOnlyList<TalkLine> lines)
     {
-        if (_orchestrator is null || lines.Count == 0) return;
-        var formatted = IdentityPrompt.FormatTurn(lines);
-        if (string.IsNullOrWhiteSpace(formatted)) return;
-
-        _pendingTurnText = formatted;
-        _pendingTurnLines = lines;
-        var subjects = lines
-            .Select(l => l.SubjectUid)
-            .Where(uid => !string.IsNullOrEmpty(uid))
-            .Cast<string>()
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        var viewerUid = lines.LastOrDefault(l => l.Identity == TalkIdentity.Danmaku).SubjectUid
-            ?? lines.LastOrDefault(l => l.Identity == TalkIdentity.Self).SubjectUid;
-        var history = _conversation.BuildMessages(viewerUid, formatted, subjects);
-
-        _turnGate?.SetAiSpeaking(true);
+        var gate = _turnGate;
+        if (gate is null) return;
+        var revision = gate.ActiveTurnRevision;
+        var turnMatchId = _pkBuffer.MatchId;
+        var superseded = false;
         try
         {
+            if (_orchestrator is null) return;
+            lines = lines.Where(IsCurrentMatch).ToArray();
+            if (lines.Count == 0) return;
+            var formatted = IdentityPrompt.FormatTurn(lines);
+            if (string.IsNullOrWhiteSpace(formatted)) return;
+
+            _pendingTurnText = formatted;
+            _pendingTurnLines = lines;
+            var subjects = lines.Select(l => l.SubjectUid)
+                .Where(uid => !string.IsNullOrEmpty(uid)).Cast<string>()
+                .Distinct(StringComparer.Ordinal).ToList();
+            var viewerUid = lines.LastOrDefault(l => l.Identity == TalkIdentity.Danmaku).SubjectUid
+                ?? lines.LastOrDefault(l => l.Identity == TalkIdentity.Self).SubjectUid;
+            var history = _conversation.BuildMessages(viewerUid, formatted, subjects);
+
+            bool CanCommit()
+            {
+                var valid = gate.CanCommit(revision) && turnMatchId == _pkBuffer.MatchId && lines.All(IsCurrentMatch);
+                superseded |= !valid;
+                return valid;
+            }
             _stateTracker.TextInputStarted(Environment.TickCount64);
             UserTranscript?.Invoke(this, formatted);
-            await _orchestrator.ProcessTextAsync(formatted, history, bypassWake: true).ConfigureAwait(false);
+            await _orchestrator.ProcessTextAsync(formatted, history, bypassWake: true, canCommit: CanCommit).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -694,7 +718,11 @@ public sealed class BotRuntime : IAsyncDisposable
         }
         finally
         {
-            _turnGate?.SetAiSpeaking(false);
+            if (superseded) gate.Requeue(lines.Where(IsCurrentMatch));
+            _pendingTurnText = null;
+            _pendingTurnLines = [];
+            _stateTracker.SpeakingStopped();
+            gate.SetAiSpeaking(false);
         }
     }
 
@@ -720,6 +748,10 @@ public sealed class BotRuntime : IAsyncDisposable
                 _conversation.AddAssistantMessage($"（{reply.Thought}）");
                 SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
                 break;
+            case ReplyKind.Pass:
+                if (!string.IsNullOrWhiteSpace(userText))
+                    _conversation.AddUserMessage(userText, persistEligible: false);
+                break;
             default:
                 break;
         }
@@ -727,12 +759,11 @@ public sealed class BotRuntime : IAsyncDisposable
 
     private void NotePkPair(IReadOnlyList<TalkLine> lines, string spoken)
     {
-        if (!_pkBuffer.IsActive) return;
-        var opponent = lines.LastOrDefault(l => l.Identity == TalkIdentity.Opponent);
-        if (string.IsNullOrWhiteSpace(opponent.Text)) return;
-        _pkBuffer.NoteOpponentSpeech(opponent.Text, "loopback");
-        _pkBuffer.NoteAssistantChunk(spoken);
-        _pkBuffer.EndAssistantReply();
+        var opponents = lines.Where(l => l.Identity == TalkIdentity.Opponent).ToArray();
+        if (opponents.Length == 0) return;
+        var matchId = opponents[0].MatchId;
+        if (opponents.Any(l => l.MatchId != matchId)) return;
+        _pkBuffer.TryAddPair(matchId, string.Join("\n", opponents.Select(l => l.Text)), spoken);
     }
 
     private string SelfDisplayName() => IdentityPrompt.ResolveSelfName(_config.Identity.SelfName);
@@ -745,6 +776,8 @@ public sealed class BotRuntime : IAsyncDisposable
 
     private async Task ObserveMicSegmentAsync(SpeechSegment seg)
     {
+        var gate = _turnGate;
+        using var recognition = gate?.BeginRecognition(loopback: false);
         var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
         AIVTuber.Core.Diagnostics.DebugLog.Write(
             $"[麦克风段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
@@ -755,7 +788,6 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             if (peak < MicAsrMinPeak)
                 AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风段] 能量过低(<{MicAsrMinPeak})，跳过ASR");
-            _turnGate?.SetMicSpeaking(false);
             return;
         }
 
@@ -781,13 +813,15 @@ public sealed class BotRuntime : IAsyncDisposable
             if (result.Emotion is not null)
                 UserEmotionDetected?.Invoke(this, result.Emotion);
             UserTranscript?.Invoke(this, result.Text);
-            _turnGate?.AddLine(new TalkLine(TalkIdentity.Self, SelfDisplayName(), text, SelfUidOrNull()));
+            gate?.AddLine(new TalkLine(TalkIdentity.Self, SelfDisplayName(), text, SelfUidOrNull(), StartedAt: seg.StartTime));
         }
-        _turnGate?.SetMicSpeaking(false);
     }
 
     private async Task ObserveLoopbackSegmentAsync(SpeechSegment seg)
     {
+        var gate = _turnGate;
+        using var recognition = gate?.BeginRecognition(loopback: true);
+        var opponent = Interlocked.Exchange(ref _capturedOpponent, null) ?? CaptureOpponent();
         var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
         AIVTuber.Core.Diagnostics.DebugLog.Write(
             $"[内录段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
@@ -797,7 +831,6 @@ public sealed class BotRuntime : IAsyncDisposable
         if (peak < LoopbackAsrMinPeak)
         {
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
-            _turnGate?.SetLoopbackSpeaking(false);
             return;
         }
 
@@ -818,13 +851,12 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录识别→对面] 「{result.Text}」");
             LoopbackTranscript?.Invoke(this, result.Text);
-            _turnGate?.AddLine(new TalkLine(
+            gate?.AddLine(new TalkLine(
                 TalkIdentity.Opponent,
-                OpponentDisplayName(),
+                opponent.Name,
                 result.Text,
-                string.IsNullOrEmpty(CurrentPkOpponent?.Uid) ? null : CurrentPkOpponent.Uid));
+                opponent.Uid, opponent.MatchId, seg.StartTime));
         }
-        _turnGate?.SetLoopbackSpeaking(false);
     }
 
     private IEnumerable<string> ResolvePoseIdsForPrompt()
@@ -951,6 +983,7 @@ public sealed class BotRuntime : IAsyncDisposable
                 _loopbackVad.SpeechFrame += (_, frame) =>
                 {
                     if (_loopbackVadMuted) return;
+                    _capturedOpponent ??= CaptureOpponent();
                     _turnGate?.SetLoopbackSpeaking(true);
                     if (!_config.Asr.Streaming) return;
                     _loopbackSpeechChannel ??= NewSpeechChannel();
@@ -1054,7 +1087,7 @@ public sealed class BotRuntime : IAsyncDisposable
         if (pk.FollowerCount > 0) summary += $"，粉丝 {pk.FollowerCount}";
         if (pk.RoomId != 0) summary += $"，房间 {pk.RoomId}";
         if (!string.IsNullOrEmpty(pk.Uid)) summary += $"，UID {pk.Uid}";
-        _turnGate?.AddLine(new TalkLine(TalkIdentity.System, "系统", summary, pk.Uid));
+        _turnGate?.AddLine(new TalkLine(TalkIdentity.System, "系统", summary, pk.Uid, matchId));
     }
 
     private async Task StartPkMatchAsync(PkOpponent pk, string matchId)
