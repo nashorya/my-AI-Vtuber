@@ -70,6 +70,18 @@
            Text="WebRtcVad.dll missing from $(PublishDir). WebRtcVadSharp native asset failed to publish." />
   </Target>
 
+  <!-- AsrSidecarProcess launches asr_server.py beside the executable. The sidecar/
+       copy remains the manifest-verified payload; both build and publish need the
+       root entry point as well. -->
+  <Target Name="CopyAsrLaunchScriptToOutput" AfterTargets="Build">
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\asr_server.py"
+          DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CopyAsrLaunchScriptToPublish" AfterTargets="Publish">
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\asr_server.py"
+          DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
+
   <ItemGroup>
     <None Include="..\config.json.template" Link="config.json.template" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\danmaku_bridge.py" Link="danmaku_bridge.py" CopyToPublishDirectory="PreserveNewest" />

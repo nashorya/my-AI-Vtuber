@@ -42,3 +42,11 @@
 6. 她生成时说“嗯嗯”：已有回答应完成；说“先别回答”：应停止。
 
 记下从识别完成到开始播放的时间，以及误插话、漏接话、PASS 朗读情况。对比分支是独立实验，未合并回 main。
+
+## 2026-09-11 启动日志修复
+
+实际启动旧版后发现两项交付环境遗漏：弹幕桥使用的系统 Python 缺少 `httpx` 和 `bilibili_api`；两版 ASR 启动器寻找 EXE 同目录的 `asr_server.py`，发布包却只包含 `sidecar/asr_server.py`。
+
+已将同版本 ASR 脚本补到两版 EXE 同目录，并在新版项目中加入 Build/Publish 自动复制步骤。旧版源代码和 EXE 保持不变。旧版新增 `.bridge-venv`，安装 `httpx`、`bilibili-api-python` 及提供 WebSocket 的 `aiohttp`，仅将旧版 `bilibili.python_path` 指向该解释器；原配置保存在 `config.before-bridge-fix.json`。依赖版本记录在旧版目录的 `bridge-requirements.lock`。
+
+验证：两版脚本均可导入，入口脚本与 sidecar 载荷哈希一致；弹幕 SDK 初始化、AioHTTP WebSocket 后端选择及 pip check 通过；新版重新 publish 成功。需要关闭重复的旧版进程并仅重新启动一个实例，才能加载新配置及启动 ASR。尚未验证重启后的实际连线和语音识别结果。
