@@ -29,6 +29,10 @@ internal static class ReplyClassifier
         @"\*[^*\n]+\*|\([^)\n]+\)",
         RegexOptions.Compiled);
 
+    private static readonly Regex FullwidthThoughtRegex = new(
+        @"（[^（）\n]+）",
+        RegexOptions.Compiled);
+
     public static ClassifiedReply Classify(string? raw)
     {
         if (string.IsNullOrWhiteSpace(raw))
@@ -51,15 +55,15 @@ internal static class ReplyClassifier
         if (body.StartsWith('（') && body.EndsWith('）'))
         {
             var inner = body[1..^1];
-            if (inner.Length == 0 || inner.Contains('（') || inner.Contains('）'))
-                return ClassifiedReply.Invalid;
-            return new ClassifiedReply(ReplyKind.InnerThought, "", inner, controls);
+            if (inner.Length > 0 && !inner.Contains('（') && !inner.Contains('）'))
+                return new ClassifiedReply(ReplyKind.InnerThought, "", inner, controls);
         }
 
-        if (body.Contains('（') || body.Contains('）'))
+        var spokenBody = FullwidthThoughtRegex.Replace(body, "").Trim();
+        if (spokenBody.Contains('（') || spokenBody.Contains('）'))
             return ClassifiedReply.Invalid;
 
-        var spoken = SpeakStageRegex.Replace(body, "").Trim();
+        var spoken = SpeakStageRegex.Replace(spokenBody, "").Trim();
         spoken = LlmClient.StripPartialTags(spoken).Trim();
         if (!LlmClient.IsSpeakableText(spoken))
             return ClassifiedReply.Invalid;

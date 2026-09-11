@@ -17,29 +17,53 @@ internal readonly record struct TalkLine(
 internal sealed class DualPartyTurnGate : IDisposable
 {
     private readonly TimeSpan _dualSilence;
+    private readonly TimeSpan _staleSpeech;
     private readonly Func<DateTime> _now;
     private readonly object _sync = new();
     private readonly List<TalkLine> _buf = [];
     private bool _micSpeaking;
     private bool _loopbackSpeaking;
     private bool _aiSpeaking;
+    private DateTime? _loopbackHeardAt;
     private int _pendingRecognition;
     private long _revision;
     public long ActiveTurnRevision { get; private set; }
     private DateTime? _quietSince;
     private CancellationTokenSource? _arm;
     private bool _disposed;
+    private string? _lastStatus;
+    public event Action<string>? StatusChanged;
 
-    public DualPartyTurnGate(TimeSpan dualSilence, Func<DateTime>? now = null)
+    private void ReportStatus()
+    {
+        string status;
+        lock (_sync)
+        {
+            if (_disposed) return;
+            status = _aiSpeaking ? "回合已放行，生成/播放中"
+                : _buf.Count == 0 ? "等待输入"
+                : _pendingRecognition != 0 ? $"等待语音识别完成（{_pendingRecognition}段）"
+                : _micSpeaking ? "等待麦克风语音结束"
+                : _loopbackSpeaking ? "等待内录语音结束"
+                : "等待静音窗口，已安排自动检查";
+            if (status == _lastStatus) return;
+            _lastStatus = status;
+        }
+        AIVTuber.Core.Diagnostics.DebugLog.Write($"[回合门] {status}");
+        StatusChanged?.Invoke(status);
+    }
+
+    public DualPartyTurnGate(TimeSpan dualSilence, Func<DateTime>? now = null, TimeSpan? staleSpeech = null)
     {
         _dualSilence = dualSilence < TimeSpan.Zero ? TimeSpan.Zero : dualSilence;
+        _staleSpeech = staleSpeech is { } s && s > TimeSpan.Zero ? s : TimeSpan.FromSeconds(1);
         _now = now ?? (() => DateTime.UtcNow);
     }
 
     public event Action<IReadOnlyList<TalkLine>>? TurnReady;
 
-    public void SetMicSpeaking(bool speaking) => SetFlag(ref _micSpeaking, speaking, true);
-    public void SetLoopbackSpeaking(bool speaking) => SetFlag(ref _loopbackSpeaking, speaking, true);
+    public void SetMicSpeaking(bool speaking) => SetHumanSpeaking(mic: true, speaking);
+    public void SetLoopbackSpeaking(bool speaking) => SetHumanSpeaking(mic: false, speaking);
     public void SetAiSpeaking(bool speaking) => SetFlag(ref _aiSpeaking, speaking);
 
     // VAD completion and recognition ownership change atomically, so an earlier
@@ -49,7 +73,7 @@ internal sealed class DualPartyTurnGate : IDisposable
         lock (_sync)
         {
             _pendingRecognition++;
-            if (loopback) _loopbackSpeaking = false;
+            if (loopback) { _loopbackSpeaking = false; _loopbackHeardAt = null; }
             else _micSpeaking = false;
             _quietSince = null;
             _arm?.Cancel();
@@ -73,8 +97,11 @@ internal sealed class DualPartyTurnGate : IDisposable
     public bool CanCommit(long revision)
     {
         lock (_sync)
+        {
+            ReleaseStaleSpeechLocked();
             return !_disposed && revision == _revision && !_micSpeaking &&
                 !_loopbackSpeaking && _pendingRecognition == 0;
+        }
     }
 
     public void Requeue(IEnumerable<TalkLine> lines)
@@ -107,38 +134,71 @@ internal sealed class DualPartyTurnGate : IDisposable
 
     public void Tick()
     {
-        IReadOnlyList<TalkLine>? flush = null;
+        try
+        {
+            IReadOnlyList<TalkLine>? flush = null;
+            lock (_sync)
+            {
+                if (_disposed) return;
+                var releasedStale = ReleaseStaleSpeechLocked();
+                if (_aiSpeaking || _micSpeaking || _loopbackSpeaking || _pendingRecognition != 0)
+                {
+                    _quietSince = null;
+                    return;
+                }
+                if (_buf.Count == 0)
+                {
+                    _quietSince = null;
+                    return;
+                }
+
+                var now = _now();
+                _quietSince ??= now;
+                if (!releasedStale && now - _quietSince.Value < _dualSilence)
+                    return;
+
+                flush = _buf.OrderBy(l => l.StartedAt).ToArray();
+                ActiveTurnRevision = _revision;
+                _aiSpeaking = true; // Reserve dispatch before leaving the lock.
+                _buf.Clear();
+                _quietSince = null;
+            }
+
+            if (flush is { Count: > 0 })
+                TurnReady?.Invoke(flush);
+        }
+        finally { ReportStatus(); }
+    }
+
+    private void SetHumanSpeaking(bool mic, bool speaking)
+    {
         lock (_sync)
         {
             if (_disposed) return;
-            if (_aiSpeaking || _micSpeaking || _loopbackSpeaking || _pendingRecognition != 0)
+            if (mic)
             {
-                _quietSince = null;
-                return;
+                _micSpeaking = speaking;
             }
-            if (_buf.Count == 0)
+            else
             {
-                _quietSince = null;
-                return;
+                _loopbackSpeaking = speaking;
+                _loopbackHeardAt = speaking ? _now() : null;
             }
-
-            var now = _now();
-            _quietSince ??= now;
-            if (now - _quietSince.Value < _dualSilence)
-                return;
-
-            flush = _buf.OrderBy(l => l.StartedAt).ToArray();
-            ActiveTurnRevision = _revision;
-            _aiSpeaking = true; // Reserve dispatch before leaving the lock.
-            _buf.Clear();
-            _quietSince = null;
+            if (speaking)
+            {
+                // Only accepted text changes the answer's revision. A VAD segment
+                // can turn out to be noise; speaking/pending flags block meanwhile.
+                _quietSince = null;
+                _arm?.Cancel();
+            }
         }
 
-        if (flush is { Count: > 0 })
-            TurnReady?.Invoke(flush);
+        if (speaking) { Arm(); return; }
+        Tick();
+        Arm();
     }
 
-    private void SetFlag(ref bool field, bool value, bool human = false)
+    private void SetFlag(ref bool field, bool value)
     {
         lock (_sync)
         {
@@ -146,7 +206,6 @@ internal sealed class DualPartyTurnGate : IDisposable
             field = value;
             if (value)
             {
-                if (human) _revision++;
                 _quietSince = null;
                 _arm?.Cancel();
                 return;
@@ -160,11 +219,26 @@ internal sealed class DualPartyTurnGate : IDisposable
     private void Arm()
     {
         CancellationToken token;
+        TimeSpan delay;
         lock (_sync)
         {
-            if (_disposed || _aiSpeaking || _micSpeaking || _loopbackSpeaking || _pendingRecognition != 0 || _buf.Count == 0)
+            if (_disposed || _aiSpeaking || _pendingRecognition != 0 || _buf.Count == 0)
                 return;
+            ReleaseStaleSpeechLocked();
+            if (_micSpeaking)
+                return;
+            if (_loopbackSpeaking)
+            {
+                var wait = TimeUntilStaleLocked();
+                if (wait is null) return;
+                delay = wait.Value;
+            }
+            else
+            {
+                delay = _dualSilence;
+            }
             _arm?.Cancel();
+            _arm?.Dispose();
             _arm = new CancellationTokenSource();
             token = _arm.Token;
         }
@@ -173,13 +247,38 @@ internal sealed class DualPartyTurnGate : IDisposable
         {
             try
             {
-                if (_dualSilence > TimeSpan.Zero)
-                    await Task.Delay(_dualSilence, token).ConfigureAwait(false);
+                if (delay > TimeSpan.Zero)
+                    await Task.Delay(delay, token).ConfigureAwait(false);
                 if (!token.IsCancellationRequested)
+                {
                     Tick();
+                    // A timer can wake before the silence/stale deadline. Keep
+                    // ownership of the next check instead of waiting for new input.
+                    Arm();
+                }
             }
             catch (OperationCanceledException) { }
         }, token);
+    }
+
+    private bool ReleaseStaleSpeechLocked()
+    {
+        if (!_loopbackSpeaking || _loopbackHeardAt is not { } loopAt)
+            return false;
+        if (_now() - loopAt < _staleSpeech)
+            return false;
+        _loopbackSpeaking = false;
+        _loopbackHeardAt = null;
+        AIVTuber.Core.Diagnostics.DebugLog.Write("[回合门] 内录说话状态已超时释放（无新帧）");
+        return true;
+    }
+
+    private TimeSpan? TimeUntilStaleLocked()
+    {
+        if (!_loopbackSpeaking || _loopbackHeardAt is not { } loopAt)
+            return null;
+        var remaining = _staleSpeech - (_now() - loopAt);
+        return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
     }
 
     public void Dispose()

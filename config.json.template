@@ -77,11 +77,6 @@
     "selection_interval_sec": 8,
     "python_path": "python"
   },
-  "input": {
-    "mic_template": "（你的创造者对你说：{text}）",
-    "loopback_template": "（你听到对面说：{text}）",
-    "danmaku_template": "（弹幕 {username}：{content}）"
-  },
   "interaction": {
     "mode": "normal",
     "wake_keywords": [],

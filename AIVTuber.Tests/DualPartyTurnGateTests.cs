@@ -5,6 +5,38 @@ namespace AIVTuber.Tests;
 public class DualPartyTurnGateTests
 {
     [Fact]
+    public async Task EarlyTimerWake_RechecksWithoutAnotherInput()
+    {
+        long elapsedMs = 0;
+        var origin = DateTime.UtcNow;
+        using var gate = new DualPartyTurnGate(TimeSpan.FromMilliseconds(30),
+            () => origin.AddMilliseconds(Interlocked.Read(ref elapsedMs)));
+        var ready = new TaskCompletionSource<IReadOnlyList<TalkLine>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        gate.TurnReady += lines => ready.TrySetResult(lines);
+        gate.AddLine(new(TalkIdentity.Self, "我", "只说一句", null));
+        // The timer wakes while the gate's clock has not reached its deadline.
+        await Task.Delay(200);
+        Assert.False(ready.Task.IsCompleted);
+        Interlocked.Exchange(ref elapsedMs, 100);
+        var turn = await ready.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal("只说一句", Assert.Single(turn).Text);
+    }
+
+    [Fact]
+    public void RejectedSpeech_DoesNotPermanentlyInvalidateAnswer()
+    {
+        using var gate = new DualPartyTurnGate(TimeSpan.Zero);
+        gate.AddLine(new(TalkIdentity.Self, "我", "你好", null));
+        var revision = gate.ActiveTurnRevision;
+        gate.SetMicSpeaking(true);
+        Assert.False(gate.CanCommit(revision));
+        using (gate.BeginRecognition(false)) { } // rejected or empty ASR
+        Assert.True(gate.CanCommit(revision));
+        gate.AddLine(new(TalkIdentity.Self, "我", "还有一个问题", null));
+        Assert.False(gate.CanCommit(revision));
+    }
+
+    [Fact]
     public void FailedRecognition_ReleasesGateForOtherInputs()
     {
         var clock = new Clock();
@@ -121,6 +153,47 @@ public class DualPartyTurnGateTests
         clock.Now += TimeSpan.FromMilliseconds(50);
         gate.Tick();
         Assert.NotNull(got);
+    }
+
+    [Fact]
+    public void StaleLoopbackSpeaking_DoesNotBlockFlush()
+    {
+        IReadOnlyList<TalkLine>? got = null;
+        var clock = new Clock();
+        using var gate = new DualPartyTurnGate(
+            TimeSpan.FromMilliseconds(30),
+            () => clock.Now,
+            staleSpeech: TimeSpan.FromSeconds(1));
+        gate.TurnReady += lines => got = lines;
+        gate.SetLoopbackSpeaking(true);
+        gate.AddLine(new TalkLine(TalkIdentity.Self, "纳", "喂喂喂，小飞鱼。", null));
+        clock.Now += TimeSpan.FromMilliseconds(40);
+        gate.Tick();
+        Assert.Null(got);
+
+        clock.Now += TimeSpan.FromSeconds(1);
+        gate.Tick();
+        Assert.NotNull(got);
+        Assert.Equal("喂喂喂，小飞鱼。", got![0].Text);
+    }
+
+    [Fact]
+    public void FreshLoopbackSpeech_StillBlocksFlush()
+    {
+        IReadOnlyList<TalkLine>? got = null;
+        var clock = new Clock();
+        using var gate = new DualPartyTurnGate(
+            TimeSpan.FromMilliseconds(30),
+            () => clock.Now,
+            staleSpeech: TimeSpan.FromSeconds(1));
+        gate.TurnReady += lines => got = lines;
+        gate.SetLoopbackSpeaking(true);
+        gate.AddLine(new TalkLine(TalkIdentity.Self, "纳", "大肥鱼。", null));
+        clock.Now += TimeSpan.FromMilliseconds(500);
+        gate.SetLoopbackSpeaking(true);
+        clock.Now += TimeSpan.FromMilliseconds(500);
+        gate.Tick();
+        Assert.Null(got);
     }
 
     [Fact]

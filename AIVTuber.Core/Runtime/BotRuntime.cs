@@ -91,6 +91,13 @@ public sealed class BotRuntime : IAsyncDisposable
     public event EventHandler? InteractionModeChanged;
     /// <summary>Fired when any pipeline stage (ASR/LLM/TTS) encounters a non-cancellation error.</summary>
     public event EventHandler<string>? PipelineError;
+    public event EventHandler<string>? TurnStatusChanged;
+
+    private void ReportTurnStatus(string status)
+    {
+        AIVTuber.Core.Diagnostics.DebugLog.Write($"[回合状态] {status}");
+        TurnStatusChanged?.Invoke(this, status);
+    }
     /// <summary>Fired per mic frame with RMS in [0,1] for a level indicator.</summary>
     public event EventHandler<float>? MicLevelUpdated;
     /// <summary>Fired per loopback frame with RMS in [0,1] for a level indicator.</summary>
@@ -142,8 +149,19 @@ public sealed class BotRuntime : IAsyncDisposable
     public Task ForceExtractMemoryAsync() => _memoryExtractor.ExtractFactsAsync();
 
     private volatile bool _micMuted;
+    private readonly object _micInputSync = new();
     public bool MicMuted => _micMuted;
-    public void SetMicMuted(bool muted) => _micMuted = muted;
+    public void SetMicMuted(bool muted)
+    {
+        lock (_micInputSync)
+        {
+            _micMuted = muted;
+            if (!muted) return;
+            _vad?.Reset();
+            Interlocked.Exchange(ref _micSpeechChannel, null)?.Writer.TryComplete();
+            _turnGate?.SetMicSpeaking(false);
+        }
+    }
 
     /// <summary>Immediately stops any in-progress AI generation/speech: cancels the pipeline,
     /// halts playback, and closes the VTS mouth. Safe to call when idle (no-op).</summary>
@@ -674,7 +692,9 @@ public sealed class BotRuntime : IAsyncDisposable
     private void EnsureTurnGate()
     {
         if (_turnGate is not null) return;
-        _turnGate = new DualPartyTurnGate(TimeSpan.FromMilliseconds(80));
+        var staleMs = Math.Max(1000, _config.Audio.PostSpeechSilenceMs);
+        _turnGate = new DualPartyTurnGate(TimeSpan.FromMilliseconds(80), staleSpeech: TimeSpan.FromMilliseconds(staleMs));
+        _turnGate.StatusChanged += status => TurnStatusChanged?.Invoke(this, status);
         _turnGate.TurnReady += lines => SuperviseBackgroundTask(HandleTurnReadyAsync(lines));
     }
 
@@ -718,7 +738,11 @@ public sealed class BotRuntime : IAsyncDisposable
         }
         finally
         {
-            if (superseded) gate.Requeue(lines.Where(IsCurrentMatch));
+            if (superseded)
+            {
+                ReportTurnStatus("新输入使本轮回答失效，已重新排队");
+                gate.Requeue(lines.Where(IsCurrentMatch));
+            }
             _pendingTurnText = null;
             _pendingTurnLines = [];
             _stateTracker.SpeakingStopped();
@@ -736,6 +760,7 @@ public sealed class BotRuntime : IAsyncDisposable
         switch (reply.Kind)
         {
             case ReplyKind.Speak:
+                ReportTurnStatus("回答已生成，开始播放");
                 if (!string.IsNullOrWhiteSpace(userText))
                     _conversation.AddUserMessage(userText);
                 _conversation.AddAssistantMessage(reply.Spoken);
@@ -746,12 +771,13 @@ public sealed class BotRuntime : IAsyncDisposable
                 SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
                 break;
             case ReplyKind.InnerThought:
+                ReportTurnStatus("模型选择心里话，本轮不播放语音");
                 if (!string.IsNullOrWhiteSpace(userText))
                     _conversation.AddUserMessage(userText);
-                _conversation.AddAssistantMessage($"（{reply.Thought}）");
                 SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
                 break;
             case ReplyKind.Pass:
+                ReportTurnStatus("模型选择 PASS，本轮不回答");
                 if (!string.IsNullOrWhiteSpace(userText))
                     _conversation.AddUserMessage(userText, persistEligible: false);
                 break;
@@ -780,7 +806,6 @@ public sealed class BotRuntime : IAsyncDisposable
     private async Task ObserveMicSegmentAsync(SpeechSegment seg)
     {
         var gate = _turnGate;
-        using var recognition = gate?.BeginRecognition(loopback: false);
         var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
         AIVTuber.Core.Diagnostics.DebugLog.Write(
             $"[麦克风段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
@@ -789,11 +814,13 @@ public sealed class BotRuntime : IAsyncDisposable
         channel?.Writer.TryComplete();
         if (_micMuted || peak < MicAsrMinPeak)
         {
+            gate?.SetMicSpeaking(false);
             if (peak < MicAsrMinPeak)
                 AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风段] 能量过低(<{MicAsrMinPeak})，跳过ASR");
             return;
         }
 
+        using var recognition = gate?.BeginRecognition(loopback: false);
         _stateTracker.InputStarted(Environment.TickCount64);
         AsrResult result;
         if (_config.Asr.Streaming)
@@ -816,6 +843,7 @@ public sealed class BotRuntime : IAsyncDisposable
             if (result.Emotion is not null)
                 UserEmotionDetected?.Invoke(this, result.Emotion);
             UserTranscript?.Invoke(this, result.Text);
+            ReportTurnStatus("麦克风已识别，等待回合放行");
             gate?.AddLine(new TalkLine(TalkIdentity.Self, SelfDisplayName(), text, SelfUidOrNull(), StartedAt: seg.StartTime));
         }
     }
@@ -823,7 +851,6 @@ public sealed class BotRuntime : IAsyncDisposable
     private async Task ObserveLoopbackSegmentAsync(SpeechSegment seg)
     {
         var gate = _turnGate;
-        using var recognition = gate?.BeginRecognition(loopback: true);
         var opponent = Interlocked.Exchange(ref _capturedOpponent, null) ?? CaptureOpponent();
         var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
         AIVTuber.Core.Diagnostics.DebugLog.Write(
@@ -833,10 +860,12 @@ public sealed class BotRuntime : IAsyncDisposable
         channel?.Writer.TryComplete();
         if (peak < LoopbackAsrMinPeak)
         {
+            gate?.SetLoopbackSpeaking(false);
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
             return;
         }
 
+        using var recognition = gate?.BeginRecognition(loopback: true);
         AsrResult result;
         if (_config.Asr.Streaming)
         {
@@ -924,14 +953,18 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         _mic = new MicrophoneCapture(_config.Audio.InputDeviceIndex);
         _vad = new VadDetector(_config.Audio.VadAggressiveness, _config.Audio.PreSpeechPaddingMs, _config.Audio.PostSpeechSilenceMs);
-        _mic.AudioFrameAvailable += (_, buf) => { if (!_micMuted) _vad.Feed(buf); };
+        _mic.AudioFrameAvailable += (_, buf) =>
+        {
+            lock (_micInputSync) { if (!_micMuted) _vad.Feed(buf); }
+        };
         _mic.LevelUpdated += (_, level) => MicLevelUpdated?.Invoke(this, level);
         _mic.ErrorOccurred += (_, ex) => PipelineError?.Invoke(this, $"[麦克风] {ex.Message}");
 
         _vad.SpeechFrame += (_, frame) =>
         {
             if (_micMuted) return;
-            _turnGate?.SetMicSpeaking(true);
+            if (AIVTuber.Core.Diagnostics.DebugLog.PeakRms(frame) >= MicAsrMinPeak)
+                _turnGate?.SetMicSpeaking(true);
             if (!_config.Asr.Streaming) return;
             _micSpeechChannel ??= NewSpeechChannel();
             _micSpeechChannel.Writer.TryWrite(frame);
@@ -987,7 +1020,8 @@ public sealed class BotRuntime : IAsyncDisposable
                 {
                     if (_loopbackVadMuted) return;
                     _capturedOpponent ??= CaptureOpponent();
-                    _turnGate?.SetLoopbackSpeaking(true);
+                    if (AIVTuber.Core.Diagnostics.DebugLog.PeakRms(frame) >= LoopbackAsrMinPeak)
+                        _turnGate?.SetLoopbackSpeaking(true);
                     if (!_config.Asr.Streaming) return;
                     _loopbackSpeechChannel ??= NewSpeechChannel();
                     _loopbackSpeechChannel.Writer.TryWrite(frame);

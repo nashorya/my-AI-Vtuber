@@ -65,9 +65,19 @@ public class ReplyClassifierTests
     }
 
     [Fact]
-    public void SpeakMixedWithThought_IsInvalid()
+    public void SpeakMixedWithThought_KeepsSpoken()
     {
-        Assert.Equal(ReplyKind.Invalid, ReplyClassifier.Classify("等一下哈（这人好急）").Kind);
+        var r = ReplyClassifier.Classify("等一下哈（这人好急）");
+        Assert.Equal(ReplyKind.Speak, r.Kind);
+        Assert.Equal("等一下哈", r.Spoken);
+    }
+
+    [Fact]
+    public void ThoughtThenSpeak_KeepsSpoken()
+    {
+        var r = ReplyClassifier.Classify("（又叫我）谁叫我？我在听。");
+        Assert.Equal(ReplyKind.Speak, r.Kind);
+        Assert.Equal("谁叫我？我在听。", r.Spoken);
     }
 
     [Fact]

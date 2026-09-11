@@ -61,6 +61,33 @@ public sealed class BotOrchestratorReplyTests
         Assert.Equal(0, tts.CallCount);
     }
 
+    [Fact]
+    public async Task MixedThoughtAndSpeak_CallsTtsWithSpokenOnly()
+    {
+        var llm = new FixedLlm("（又叫我）谁叫我？我在听。");
+        var tts = new CountingTts();
+        using var player = new AudioPlayer();
+        using var orchestrator = new BotOrchestrator(
+            new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
+            async (chunks, ct) =>
+            {
+                await foreach (var _ in chunks.WithCancellation(ct)) { }
+            },
+            () => { },
+            triggerHotkeyAsync: null);
+        ClassifiedReply? committed = null;
+        var spoken = new List<string>();
+        orchestrator.OnReplyCommitted += (_, r) => committed = r;
+        orchestrator.OnSentenceReady += (_, s) => spoken.Add(s);
+
+        await orchestrator.ProcessTextAsync("使用者（纳什）：喂喂喂，大肥鱼", [], bypassWake: true);
+
+        Assert.Equal(ReplyKind.Speak, committed?.Kind);
+        Assert.Equal("谁叫我？我在听。", committed?.Spoken);
+        Assert.Equal(1, tts.CallCount);
+        Assert.Contains("谁叫我？我在听。", spoken);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
