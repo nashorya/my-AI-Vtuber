@@ -171,7 +171,7 @@ internal sealed class RequestCoordinator : IAsyncDisposable
             await foreach (var request in _channel.Reader.ReadAllAsync(_shutdown.Token).ConfigureAwait(false))
             {
                 CancellationTokenSource? requestCts = null;
-                Task executionTask;
+                Task<(bool Accepted, Exception? Error)> executionTask;
                 lock (_sync)
                 {
                     if (!ReferenceEquals(_pending, request) || !IsCurrent(request.Envelope.Generation))
@@ -188,7 +188,8 @@ internal sealed class RequestCoordinator : IAsyncDisposable
                     _activeTask = executionTask;
                 }
 
-                try { await executionTask.ConfigureAwait(false); }
+                (bool Accepted, Exception? Error) result;
+                try { result = await executionTask.ConfigureAwait(false); }
                 finally
                 {
                     lock (_sync)
@@ -197,32 +198,36 @@ internal sealed class RequestCoordinator : IAsyncDisposable
                     }
                     requestCts.Dispose();
                 }
+                // Publish completion only after the active task and its cleanup finish.
+                // Otherwise a caller can observe IsBusy or enqueue the next loopback turn
+                // in the gap between Completion.SetResult and ExecuteRequestAsync returning.
+                if (result.Error is { } error) request.Completion.TrySetException(error);
+                else request.Completion.TrySetResult(result.Accepted);
             }
         }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested) { }
     }
 
-    private async Task ExecuteRequestAsync(QueuedRequest request, CancellationToken cancellationToken)
+    private async Task<(bool Accepted, Exception? Error)> ExecuteRequestAsync(QueuedRequest request, CancellationToken cancellationToken)
     {
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!IsCurrent(request.Envelope.Generation))
             {
-                request.Completion.TrySetResult(false);
-                return;
+                return (false, null);
             }
 
             await request.Execute(request.Envelope, cancellationToken).ConfigureAwait(false);
-            request.Completion.TrySetResult(IsCurrent(request.Envelope.Generation));
+            return (IsCurrent(request.Envelope.Generation), null);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            request.Completion.TrySetResult(false);
+            return (false, null);
         }
         catch (Exception ex)
         {
-            request.Completion.TrySetException(ex);
+            return (false, ex);
         }
     }
 

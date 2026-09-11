@@ -543,7 +543,8 @@ public sealed class BotOrchestrator : IDisposable
         List<Message> history,
         string? wakeProbe = null,
         bool bypassWake = false,
-        Func<bool>? canCommit = null)
+        Func<bool>? canCommit = null,
+        bool requireStructuredReply = false)
     {
         if (string.IsNullOrWhiteSpace(text)) return Task.CompletedTask;
         return _coordinator.EnqueueAsync(InputSource.Danmaku, async (envelope, ct) =>
@@ -554,7 +555,7 @@ public sealed class BotOrchestrator : IDisposable
             {
                 if (!bypassWake && !AllowSpeak(wakeProbe ?? text)) return;
                 pipelineStarted = true;
-                await RunStreamingPipelineAsync(history, text, envelope, ct, canCommit).ConfigureAwait(false);
+                await RunStreamingPipelineAsync(history, text, envelope, ct, canCommit, requireStructuredReply).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             catch (Exception ex)
@@ -615,7 +616,8 @@ public sealed class BotOrchestrator : IDisposable
         string userInput,
         InputEnvelope envelope,
         CancellationToken ct,
-        Func<bool>? canCommit = null)
+        Func<bool>? canCommit = null,
+        bool requireStructuredReply = false)
     {
         AIVTuber.Core.Diagnostics.DebugLog.Write($"[LLM输入] {userInput}");
         _coordinator.SetHold(true);
@@ -640,7 +642,9 @@ public sealed class BotOrchestrator : IDisposable
                 }
 
                 if (!IsCurrent(envelope, ct)) return;
-                var classified = ReplyClassifier.Classify(rawAll.ToString());
+                var classified = requireStructuredReply
+                    ? ReplyClassifier.ClassifyStructured(rawAll.ToString())
+                    : ReplyClassifier.Classify(rawAll.ToString());
                 _deferLlmEvents = false;
                 if (canCommit is not null && !canCommit()) return;
                 if (classified.Kind == ReplyKind.Speak)

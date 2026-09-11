@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using System.Text.Json;
 using AIVTuber.Core.Pipeline;
 
 namespace AIVTuber.Core.Bot;
@@ -21,6 +22,50 @@ internal readonly record struct ClassifiedReply(
 /// </summary>
 internal static class ReplyClassifier
 {
+    private static readonly Regex PassOnlyRegex = new(
+        @"\A(?:pass|\[\s*pass\s*\]|【\s*pass\s*】)[.!。！\s]*\z",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    private static readonly Regex PassTagRegex = new(
+        @"\[\s*pass\s*\]|【\s*pass\s*】",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    public static ClassifiedReply ClassifyStructured(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return ClassifiedReply.Invalid;
+        var body = raw.Trim();
+        if (body.StartsWith("```json", StringComparison.OrdinalIgnoreCase) && body.EndsWith("```"))
+            body = body[7..^3].Trim();
+        else if (body.StartsWith("```") && body.EndsWith("```") && body.Length >= 6)
+            body = body[3..^3].Trim();
+
+        // Backwards compatibility only for silence. Unstructured prose must never
+        // bypass the explicit response decision, including malformed JSON fragments.
+        var silent = Classify(body);
+        if (silent.Kind is ReplyKind.Pass or ReplyKind.InnerThought)
+            return new ClassifiedReply(ReplyKind.Pass, "", "", []);
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return ClassifiedReply.Invalid;
+            var fields = root.EnumerateObject().ToArray();
+            if (fields.Length != 2 || fields.Count(p => p.Name == "respond") != 1 ||
+                fields.Count(p => p.Name == "speech") != 1 ||
+                !root.TryGetProperty("respond", out var respond) ||
+                respond.ValueKind is not (JsonValueKind.True or JsonValueKind.False) ||
+                !root.TryGetProperty("speech", out var speech) || speech.ValueKind != JsonValueKind.String)
+                return ClassifiedReply.Invalid;
+            if (!respond.GetBoolean())
+                return new ClassifiedReply(ReplyKind.Pass, "", "", []);
+            var spoken = Classify(speech.GetString());
+            if (spoken.Kind != ReplyKind.Speak) return spoken with { StagedControls = [] };
+            // Do not read a nested/misplaced envelope as dialogue.
+            if (spoken.Spoken.StartsWith('{') || spoken.Spoken.StartsWith('[') || spoken.Spoken.Contains("```"))
+                return ClassifiedReply.Invalid;
+            return spoken;
+        }
+        catch (JsonException) { return ClassifiedReply.Invalid; }
+    }
     private static readonly Regex ControlTagRegex = new(
         @"\[(?:emotion|action|pose):[^\]\r\n]+\]",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -46,10 +91,10 @@ internal static class ReplyClassifier
         if (body.Length == 0)
             return ClassifiedReply.Invalid;
 
-        if (body == "【PASS】")
+        if (PassOnlyRegex.IsMatch(body))
             return new ClassifiedReply(ReplyKind.Pass, "", "", controls);
 
-        if (body.Contains("【PASS】", StringComparison.Ordinal))
+        if (PassTagRegex.IsMatch(body))
             return ClassifiedReply.Invalid;
 
         if (body.StartsWith('（') && body.EndsWith('）'))
@@ -65,6 +110,8 @@ internal static class ReplyClassifier
 
         var spoken = SpeakStageRegex.Replace(spokenBody, "").Trim();
         spoken = LlmClient.StripPartialTags(spoken).Trim();
+        if (PassOnlyRegex.IsMatch(spoken))
+            return new ClassifiedReply(ReplyKind.Pass, "", "", []);
         if (!LlmClient.IsSpeakableText(spoken))
             return ClassifiedReply.Invalid;
 

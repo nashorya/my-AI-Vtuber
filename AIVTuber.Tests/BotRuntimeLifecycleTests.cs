@@ -11,12 +11,11 @@ public sealed class BotRuntimeLifecycleTests
     public async Task MutingDuringSpeech_ReleasesBufferedTurnWithoutMoreAudio()
     {
         await using var runtime = new BotRuntime(new AppConfig(), Path.GetTempPath());
-        using var gate = new DualPartyTurnGate(TimeSpan.FromMilliseconds(30));
+        using var gate = new ConversationTurnGate(TimeSpan.FromMilliseconds(30));
         typeof(BotRuntime).GetField("_turnGate", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(runtime, gate);
         var ready = new TaskCompletionSource<IReadOnlyList<TalkLine>>(TaskCreationOptions.RunContinuationsAsynchronously);
         gate.TurnReady += lines => ready.TrySetResult(lines);
-        gate.SetMicSpeaking(true);
         gate.AddLine(new(TalkIdentity.Self, "我", "上一句话", null));
         runtime.SetMicMuted(true);
         var turn = await ready.Task.WaitAsync(TimeSpan.FromSeconds(2));

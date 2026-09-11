@@ -93,9 +93,10 @@ public class ReplyClassifierTests
     }
 
     [Fact]
-    public void AsciiPassAlias_IsNotPass()
+    public void AsciiPassAlias_IsSilent()
     {
         var r = ReplyClassifier.Classify("[PASS]");
-        Assert.NotEqual(ReplyKind.Pass, r.Kind);
+        Assert.Equal(ReplyKind.Pass, r.Kind);
+        Assert.Empty(r.Spoken);
     }
 }

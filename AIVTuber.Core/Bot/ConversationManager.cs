@@ -70,6 +70,26 @@ public sealed class ConversationManager
         get { lock (_lock) return _transient.Count != 0; }
     }
 
+    // Observation is independent of reply success. Silent, failed and cancelled turns
+    // remain available as recent context without becoming persistent memory evidence.
+    internal Message ObserveUserMessage(string content)
+    {
+        lock (_lock)
+        {
+            var message = new Message { Role = MessageRole.User, Content = content };
+            _history.Add(message);
+            _transient.Add(message);
+            TrimHistory();
+            return message;
+        }
+    }
+
+    internal void MarkInputsPersistable(IEnumerable<Message> messages)
+    {
+        lock (_lock)
+            foreach (var message in messages) _transient.Remove(message);
+    }
+
     public List<Message> GetPersistableHistory()
     {
         lock (_lock) { return _history.Where(m => !_transient.Contains(m)).ToList(); }
