@@ -43,7 +43,7 @@ public sealed class VtsClient : IDisposable, IAvatarParameterBackend
     internal VtsClient(VtsConfig config, string tokenPath) { _config = config; _tokenPath = tokenPath; }
     private void SetState(string value) { State = value; OnStateChanged?.Invoke(this, value); }
 
-    public async Task ConnectAsync(CancellationToken ct = default)
+    public async Task ConnectAsync(CancellationToken ct = default, bool createLegacyMouth = true)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         await _connectLock.WaitAsync(ct).ConfigureAwait(false);
@@ -74,7 +74,7 @@ public sealed class VtsClient : IDisposable, IAvatarParameterBackend
                 finally { if (File.Exists(temp)) File.Delete(temp); }
             }
             _authenticated = true;
-            await CreateParameterAsync(MouthParameterId, 0, 1, 0, ct).ConfigureAwait(false);
+            if (createLegacyMouth) await CreateParameterAsync(MouthParameterId, 0, 1, 0, ct).ConfigureAwait(false);
             SetState("已连接");
             OnConnected?.Invoke(this, EventArgs.Empty);
         }

@@ -596,6 +596,14 @@
     document.querySelectorAll("[data-vts-operation]").forEach(el => {
       el.disabled = !!data.busy && el.dataset.vtsOperation !== "stop";
     });
+    const builtIn = data.useBuiltInTracking !== false;
+    $("continuousAdvanced").hidden = builtIn;
+    $("trackingCapabilities").hidden = !builtIn;
+    $("trackingHint").hidden = !builtIn;
+    const channels = (data.trackingChannels || []).filter(c => c.available);
+    $("trackingCapabilities").textContent = channels.length
+      ? "可发送：" + channels.map(c => c.label).join("、") + "。输入存在不等于模型已映射；眉高可能联动，身体跟随、呼吸和物理沿用模型设置。"
+      : "连接后读取内置面捕输入。";
     const shape = JSON.stringify([data.profile, data.model?.revision, data.model?.inputs]);
     if (shape === lastContinuousShape) return;
     lastContinuousShape = shape;

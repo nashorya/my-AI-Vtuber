@@ -752,9 +752,11 @@ public sealed partial class ConfigViewModel : INotifyPropertyChanged
 
         if (data.TryGetProperty("vts", out var vts) && vts.ValueKind == JsonValueKind.Object)
         {
-            if (vts.TryGetProperty("continuousControl", out var continuous) && continuous.ValueKind == JsonValueKind.Object &&
-                continuous.TryGetProperty("enabled", out var enabled) && enabled.ValueKind is JsonValueKind.True or JsonValueKind.False)
-                Working.Vts.ContinuousControl.Enabled = enabled.GetBoolean();
+            if (vts.TryGetProperty("continuousControl", out var continuous) && continuous.ValueKind == JsonValueKind.Object)
+            {
+                if (TryBool(continuous, "enabled", out var enabled)) Working.Vts.ContinuousControl.Enabled = enabled;
+                if (TryBool(continuous, "useBuiltInTracking", out var builtIn)) Working.Vts.ContinuousControl.UseBuiltInTracking = builtIn;
+            }
             if (TryString(vts, "host", out var h)) Working.Vts.Host = h;
             if (TryInt(vts, "port", out var port)) Working.Vts.Port = port;
             if (TryDouble(vts, "mouthScale", out var ms)) Working.Vts.MouthScale = (float)ms;

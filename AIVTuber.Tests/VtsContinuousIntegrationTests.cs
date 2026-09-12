@@ -22,6 +22,8 @@ internal sealed class FakeVts : IAsyncDisposable
     private WebSocket? _active;
     public ConcurrentQueue<JsonElement> Requests { get; } = new();
     public string ModelId = "11111111111111111111111111111111";
+    public VtsParameter[] DefaultInputs = [];
+    public bool ModelLoaded = true;
     public bool DenyToken;
     public string? FailType, IgnoreType;
     public bool BigModelName, NoExpressionEvents, ActiveExpression;
@@ -86,9 +88,9 @@ internal sealed class FakeVts : IAsyncDisposable
                     {
                         "AuthenticationTokenRequest" => new { authenticationToken = "test-token" },
                         "AuthenticationRequest" => new { authenticated = true },
-                        "CurrentModelRequest" => new { modelLoaded = true, modelID = ModelId, modelName = BigModelName ? new string('鲸', 10000) : "Sample" },
+                        "CurrentModelRequest" => new { modelLoaded = ModelLoaded, modelID = ModelId, modelName = BigModelName ? new string('鲸', 10000) : "Sample" },
                         "Live2DParameterListRequest" => new { modelID = ModelId, parameters = new[] { new { name = "ParamAngleZ", min = -30, max = 30, defaultValue = 0, value = _inputs.GetValueOrDefault("AIVTuberHeadRoll") } } },
-                        "InputParameterListRequest" => new { defaultParameters = Array.Empty<object>(), customParameters = _inputs.Keys.Select(name => new { name }).ToArray() },
+                        "InputParameterListRequest" => new { modelID = ModelId, defaultParameters = DefaultInputs.Select(p => new { name = p.Id, min = p.Min, max = p.Max, defaultValue = p.Default, value = p.Value }).ToArray(), customParameters = _inputs.Keys.Select(name => new { name }).ToArray() },
                         "ExpressionStateRequest" => new { expressions = ActiveExpression ? new object[] { new { active = true } } : Array.Empty<object>() },
                         "HotkeysInCurrentModelRequest" => new { availableHotkeys = Array.Empty<object>() },
                         _ => new { }
@@ -187,7 +189,7 @@ public sealed class VtsContinuousIntegrationTests : IDisposable
     {
         await using var server = new FakeVts();
         using var client = new VtsClient(server.Config, Token);
-        var config = new ContinuousControlConfig { Enabled = true };
+        var config = new ContinuousControlConfig { Enabled = true, UseBuiltInTracking = false };
         await using var session = new VtsContinuousSession(client, config);
         await session.ConnectAsync();
         var profile = session.CreateDraft(config);
@@ -220,7 +222,7 @@ public sealed class VtsContinuousIntegrationTests : IDisposable
     {
         await using var server = new FakeVts();
         using var client = new VtsClient(server.Config, Token);
-        var config = new ContinuousControlConfig { Enabled = true };
+        var config = new ContinuousControlConfig { Enabled = true, UseBuiltInTracking = false };
         await using var session = new VtsContinuousSession(client, config);
         await session.ConnectAsync();
         var profile = session.CreateDraft(config);
@@ -243,7 +245,7 @@ public sealed class VtsContinuousIntegrationTests : IDisposable
     {
         await using var server = new FakeVts { NoExpressionEvents = true };
         using var client = new VtsClient(server.Config, Token);
-        var config = new ContinuousControlConfig { Enabled = true };
+        var config = new ContinuousControlConfig { Enabled = true, UseBuiltInTracking = false };
         await using var session = new VtsContinuousSession(client, config);
         await session.ConnectAsync();
         var profile = session.CreateDraft(config);
@@ -261,7 +263,7 @@ public sealed class VtsContinuousIntegrationTests : IDisposable
     {
         await using var server = new FakeVts();
         using var client = new VtsClient(server.Config, Token);
-        var config = new ContinuousControlConfig { Enabled = true };
+        var config = new ContinuousControlConfig { Enabled = true, UseBuiltInTracking = false };
         await using var session = new VtsContinuousSession(client, config);
         await session.ConnectAsync();
         var profile = session.CreateDraft(config);
@@ -311,7 +313,7 @@ public sealed class VtsContinuousIntegrationTests : IDisposable
     {
         await using var server = new FakeVts();
         using var client = new VtsClient(server.Config, Token);
-        var config = new ContinuousControlConfig { Enabled = true };
+        var config = new ContinuousControlConfig { Enabled = true, UseBuiltInTracking = false };
         await using var session = new VtsContinuousSession(client, config);
         await session.ConnectAsync();
         var profile = session.CreateDraft(config);

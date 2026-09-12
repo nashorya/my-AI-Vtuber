@@ -41,6 +41,8 @@ public sealed partial class ConfigViewModel
         {
             status = session?.Status ?? "请在 config.json 将 avatar.backend 设为 vts 或 both，再重启应用",
             busy = _continuousBusy,
+            useBuiltInTracking = Working.Vts.ContinuousControl.UseBuiltInTracking,
+            trackingChannels = model is null ? [] : VtsTrackingBackend.Describe(model.DefaultInputs),
             model,
             profile = model is null ? null : Working.Vts.ContinuousControl.Profiles.GetValueOrDefault(model.Id),
             descriptors = AvatarChannels.All
@@ -59,7 +61,7 @@ public sealed partial class ConfigViewModel
             if (operation is "connect" or "refresh")
             {
                 await session.RefreshAsync();
-                if (session.Model is not null)
+                if (session.Model is not null && !Working.Vts.ContinuousControl.UseBuiltInTracking)
                 {
                     var draft = session.CreateDraft(Working.Vts.ContinuousControl);
                     Working.Vts.ContinuousControl.Profiles[draft.ModelId] = draft;
@@ -68,6 +70,8 @@ public sealed partial class ConfigViewModel
                 return;
             }
             if (operation == "resume") { await session.ResumeAsync(); return; }
+            if (Working.Vts.ContinuousControl.UseBuiltInTracking)
+                throw new InvalidOperationException("内置面捕模式无需创建或校准映射；高级操作请切换模式并保存");
             if (session.Model is not { } model || !Working.Vts.ContinuousControl.Profiles.TryGetValue(model.Id, out var profile))
                 throw new InvalidOperationException("请先刷新通道");
             if (profile.Revision != model.Revision) throw new InvalidOperationException("映射已失效，请刷新通道后重新试动");

@@ -6,6 +6,7 @@ namespace AIVTuber.Core.Avatar;
 public sealed class ContinuousControlConfig
 {
     public bool Enabled { get; set; }
+    public bool UseBuiltInTracking { get; set; } = true;
     public Dictionary<string, AvatarModelProfile> Profiles { get; set; } = new();
     public ContinuousControlConfig Snapshot() => JsonSerializer.Deserialize<ContinuousControlConfig>(JsonSerializer.Serialize(this))!;
 }
@@ -88,7 +89,7 @@ public static class AvatarReplyProtocol
             foreach (var property in avatar.GetProperty("targets").EnumerateObject())
             {
                 var channel = AvatarChannels.All.FirstOrDefault(c => c.Name == property.Name && c.AiControlled);
-                if (channel is null || !allowed.Contains(channel.Name)) throw new FormatException("通道未验证或不允许 AI 控制");
+                if (channel is null || !allowed.Contains(channel.Name)) throw new FormatException("通道不可用或不允许 AI 控制");
                 var value = property.Value.GetSingle();
                 if (!float.IsFinite(value) || value < (channel.Unipolar ? 0 : -1) || value > 1)
                     throw new FormatException("目标值超出通道范围");
@@ -121,7 +122,7 @@ public static class AvatarReplyProtocol
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
         return "\n连续控制实验协议优先于正文输出格式：整次回复只输出一个 JSON 对象，不要代码块。格式 " + example + "。" +
             "reply 内遵守原人设、字数、情绪标签和静默规则。avatar 可省略；PASS 不附动作。" +
-            "每轮最多一个目标姿态，动作克制；不必每次变化。仅使用以下已验证通道：" +
+            "每轮最多一个目标姿态，动作克制；不必每次变化。仅使用以下可用语义通道（实际表现取决于当前模型映射）：" +
             (channels.Length == 0 ? "无，请省略 avatar" : string.Join("；", descriptions)) + "。" +
             "transitionMs 为 100~2000，holdMs 为 0~5000。缺省 400/1500。不要输出参数 ID 或文件名。";
     }

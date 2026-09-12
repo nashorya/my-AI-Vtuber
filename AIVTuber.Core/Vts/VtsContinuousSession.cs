@@ -6,7 +6,10 @@ namespace AIVTuber.Core.Vts;
 
 public sealed record VtsParameter(string Id, float Min, float Max, float Default, float Value);
 public sealed record VtsModelSnapshot(string Id, string Name, string Revision,
-    IReadOnlyList<VtsParameter> Parameters, IReadOnlySet<string> Inputs, bool HasActiveExpressions);
+    IReadOnlyList<VtsParameter> Parameters, IReadOnlySet<string> Inputs, bool HasActiveExpressions)
+{
+    public IReadOnlyList<VtsParameter> DefaultInputs { get; init; } = [];
+}
 
 /// <summary>Model discovery, verification and manual takeover. No UI or audio dependency.</summary>
 public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
@@ -160,7 +163,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
     public async Task ConnectAsync(CancellationToken ct = default)
     {
         await StopAsync(false).ConfigureAwait(false);
-        await _client.ConnectAsync(ct).ConfigureAwait(false);
+        await _client.ConnectAsync(ct, createLegacyMouth: !_config.Enabled || !_config.UseBuiltInTracking).ConfigureAwait(false);
         foreach (var eventName in new[] { "ModelLoadedEvent", "ModelConfigChangedEvent", "HotkeyTriggeredEvent" })
             await _client.SubscribeAsync(eventName, ct).ConfigureAwait(false);
         try { await _client.SubscribeAsync("ExpressionToggledEvent", ct).ConfigureAwait(false); _pollExpressions = false; }
@@ -195,8 +198,9 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
         var revision = _revision;
         var current = await _client.QueryAsync("CurrentModelRequest", ct).ConfigureAwait(false);
         if (!current.GetProperty("modelLoaded").GetBoolean())
-        { Volatile.Write(ref _model, null); SetStatus("VTS 未加载模型"); return null; }
+        { await StopAsync(false).ConfigureAwait(false); Volatile.Write(ref _model, null); SetStatus("VTS 未加载模型"); return null; }
         var id = current.GetProperty("modelID").GetString()!;
+        if (Model is { } previous && previous.Id != id) await StopAsync(false).ConfigureAwait(false);
         var parameters = await _client.QueryAsync("Live2DParameterListRequest", ct).ConfigureAwait(false);
         var inputs = await _client.QueryAsync("InputParameterListRequest", ct).ConfigureAwait(false);
         var expressions = await _client.QueryAsync("ExpressionStateRequest", ct).ConfigureAwait(false);
@@ -204,6 +208,15 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
         var list = parameters.GetProperty("parameters").EnumerateArray().Select(p => new VtsParameter(
             p.GetProperty("name").GetString()!, p.GetProperty("min").GetSingle(), p.GetProperty("max").GetSingle(),
             p.GetProperty("defaultValue").GetSingle(), p.GetProperty("value").GetSingle())).ToArray();
+        if (inputs.TryGetProperty("modelID", out var inputModel) && inputModel.GetString() != id)
+            throw new InvalidOperationException("查询输入时模型已切换，请刷新");
+        var defaultInputs = new List<VtsParameter>();
+        if (inputs.TryGetProperty("defaultParameters", out var defaults))
+            foreach (var p in defaults.EnumerateArray())
+                if (p.TryGetProperty("min", out var min) && min.TryGetSingle(out var lo) &&
+                    p.TryGetProperty("max", out var max) && max.TryGetSingle(out var hi) &&
+                    p.TryGetProperty("defaultValue", out var def) && def.TryGetSingle(out var rest))
+                    defaultInputs.Add(new(p.GetProperty("name").GetString()!, lo, hi, rest, rest));
         var inputNames = new HashSet<string>();
         foreach (var group in new[] { "defaultParameters", "customParameters" })
             if (inputs.TryGetProperty(group, out var array))
@@ -213,9 +226,11 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
         if (revision != _revision) throw new InvalidOperationException("查询期间模型配置已变化，请刷新");
         if (!_receivedModelEvent && Model is null && _config.Profiles.TryGetValue(id, out var saved) && !string.IsNullOrEmpty(saved.Revision))
             _revision = saved.Revision;
-        var model = new VtsModelSnapshot(id, current.GetProperty("modelName").GetString()!, _revision, list, inputNames, active);
+        var model = new VtsModelSnapshot(id, current.GetProperty("modelName").GetString()!, _revision, list, inputNames, active) { DefaultInputs = defaultInputs };
         Volatile.Write(ref _model, model);
-        SetStatus($"模型：{model.Name}；{list.Length} 个参数；请配置并验证映射");
+        SetStatus(_config.UseBuiltInTracking
+            ? $"模型：{model.Name}；内置面捕输入已读取，效果取决于模型已有映射；保存启用或点击恢复控制"
+            : $"模型：{model.Name}；{list.Length} 个参数；请配置并验证映射");
         return model;
     }
     public AvatarModelProfile CreateDraft(ContinuousControlConfig config)
@@ -321,12 +336,25 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
         {
             if (epoch != Interlocked.Read(ref _controlEpoch)) return;
             await StopCoreAsync(true).ConfigureAwait(false);
+            var restoreLegacyMouth = _config.Enabled && _config.UseBuiltInTracking && !config.Enabled;
             _config = config.Snapshot();
+            if (restoreLegacyMouth && _client.IsConnected)
+                await _client.CreateParameterAsync(VtsClient.MouthParameterId, 0, 1, 0, ct).ConfigureAwait(false);
             if (!_config.Enabled) { SetStatus("实验未启用"); return; }
             if (Model is not { } model || !_client.IsConnected) { SetStatus("未连接模型"); return; }
+            if (model.HasActiveExpressions) { SetStatus("存在活动表情，请在 VTS 清除后刷新并恢复"); return; }
+            if (_config.UseBuiltInTracking)
+            {
+                var backend = new VtsTrackingBackend(_client, model.DefaultInputs);
+                var trackingBindings = backend.CreateBindings();
+                if (trackingBindings.Length == 0) { SetStatus("没有可用的标准面捕输入，请检查 VTS 版本或使用高级映射"); return; }
+                if (epoch != Interlocked.Read(ref _controlEpoch)) return;
+                StartDirector(backend, trackingBindings);
+                SetStatus($"内置面捕控制运行中：{model.Name}，{trackingBindings.Length} 个输入通道；复用已有映射，未验证视觉效果");
+                return;
+            }
             if (!_config.Profiles.TryGetValue(model.Id, out var profile) || profile.Revision != model.Revision)
             { SetStatus("模型尚未验证；请刷新、试动后保存"); return; }
-            if (model.HasActiveExpressions) { SetStatus("存在活动表情，请在 VTS 清除后刷新并恢复"); return; }
             var bindings = profile.Channels.Where(b => b.Verified && b.IsValid && model.Inputs.Contains(b.InputId) &&
                 model.Parameters.Any(p => p.Id == b.ParameterId && b.Minimum >= p.Min && b.Maximum <= p.Max)).ToArray();
             if (bindings.Length == 0) { SetStatus("没有已验证且可用的通道"); return; }
@@ -339,15 +367,20 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
                 await _client.CreateParameterAsync(binding.InputId, binding.Minimum, binding.Maximum, binding.Neutral, ct).ConfigureAwait(false);
             ValidateModel(profile);
             if (epoch != Interlocked.Read(ref _controlEpoch)) return;
-            Volatile.Write(ref _allowedChannels, bindings.Where(b => AvatarChannels.All.Any(c => c.Name == b.Channel && c.AiControlled)).Select(b => b.Channel).ToArray());
-            _director = new AvatarMotionDirector(_client, bindings);
-            _director.Faulted += (_, error) => { _paused = true; SetStatus("控制暂停：" + error); };
-            _paused = false;
-            _director.Start();
+            StartDirector(_client, bindings);
             SetStatus($"连续控制运行中：{model.Name}，{bindings.Length} 个通道");
         }
         finally { _gate.Release(); }
     }
+    private void StartDirector(IAvatarParameterBackend backend, AvatarChannelBinding[] bindings)
+    {
+        Volatile.Write(ref _allowedChannels, bindings.Where(b => AvatarChannels.All.Any(c => c.Name == b.Channel && c.AiControlled)).Select(b => b.Channel).ToArray());
+        _director = new AvatarMotionDirector(backend, bindings);
+        _director.Faulted += (_, error) => { _paused = true; SetStatus("控制暂停：" + error); };
+        _paused = false;
+        _director.Start();
+    }
+
     public async Task ResumeAsync(CancellationToken ct = default)
     {
         await RefreshAsync(ct).ConfigureAwait(false);
