@@ -531,6 +531,12 @@ public sealed class BotRuntime : IAsyncDisposable
         if (asr.Provider.ToLowerInvariant() is "local")
             return new LocalAsrClient(asr.LocalAsrUrl);
 
+        if (asr.Provider.ToLowerInvariant() is "minimax")
+        {
+            asr.ActivateStoredKey();
+            return new MiniMaxAsrClient(asr.ApiKey, asr.Model);
+        }
+
         if (asr.Provider.ToLowerInvariant() is "aliyun" or "dashscope")
         {
             // Qwen-ASR uses a different WebSocket protocol (OpenAI Realtime-style) at /realtime

@@ -70,7 +70,7 @@
                     <TextBlock Text="LLM 模型" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Llm.Model, UpdateSourceTrigger=PropertyChanged}" />
                     <TextBlock Text="LLM API Key（留空不修改）" Style="{StaticResource FieldLabel}" /><ui:PasswordBox x:Name="LlmKey" />
                     <TextBlock Text="人设提示词" Style="{StaticResource FieldLabel}" /><ui:TextBox Text="{Binding Working.Llm.SystemPrompt, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="96" />
-                    <TextBlock Text="ASR 提供商" Style="{StaticResource FieldLabel}" /><ComboBox SelectedValue="{Binding Working.Asr.Provider}" SelectedValuePath="Content"><ComboBoxItem Content="aliyun"/><ComboBoxItem Content="local"/></ComboBox>
+                    <TextBlock Text="ASR 提供商" Style="{StaticResource FieldLabel}" /><ComboBox SelectedValue="{Binding Working.Asr.Provider}" SelectedValuePath="Content"><ComboBoxItem Content="aliyun"/><ComboBoxItem Content="local"/><ComboBoxItem Content="minimax"/></ComboBox>
                     <TextBlock Text="ASR API Key（local 可留空）" Style="{StaticResource FieldLabel}" /><ui:PasswordBox x:Name="AsrKey" />
                     <TextBlock Text="ASR 模型" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Asr.Model, UpdateSourceTrigger=PropertyChanged}" />
                     <TextBlock Text="本地 ASR 服务地址" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Asr.LocalAsrUrl, UpdateSourceTrigger=PropertyChanged}" />
