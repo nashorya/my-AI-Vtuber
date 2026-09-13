@@ -42,6 +42,7 @@
     "host": "localhost",
     "port": 8001,
     "mouth_scale": 1.5,
+    "continuous_control": { "enabled": false, "profiles": {} },
     "emotion_map": {
       "happy": "<hotkey_id>",
       "sad": "<hotkey_id>",

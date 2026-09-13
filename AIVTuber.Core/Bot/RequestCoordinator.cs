@@ -195,6 +195,7 @@ internal sealed class RequestCoordinator : IAsyncDisposable
                     lock (_sync)
                     {
                         if (ReferenceEquals(_activeCts, requestCts)) _activeCts = null;
+                        _activeTask = Task.CompletedTask;
                     }
                     requestCts.Dispose();
                 }

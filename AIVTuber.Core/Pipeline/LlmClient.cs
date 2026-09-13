@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using AIVTuber.Core.Avatar;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -11,13 +12,15 @@ namespace AIVTuber.Core.Pipeline;
 /// LLM client compatible with OpenAI Chat Completions API format.
 /// Supports streaming output with sentence boundary detection and emotion tag parsing.
 /// </summary>
-public sealed class LlmClient : ILlmClient, IDisposable
+public sealed class LlmClient : ILlmClient, IDisposable, IAvatarReplySource
 {
     private readonly HttpClient _httpClient;
     private readonly string _baseUrl;
     private readonly string _apiKey;
     private readonly string _model;
     private readonly string _systemPrompt;
+    private readonly Func<string[]>? _avatarChannels;
+    public event EventHandler<AvatarReplyPlan>? OnAvatarPlanReady;
 
     private static readonly Regex SentenceBoundaryRegex = new(@"[。！？；，,.!?;\n]", RegexOptions.Compiled);
     private static readonly Regex EmotionTagRegex = new(@"\[emotion:([^\]\r\n]+)\]", RegexOptions.Compiled);
@@ -35,16 +38,24 @@ public sealed class LlmClient : ILlmClient, IDisposable
     public event EventHandler<string>? OnActionDetected;
     public event EventHandler<string>? OnPoseDetected;
 
-    public LlmClient(string baseUrl, string apiKey, string model, string systemPrompt)
+    public LlmClient(string baseUrl, string apiKey, string model, string systemPrompt, Func<string[]>? avatarChannels = null)
     {
         _baseUrl = baseUrl.TrimEnd('/');
         _apiKey = apiKey;
         _model = model.Trim();
         _systemPrompt = systemPrompt;
+        _avatarChannels = avatarChannels;
         _httpClient = new HttpClient(LlmTransport.CreateHandler(baseUrl))
         {
             Timeout = TimeSpan.FromMinutes(5),
         };
+    }
+
+    internal LlmClient(string systemPrompt, Func<string[]>? avatarChannels, HttpMessageHandler handler)
+        : this("https://example.test/v1", "test", "test", systemPrompt, avatarChannels)
+    {
+        _httpClient.Dispose();
+        _httpClient = new HttpClient(handler);
     }
 
     public async IAsyncEnumerable<string> StreamAsync(
@@ -52,7 +63,10 @@ public sealed class LlmClient : ILlmClient, IDisposable
         string userInput,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        var allowedChannels = _avatarChannels?.Invoke();
         var messages = BuildMessages(history, userInput);
+        if (allowedChannels is not null)
+            messages.Insert(1, new { role = "system", content = AvatarReplyProtocol.Prompt(allowedChannels) });
 
         // Safety cap only — brevity is enforced by the system prompt ("一句顶十句别啰嗦").
         // Must stay wide enough that a normal short reply finishes naturally (EOS) WITH its
@@ -64,7 +78,7 @@ public sealed class LlmClient : ILlmClient, IDisposable
                 model = _model,
                 messages,
                 stream = true,
-                max_tokens = 256,
+                max_tokens = allowedChannels is null ? 256 : 512,
                 // DeepSeek V4 enables thinking by default (effort=high). CoT arrives as
                 // delta.reasoning_content, which this client ignores; with max_tokens=256 the
                 // budget is often spent entirely on thinking so content never appears → no TTS.
@@ -75,7 +89,7 @@ public sealed class LlmClient : ILlmClient, IDisposable
                 model = _model,
                 messages,
                 stream = true,
-                max_tokens = 256,
+                max_tokens = allowedChannels is null ? 256 : 512,
             };
 
         var json = JsonSerializer.Serialize(requestBody, JsonOptions);
@@ -101,7 +115,8 @@ public sealed class LlmClient : ILlmClient, IDisposable
         while (!cancellationToken.IsCancellationRequested)
         {
             var line = await reader.ReadLineAsync(cancellationToken);
-            if (string.IsNullOrEmpty(line)) continue;
+            if (line is null) break;
+            if (line.Length == 0) continue;
             if (!line.StartsWith("data: ")) continue;
 
             var data = line[6..];
@@ -122,12 +137,27 @@ public sealed class LlmClient : ILlmClient, IDisposable
             var delta = chunk.Choices[0].Delta;
             if (delta?.Content is null) continue;
 
+            if (allowedChannels is not null)
+            {
+                buffer.Append(delta.Content);
+                if (buffer.Length > 32768) throw new JsonException("连续控制回复过长");
+                continue;
+            }
             var token = controlTags.Consume(delta.Content);
             if (token.Length == 0) continue;
             buffer.Append(token);
             yield return token;
         }
 
+        if (allowedChannels is not null)
+        {
+            var plan = AvatarReplyProtocol.Parse(buffer.ToString(), allowedChannels);
+            OnAvatarPlanReady?.Invoke(this, plan);
+            buffer.Clear();
+            buffer.Append(controlTags.Consume(plan.Reply));
+            buffer.Append(controlTags.Complete());
+            yield return buffer.ToString();
+        }
         var parserRemainder = controlTags.Complete();
         if (parserRemainder.Length > 0)
         {

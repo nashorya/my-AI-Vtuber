@@ -55,7 +55,7 @@
       <_GoExe Condition="Exists('C:\Program Files\Go\bin\go.exe')">C:\Program Files\Go\bin\go.exe</_GoExe>
       <_GoExe Condition="'$(_GoExe)' == ''">go</_GoExe>
     </PropertyGroup>
-    <Exec Command="set GOPROXY=https://goproxy.cn,direct&amp;&amp; set GOSUMDB=off&amp;&amp; &quot;$(_GoExe)&quot; build -ldflags &quot;-s -w&quot; -o danmaku_bridge.exe ."
+    <Exec Command="set GOPROXY=https://goproxy.cn,direct&amp;&amp; set GOSUMDB=sum.golang.org&amp;&amp; &quot;$(_GoExe)&quot; build -ldflags &quot;-s -w&quot; -o danmaku_bridge.exe ."
           WorkingDirectory="$(MSBuildThisFileDirectory)..\danmaku-bridge"
           IgnoreExitCode="true"
           Condition="Exists('$(MSBuildThisFileDirectory)..\danmaku-bridge\go.mod')" />
