@@ -11,7 +11,7 @@ public sealed record VtsModelSnapshot(string Id, string Name, string Revision,
     public IReadOnlyList<VtsParameter> DefaultInputs { get; init; } = [];
 }
 
-/// <summary>Model discovery, verification and manual takeover. No UI or audio dependency.</summary>
+/// <summary>Model discovery, verification and continuous ownership. No UI or audio dependency.</summary>
 public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
 {
     private readonly VtsClient _client;
@@ -25,8 +25,6 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _trials = new();
     private CancellationTokenSource? _previewCancellation;
     private int _refreshing, _reconnecting;
-    private Task? _expressionMonitor;
-    private bool _pollExpressions;
     private string[] _allowedChannels = [];
     private long _canceledThrough;
     private long _controlEpoch, _turnEpoch, _turnGeneration;
@@ -78,7 +76,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
         var filtered = intent.Targets.Where(p => allowed.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value);
         if (filtered.Count == 0) return;
         director?.Submit(generation, intent with { Targets = filtered });
-        DebugLog.Write($"[Avatar/VTS] generation={generation} model={Model?.Id} targets={string.Join(',', filtered.Keys)} accepted");
+        DebugLog.Write($"[Avatar/VTS] generation={generation} model={Model?.Id} targets={string.Join(',', filtered.Select(p => p.Key + "=" + p.Value.ToString("0.##")))} accepted");
     }
     public void Cancel(long generation)
     {
@@ -107,19 +105,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
             _revision = Guid.NewGuid().ToString("N");
             Supervise(RefreshAfterEventAsync());
         }
-        else if (response.MessageType is "HotkeyTriggeredEvent" or "ExpressionToggledEvent")
-        {
-            if (response.Data is { } payload && payload.TryGetProperty("isLive2DItem", out var item) && item.GetBoolean()) return;
-            if (response.Data is { } body && body.TryGetProperty("justLoaded", out var loaded) && loaded.GetBoolean()) return;
-            // Never overwrite a human's expression with a neutral frame.
-            InvalidateControl();
-            Supervise(PauseFromEventAsync());
-        }
-    }
-    private async Task PauseFromEventAsync()
-    {
-        try { await StopAsync(false).ConfigureAwait(false); SetStatus("人工操作已暂停 AI，请检查表情/动画后手动恢复"); }
-        catch (Exception ex) { if (!_disposed) SetStatus(ex.Message); }
+        // Hotkeys and expressions stay under AI while this session owns the model.
     }
     private async Task RefreshAfterEventAsync()
     {
@@ -132,6 +118,8 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
                 revision = _revision;
                 await StopAsync(false).ConfigureAwait(false);
                 await RefreshAsync(_life.Token).ConfigureAwait(false);
+                if (_config.Enabled && _config.UseBuiltInTracking && !_disposed)
+                    await ApplyAsync(_config, _life.Token).ConfigureAwait(false);
             } while (revision != _revision && !_disposed);
         }
         catch (Exception ex) { if (!_disposed) SetStatus("模型刷新失败：" + ex.Message); }
@@ -164,34 +152,12 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
     {
         await StopAsync(false).ConfigureAwait(false);
         await _client.ConnectAsync(ct, createLegacyMouth: !_config.Enabled || !_config.UseBuiltInTracking).ConfigureAwait(false);
-        foreach (var eventName in new[] { "ModelLoadedEvent", "ModelConfigChangedEvent", "HotkeyTriggeredEvent" })
+        foreach (var eventName in new[] { "ModelLoadedEvent", "ModelConfigChangedEvent" })
             await _client.SubscribeAsync(eventName, ct).ConfigureAwait(false);
-        try { await _client.SubscribeAsync("ExpressionToggledEvent", ct).ConfigureAwait(false); _pollExpressions = false; }
-        catch (VtsApiException ex) when (ex.ErrorId == 950) { _pollExpressions = true; }
-        _expressionMonitor ??= MonitorExpressionsAsync();
         await RefreshAsync(ct).ConfigureAwait(false);
         // Reconnect only restores idle, never a previous utterance. Previously verified mappings
         // are checked again against actual output ranges; manual config events invalidate Revision.
         await ApplyAsync(_config, ct).ConfigureAwait(false);
-    }
-    private async Task MonitorExpressionsAsync()
-    {
-        try
-        {
-            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(500));
-            while (await timer.WaitForNextTickAsync(_life.Token).ConfigureAwait(false))
-            {
-                if (!_pollExpressions || !_client.IsConnected || _paused) continue;
-                try
-                {
-                    var state = await _client.QueryAsync("ExpressionStateRequest", _life.Token).ConfigureAwait(false);
-                    if (state.TryGetProperty("expressions", out var list) && list.EnumerateArray().Any(p => p.GetProperty("active").GetBoolean()))
-                        await PauseFromEventAsync().ConfigureAwait(false);
-                }
-                catch (Exception) when (!_life.IsCancellationRequested) { /* socket recovery owns errors */ }
-            }
-        }
-        catch (OperationCanceledException) when (_life.IsCancellationRequested) { }
     }
     public async Task<VtsModelSnapshot?> RefreshAsync(CancellationToken ct = default)
     {
@@ -295,7 +261,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
                 throw new InvalidOperationException("试动幅度无效");
             if (!Model.Inputs.Contains(binding.InputId)) throw new InvalidOperationException("请先创建输入并在 VTS 配置映射");
             if (Model.HasActiveExpressions) throw new InvalidOperationException("请先在 VTS 清除活动表情再试动");
-            if (epoch != Interlocked.Read(ref _controlEpoch)) throw new OperationCanceledException("试动已被停止或人工操作取消");
+            if (epoch != Interlocked.Read(ref _controlEpoch)) throw new OperationCanceledException("试动已被停止");
             _previewCancellation = previewCancellation;
             _director = test;
             test.Submit(0, new(new Dictionary<string, float> { [binding.Channel] = value }, 400, 1000));
@@ -306,7 +272,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
         {
             await Task.Delay(1500, previewCancellation.Token).ConfigureAwait(false);
             ValidateModel(profile);
-            if (epoch != Interlocked.Read(ref _controlEpoch)) throw new OperationCanceledException("试动已被停止或人工操作取消");
+            if (epoch != Interlocked.Read(ref _controlEpoch)) throw new OperationCanceledException("试动已被停止");
             if (test.SentFrames == 0) throw new IOException("试动没有获得 VTS 注入响应");
             var actual = await _client.QueryAsync("Live2DParameterListRequest", previewCancellation.Token).ConfigureAwait(false);
             if (actual.GetProperty("modelID").GetString() != profile.ModelId) throw new InvalidOperationException("试动期间模型已切换");
@@ -331,6 +297,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
     public async Task ApplyAsync(ContinuousControlConfig config, CancellationToken ct = default)
     {
         var epoch = Interlocked.Increment(ref _controlEpoch);
+        string? reloadId = null;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -342,12 +309,17 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
                 await _client.CreateParameterAsync(VtsClient.MouthParameterId, 0, 1, 0, ct).ConfigureAwait(false);
             if (!_config.Enabled) { SetStatus("实验未启用"); return; }
             if (Model is not { } model || !_client.IsConnected) { SetStatus("未连接模型"); return; }
-            if (model.HasActiveExpressions) { SetStatus("存在活动表情，请在 VTS 清除后刷新并恢复"); return; }
             if (_config.UseBuiltInTracking)
             {
                 var backend = new VtsTrackingBackend(_client, model.DefaultInputs);
                 var trackingBindings = backend.CreateBindings();
                 if (trackingBindings.Length == 0) { SetStatus("没有可用的标准面捕输入，请检查 VTS 版本或使用高级映射"); return; }
+                if (VtsModelFile.TryPinLoadedModel(model.Id))
+                {
+                    reloadId = model.Id;
+                    SetStatus("已把身体/步伐从头部输入拆开，正在重新加载模型");
+                    return;
+                }
                 if (epoch != Interlocked.Read(ref _controlEpoch)) return;
                 StartDirector(backend, trackingBindings);
                 SetStatus($"内置面捕控制运行中：{model.Name}，{trackingBindings.Length} 个输入通道；复用已有映射，未验证视觉效果");
@@ -371,6 +343,8 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
             SetStatus($"连续控制运行中：{model.Name}，{bindings.Length} 个通道");
         }
         finally { _gate.Release(); }
+        if (reloadId is not null)
+            await _client.LoadModelAsync(reloadId, ct).ConfigureAwait(false);
     }
     private void StartDirector(IAvatarParameterBackend backend, AvatarChannelBinding[] bindings)
     {
@@ -412,7 +386,6 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
         _disposed = true; _life.Cancel();
         _client.OnEvent -= OnEvent; _client.OnDisconnected -= OnDisconnected; _client.OnStateChanged -= OnState;
         await StopAsync().ConfigureAwait(false);
-        if (_expressionMonitor is not null) await _expressionMonitor.ConfigureAwait(false);
         try { await Task.WhenAll(_background.Keys).ConfigureAwait(false); } catch { /* observed above */ }
     }
 }

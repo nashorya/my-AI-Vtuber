@@ -35,15 +35,17 @@ public class ContinuousLlmTransportTests
         Assert.DoesNotContain("AIVTuberHeadRoll", handler.Request.GetRawText());
     }
     [Fact]
-    public async Task BrokenJsonNeverProducesSpeechOrIntent()
+    public async Task BrokenJsonBecomesPlainSpeechWithoutIntent()
     {
-        var handler = new ResponseHandler("{\"reply\":\"你好\"");
+        var handler = new ResponseHandler("在的！你叫我就醒啦。");
         using var client = new LlmClient("角色", () => ["headRoll"], handler);
-        var emitted = 0;
-        client.OnAvatarPlanReady += (_, _) => emitted++;
-        client.OnSentenceReady += (_, _) => emitted++;
-        await Assert.ThrowsAnyAsync<JsonException>(async () => { await foreach (var _ in client.StreamAsync([], "你好")) emitted++; });
-        Assert.Equal(0, emitted);
+        AvatarReplyPlan? plan = null;
+        var body = new StringBuilder();
+        client.OnAvatarPlanReady += (_, p) => plan = p;
+        await foreach (var token in client.StreamAsync([], "你好")) body.Append(token);
+        Assert.Equal("在的！你叫我就醒啦。", body.ToString());
+        Assert.Null(plan?.Intent);
+        Assert.NotNull(plan?.Diagnostic);
     }
     [Fact]
     public async Task LegacyAndMemoryClientsRetainPlainTextProtocol()

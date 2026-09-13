@@ -127,6 +127,8 @@ public sealed class VtsClient : IDisposable, IAvatarParameterBackend
     public Task CloseMouthAsync(CancellationToken ct = default) => InjectParameterAsync(MouthParameterId, 0, ct);
     public Task TriggerHotkeyAsync(string hotkeyId, CancellationToken ct = default)
         => RequestAuthenticatedAsync("HotkeyTriggerRequest", new() { ["hotkeyID"] = hotkeyId }, ct);
+    public Task LoadModelAsync(string modelId, CancellationToken ct = default)
+        => RequestAuthenticatedAsync("ModelLoadRequest", new() { ["modelID"] = modelId }, ct);
     public async Task<List<VtsHotkeyInfo>> GetHotkeyListAsync(CancellationToken ct = default)
     {
         var response = await RequestAuthenticatedAsync("HotkeysInCurrentModelRequest", new(), ct).ConfigureAwait(false);

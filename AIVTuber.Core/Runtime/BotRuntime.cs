@@ -682,7 +682,8 @@ public sealed class BotRuntime : IAsyncDisposable
     private void EnsureTurnGate()
     {
         if (_turnGate is not null) return;
-        _turnGate = new DualPartyTurnGate(TimeSpan.FromMilliseconds(80));
+        var staleMs = Math.Max(1000, _config.Audio.PostSpeechSilenceMs);
+        _turnGate = new DualPartyTurnGate(TimeSpan.FromMilliseconds(80), staleSpeech: TimeSpan.FromMilliseconds(staleMs));
         _turnGate.TurnReady += lines => SuperviseBackgroundTask(HandleTurnReadyAsync(lines));
     }
 

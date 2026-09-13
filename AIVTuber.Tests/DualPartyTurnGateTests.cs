@@ -138,4 +138,45 @@ public class DualPartyTurnGateTests
         Assert.NotNull(got);
         Assert.Equal("加油", got![0].Text);
     }
+
+    [Fact]
+    public void StaleLoopbackSpeaking_DoesNotBlockFlush()
+    {
+        IReadOnlyList<TalkLine>? got = null;
+        var clock = new Clock();
+        using var gate = new DualPartyTurnGate(
+            TimeSpan.FromMilliseconds(30),
+            () => clock.Now,
+            staleSpeech: TimeSpan.FromSeconds(1));
+        gate.TurnReady += lines => got = lines;
+        gate.SetLoopbackSpeaking(true);
+        gate.AddLine(new TalkLine(TalkIdentity.Self, "纳", "喂喂喂，小飞鱼。", null));
+        clock.Now += TimeSpan.FromMilliseconds(40);
+        gate.Tick();
+        Assert.Null(got);
+
+        clock.Now += TimeSpan.FromSeconds(1);
+        gate.Tick();
+        Assert.NotNull(got);
+        Assert.Equal("喂喂喂，小飞鱼。", got![0].Text);
+    }
+
+    [Fact]
+    public void FreshLoopbackSpeech_StillBlocksFlush()
+    {
+        IReadOnlyList<TalkLine>? got = null;
+        var clock = new Clock();
+        using var gate = new DualPartyTurnGate(
+            TimeSpan.FromMilliseconds(30),
+            () => clock.Now,
+            staleSpeech: TimeSpan.FromSeconds(1));
+        gate.TurnReady += lines => got = lines;
+        gate.SetLoopbackSpeaking(true);
+        gate.AddLine(new TalkLine(TalkIdentity.Self, "纳", "大肥鱼。", null));
+        clock.Now += TimeSpan.FromMilliseconds(500);
+        gate.SetLoopbackSpeaking(true);
+        clock.Now += TimeSpan.FromMilliseconds(500);
+        gate.Tick();
+        Assert.Null(got);
+    }
 }

@@ -61,7 +61,7 @@ public sealed class VtsTrackingTests : IDisposable
     }
 
     [Fact]
-    public async Task ReconnectRestoresOnlyIdleAndActiveExpressionBlocksResume()
+    public async Task ReconnectRestoresOnlyIdleAndActiveExpressionDoesNotBlockResume()
     {
         await using var server = new FakeVts { DefaultInputs = [P("FaceAngleZ", -30, 30)] };
         using var client = new VtsClient(server.Config, Token);
@@ -78,8 +78,8 @@ public sealed class VtsTrackingTests : IDisposable
         Assert.Equal(0, server.Count("ParameterCreationRequest"));
         server.ActiveExpression = true;
         await session.ResumeAsync();
-        Assert.Empty(session.AllowedChannels);
-        Assert.Contains("活动表情", session.Status);
+        Assert.Equal(new[] { "headRoll" }, session.AllowedChannels);
+        Assert.Contains("运行中", session.Status);
     }
 
     [Fact]
@@ -120,7 +120,7 @@ public sealed class VtsTrackingTests : IDisposable
     }
 
     [Fact]
-    public async Task ManualTakeoverAndModelChangeRequireResumeWithoutOldIntent()
+    public async Task HotkeyDoesNotPauseAndModelChangeRequiresResumeWithoutOldIntent()
     {
         await using var server = new FakeVts { DefaultInputs = [P("FaceAngleZ", -30, 30)] };
         using var client = new VtsClient(server.Config, Token);
@@ -128,24 +128,61 @@ public sealed class VtsTrackingTests : IDisposable
         await session.ConnectAsync();
         session.BeginTurn(1);
         await server.EventAsync("HotkeyTriggeredEvent", new { hotkeyID = "manual" });
-        await VtsContinuousIntegrationTests.WaitUntilAsync(() => session.Status.Contains("人工操作"));
-        Assert.Empty(session.AllowedChannels);
-        await session.ResumeAsync();
+        await Task.Delay(150);
+        Assert.DoesNotContain("人工操作", session.Status);
+        Assert.Equal(new[] { "headRoll" }, session.AllowedChannels);
         session.Submit(1, new(new Dictionary<string, float> { ["headRoll"] = 1 }));
-        var count = Frames(server).Length;
-        await VtsContinuousIntegrationTests.WaitUntilAsync(() => Frames(server).Length > count + 3);
-        Assert.Equal(0, Frames(server).Last()["FaceAngleZ"]);
+        await VtsContinuousIntegrationTests.WaitUntilAsync(() => Frames(server).Any(f => f["FaceAngleZ"] > 10));
         server.ModelId = "22222222222222222222222222222222";
         server.DefaultInputs = [P("EyeOpenLeft")];
         await server.EventAsync("ModelLoadedEvent", new { modelID = server.ModelId });
-        await VtsContinuousIntegrationTests.WaitUntilAsync(() => session.Model?.Id == server.ModelId);
-        Assert.Empty(session.AllowedChannels);
-        await session.ResumeAsync();
-        Assert.Equal(new[] { "eyeOpenL" }, session.AllowedChannels);
+        await VtsContinuousIntegrationTests.WaitUntilAsync(() => session.Model?.Id == server.ModelId &&
+            session.AllowedChannels.SequenceEqual(new[] { "eyeOpenL" }));
         server.ModelLoaded = false;
         await session.RefreshAsync();
         Assert.Null(session.Model);
         Assert.Empty(session.AllowedChannels);
+    }
+
+    [Fact]
+    public async Task PinsFacePositionWhenHeadMoves()
+    {
+        var capture = new Capture();
+        var backend = new VtsTrackingBackend(capture,
+            [P("FaceAngleX", -30, 30), P("FacePositionX", -10, 10), P("FacePositionY", -10, 10)]);
+        await backend.InjectAsync(new Dictionary<string, float> { ["AIVTuberHeadYaw"] = 1 }, default);
+        Assert.Equal(0, capture.Frame["FacePositionX"]);
+        Assert.Equal(0, capture.Frame["FacePositionY"]);
+        Assert.False(capture.Frame.ContainsKey("FacePositionZ"));
+    }
+
+    [Fact]
+    public void PinBodyFollowRewritesOnlyBodyAndStepMappings()
+    {
+        const string json = """
+            {"ParameterSettings":[
+              {"Input":"FaceAngleX","OutputLive2D":"ParamAngleX"},
+              {"Input":"FaceAngleX","OutputLive2D":"ParamBodyAngleX"},
+              {"Input":"FaceAngleX","OutputLive2D":"ParamStep"},
+              {"Input":"MouthOpen","OutputLive2D":"ParamMouthOpenY"}
+            ]}
+            """;
+        Assert.True(VtsModelFile.PinBodyFollow(json, out var updated));
+        var settings = JsonDocument.Parse(updated).RootElement.GetProperty("ParameterSettings").EnumerateArray().ToArray();
+        Assert.Equal("FaceAngleX", settings[0].GetProperty("Input").GetString());
+        Assert.Equal("", settings[1].GetProperty("Input").GetString());
+        Assert.Equal("", settings[2].GetProperty("Input").GetString());
+        Assert.Equal("MouthOpen", settings[3].GetProperty("Input").GetString());
+        Assert.False(VtsModelFile.PinBodyFollow(updated, out _));
+    }
+
+    [Fact]
+    public async Task HeadYawUsesVisibleFaceAngleRange()
+    {
+        var capture = new Capture();
+        var backend = new VtsTrackingBackend(capture, [P("FaceAngleX", -30, 30)]);
+        await backend.InjectAsync(new Dictionary<string, float> { ["AIVTuberHeadYaw"] = 1 }, default);
+        Assert.InRange(capture.Frame["FaceAngleX"], 14, 18);
     }
 
     [Fact]

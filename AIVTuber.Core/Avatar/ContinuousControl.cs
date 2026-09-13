@@ -75,10 +75,16 @@ public static class AvatarReplyProtocol
 {
     public static AvatarReplyPlan Parse(string json, IEnumerable<string> allowedChannels)
     {
-        using var document = JsonDocument.Parse(json);
+        if (!TryExtractObject(json, out var payload))
+            return new(json.Trim(), null, "动作已丢弃：回复不是 JSON 对象");
+        JsonDocument document;
+        try { document = JsonDocument.Parse(payload); }
+        catch (JsonException) { return new(json.Trim(), null, "动作已丢弃：回复不是 JSON 对象"); }
+        using (document)
+        {
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("reply", out var reply) || reply.ValueKind != JsonValueKind.String)
-            throw new JsonException("连续控制回复缺少 reply 字符串");
+            return new(json.Trim(), null, "动作已丢弃：连续控制回复缺少 reply 字符串");
         var text = reply.GetString()!;
         if (!root.TryGetProperty("avatar", out var avatar) || avatar.ValueKind == JsonValueKind.Null)
             return new(text, null);
@@ -101,6 +107,18 @@ public static class AvatarReplyProtocol
         }
         catch (Exception e) when (e is InvalidOperationException or KeyNotFoundException or FormatException or OverflowException)
         { return new(text, null, "动作已丢弃：" + e.Message); }
+        }
+    }
+
+    private static bool TryExtractObject(string raw, out string payload)
+    {
+        payload = raw.Trim();
+        if (payload.Length == 0) return false;
+        var start = payload.IndexOf('{');
+        var end = payload.LastIndexOf('}');
+        if (start < 0 || end <= start) return false;
+        payload = payload[start..(end + 1)];
+        return true;
     }
 
     public static string Prompt(IEnumerable<string> allowed)
@@ -122,7 +140,10 @@ public static class AvatarReplyProtocol
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
         return "\n连续控制实验协议优先于正文输出格式：整次回复只输出一个 JSON 对象，不要代码块。格式 " + example + "。" +
             "reply 内遵守原人设、字数、情绪标签和静默规则。avatar 可省略；PASS 不附动作。" +
-            "每轮最多一个目标姿态，动作克制；不必每次变化。仅使用以下可用语义通道（实际表现取决于当前模型映射）：" +
+            "每轮最多一个目标姿态；不必每次变化。" +
+            (names.Contains("headYaw") ? "被要求摇头时输出 headYaw 0.5，程序会缓慢左右摆头。" : "") +
+            (names.Contains("headPitch") ? "点头用 headPitch。" : "") +
+            "仅使用以下可用语义通道（实际表现取决于当前模型映射）：" +
             (channels.Length == 0 ? "无，请省略 avatar" : string.Join("；", descriptions)) + "。" +
             "transitionMs 为 100~2000，holdMs 为 0~5000。缺省 400/1500。不要输出参数 ID 或文件名。";
     }

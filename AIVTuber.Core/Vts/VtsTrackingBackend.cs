@@ -67,6 +67,9 @@ public sealed class VtsTrackingBackend : IAvatarParameterBackend
             }
         }
         if (brows.Count > 0) output["Brows"] = Map("browHeightL", brows.Average(), _inputs["Brows"]);
+        foreach (var id in new[] { "FacePositionX", "FacePositionY", "FacePositionZ" })
+            if (_inputs.TryGetValue(id, out var position))
+                output[id] = position.Min <= 0 && position.Max >= 0 ? 0 : position.Default;
         return output.Count == 0 ? Task.CompletedTask : _backend.InjectAsync(output, ct);
     }
 
@@ -82,7 +85,7 @@ public sealed class VtsTrackingBackend : IAvatarParameterBackend
             // center them to retain both directions without assuming a model's output ranges.
             var neutral = min < 0 && max > 0 ? 0 : min + (max - min) / 2;
             var extent = value >= 0 ? max - neutral : neutral - min;
-            var amplitude = channel.StartsWith("head", StringComparison.Ordinal) ? Math.Min(12, extent) : extent * .5;
+            var amplitude = channel.StartsWith("head", StringComparison.Ordinal) ? Math.Min(16, extent) : extent * .5;
             mapped = neutral + value * amplitude;
         }
         return (float)Math.Clamp(mapped, min, max);

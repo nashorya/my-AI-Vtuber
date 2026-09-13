@@ -39,7 +39,8 @@ public sealed class BotOrchestrator : IDisposable
                 var context = CurrentEventContext();
                 if (context is null) return;
                 _avatarPlans[context.Generation] = plan;
-                if (plan.Diagnostic is not null) ReportCurrentError(context.Generation, plan.Diagnostic);
+                if (plan.Diagnostic is not null)
+                    AIVTuber.Core.Diagnostics.DebugLog.Write($"[Avatar/VTS] {plan.Diagnostic}");
             };
             source.OnAvatarPlanReady += _avatarPlanHandler;
         }

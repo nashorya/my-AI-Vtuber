@@ -112,7 +112,9 @@ public sealed class AvatarMotionDirector : IAsyncDisposable
                     var elapsed = (now - _intentAt) * 1000;
                     var target = _intent.Targets.GetValueOrDefault(name, baseline);
                     var start = _from.GetValueOrDefault(name, baseline);
-                    if (elapsed <= _intent.TransitionMs)
+                    if (name == "headYaw" && _intent.Targets.ContainsKey("headYaw"))
+                        value = HeadYawShake(elapsed, target, baseline);
+                    else if (elapsed <= _intent.TransitionMs)
                         value = Lerp(start, target, Ease(elapsed / _intent.TransitionMs));
                     else if (elapsed <= _intent.TransitionMs + _intent.HoldMs) value = target;
                     else value = Lerp(target, baseline, Ease((elapsed - _intent.TransitionMs - _intent.HoldMs) / 400));
@@ -134,6 +136,17 @@ public sealed class AvatarMotionDirector : IAsyncDisposable
             }
             return result;
         }
+    }
+
+    private static float HeadYawShake(double elapsedMs, float target, float baseline)
+    {
+        // One unhurried 摇头: right, left, settle. About 1.8s, not a 2 Hz hop.
+        var amp = Math.Clamp(Math.Max(Math.Abs(target), .42f), 0, .55f);
+        const double duration = 1800;
+        if (elapsedMs <= 0) return baseline;
+        if (elapsedMs >= duration) return Lerp(0, baseline, Ease((elapsedMs - duration) / 280));
+        var t = elapsedMs / duration;
+        return amp * (float)Math.Sin(t * Math.PI * 3);
     }
 
     private static float Ease(double value) { var t = (float)Math.Clamp(value, 0, 1); return t * t * (3 - 2 * t); }

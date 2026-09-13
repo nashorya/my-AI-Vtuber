@@ -24,7 +24,14 @@ public class ContinuousControlTests
     [InlineData("{\"reply\":\"你好\"")]
     [InlineData("{\"reply\":123}")]
     [InlineData("这不是 JSON")]
-    public void BadEnvelopeCannotBecomeSpeech(string json) => Assert.ThrowsAny<JsonException>(() => AvatarReplyProtocol.Parse(json, []));
+    [InlineData("在的的！纳什喊我名字我立刻就醒啦。")]
+    public void BadEnvelopeBecomesSpeechWithoutMotion(string json)
+    {
+        var plan = AvatarReplyProtocol.Parse(json, ["headRoll"]);
+        Assert.Equal(json, plan.Reply);
+        Assert.Null(plan.Intent);
+        Assert.NotNull(plan.Diagnostic);
+    }
     [Theory]
     [InlineData("{\"targets\":{\"mouthOpen\":1}}")]
     [InlineData("{\"targets\":{\"unknown\":1}}")]
@@ -116,6 +123,29 @@ public class ContinuousControlTests
             finally { Interlocked.Decrement(ref Active); }
         }
     }
+    [Fact]
+    public async Task HeadYawShakesSlowlyThenReturns()
+    {
+        var clock = new ManualClock();
+        await using var director = new AvatarMotionDirector(new CaptureBackend(), [Binding("headYaw")], clock);
+        director.Sample();
+        director.Submit(1, new(new Dictionary<string, float> { ["headYaw"] = 1 }, 200, 200));
+        Assert.InRange(director.Sample()["AIVTuberHeadYaw"], -1f, 1f);
+        clock.Advance(150);
+        var rising = director.Sample()["AIVTuberHeadYaw"];
+        clock.Advance(150);
+        var first = director.Sample()["AIVTuberHeadYaw"];
+        clock.Advance(600);
+        var second = director.Sample()["AIVTuberHeadYaw"];
+        clock.Advance(900);
+        var done = director.Sample()["AIVTuberHeadYaw"];
+        Assert.True(rising > 2);
+        Assert.True(first > rising);
+        Assert.True(first > 8);
+        Assert.True(second < -8);
+        Assert.InRange(done, -1.5f, 1.5f);
+    }
+
     [Fact]
     public async Task TargetsInterpolateHoldAndReturnWithoutOvershoot()
     {

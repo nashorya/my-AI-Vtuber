@@ -218,7 +218,7 @@ public sealed class VtsContinuousIntegrationTests : IDisposable
         await client.DisconnectAsync();
     }
     [Fact]
-    public async Task RepeatedApplyHasSingleWriterAndManualEventPauses()
+    public async Task RepeatedApplyHasSingleWriterAndHotkeyDoesNotPause()
     {
         await using var server = new FakeVts();
         using var client = new VtsClient(server.Config, Token);
@@ -234,14 +234,16 @@ public sealed class VtsContinuousIntegrationTests : IDisposable
         await Task.Delay(400);
         Assert.InRange(server.Count("InjectParameterDataRequest") - before, 5, 18);
         await server.EventAsync("HotkeyTriggeredEvent", new { hotkeyID = "manual" });
-        await WaitUntilAsync(() => session.Status.Contains("人工操作"));
+        await server.EventAsync("ExpressionToggledEvent", new { expressionFile = "idle.exp3.json", active = true });
+        await Task.Delay(200);
+        Assert.DoesNotContain("人工操作", session.Status);
+        Assert.Contains("headRoll", session.AllowedChannels);
         before = server.Count("InjectParameterDataRequest"); await Task.Delay(150);
-        Assert.Equal(before, server.Count("InjectParameterDataRequest"));
-        Assert.Empty(session.AllowedChannels);
+        Assert.True(server.Count("InjectParameterDataRequest") > before);
         await client.DisconnectAsync();
     }
     [Fact]
-    public async Task StableVtsWithoutBetaExpressionEventUsesPolling()
+    public async Task ActiveExpressionDoesNotPauseControl()
     {
         await using var server = new FakeVts { NoExpressionEvents = true };
         using var client = new VtsClient(server.Config, Token);
@@ -254,12 +256,13 @@ public sealed class VtsContinuousIntegrationTests : IDisposable
         config.Profiles[profile.ModelId] = profile;
         await session.ApplyAsync(config);
         server.ActiveExpression = true;
-        await WaitUntilAsync(() => session.Status.Contains("人工操作"));
-        Assert.Empty(session.AllowedChannels);
+        await Task.Delay(700);
+        Assert.DoesNotContain("人工操作", session.Status);
+        Assert.Contains("headRoll", session.AllowedChannels);
         await client.DisconnectAsync();
     }
     [Fact]
-    public async Task LateIntentAfterManualTakeoverAndResumeCannotStartOnNewController()
+    public async Task LateIntentAfterControllerRebuildCannotStartOnNewController()
     {
         await using var server = new FakeVts();
         using var client = new VtsClient(server.Config, Token);
@@ -272,9 +275,7 @@ public sealed class VtsContinuousIntegrationTests : IDisposable
         config.Profiles[profile.ModelId] = profile;
         await session.ApplyAsync(config);
         session.BeginTurn(100);
-        await server.EventAsync("HotkeyTriggeredEvent", new { hotkeyID = "manual" });
-        await WaitUntilAsync(() => session.Status.Contains("人工操作"));
-        await session.ResumeAsync();
+        await session.ApplyAsync(config);
         session.Submit(100, new(new Dictionary<string, float> { ["headRoll"] = 1 }, 100, 5000));
         var before = server.Count("InjectParameterDataRequest");
         await WaitUntilAsync(() => server.Count("InjectParameterDataRequest") > before + 5);
