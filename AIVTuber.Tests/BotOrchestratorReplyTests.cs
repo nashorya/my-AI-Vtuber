@@ -103,7 +103,7 @@ public sealed class BotOrchestratorReplyTests
             new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
             async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
             () => { }, triggerHotkeyAsync: null);
-        orchestrator.ConfigureContinuousControl(motion);
+        orchestrator.ConfigureContinuousControl(motion, PlayAndStart);
         await orchestrator.ProcessTextAsync("摇摇头呗", [], bypassWake: true, requireStructuredReply: true);
         Assert.Equal(1, tts.CallCount);
         Assert.Equal(.5f, motion.Last!.Targets["headYaw"]);
@@ -120,7 +120,7 @@ public sealed class BotOrchestratorReplyTests
             new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
             async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
             () => { }, triggerHotkeyAsync: null);
-        orchestrator.ConfigureContinuousControl(motion);
+        orchestrator.ConfigureContinuousControl(motion, PlayAndStart);
         await orchestrator.ProcessTextAsync("大肥鱼，摇摇头呗", [], bypassWake: true, requireStructuredReply: true);
         Assert.Equal(1, tts.CallCount);
         Assert.Equal(.5f, motion.Last!.Targets["headYaw"]);
@@ -275,6 +275,11 @@ public sealed class BotOrchestratorReplyTests
             yield return text;
             await Task.CompletedTask;
         }
+    }
+
+    private static async Task PlayAndStart(IAsyncEnumerable<byte[]> chunks, CancellationToken ct, Action start)
+    {
+        await foreach (var _ in chunks.WithCancellation(ct)) start();
     }
 
     private sealed class CaptureMotion : IAvatarMotionSink
