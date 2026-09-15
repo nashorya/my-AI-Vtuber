@@ -26,12 +26,24 @@ public class IdentityPromptTests
     }
 
     [Fact]
-    public void ProtocolAppendix_MentionsPassAndThought()
+    public void InvitationPolicy_AllowsAvatarOnSameEnvelope()
+    {
+        Assert.Contains("avatar", IdentityPrompt.InvitationPolicy);
+        Assert.Contains("headYaw", IdentityPrompt.InvitationPolicy);
+        Assert.Contains("bodyYaw", IdentityPrompt.InvitationPolicy);
+        Assert.Contains("中立正对镜头", IdentityPrompt.InvitationPolicy);
+        Assert.DoesNotContain("motion", IdentityPrompt.InvitationPolicy);
+        Assert.DoesNotContain("恰好包含", IdentityPrompt.InvitationPolicy);
+    }
+
+    [Fact]
+    public void ProtocolAppendix_NamesIdentities_WithoutOutputMarks()
     {
         var p = IdentityPrompt.ProtocolAppendix("小明", "笑笑", "直播间弹幕");
-        Assert.Contains("【PASS】", p);
-        Assert.Contains("（", p);
         Assert.Contains("小明", p);
         Assert.Contains("笑笑", p);
+        Assert.DoesNotContain("【PASS】", p);
+        Assert.DoesNotContain("每轮只选择一种输出", p);
+        Assert.DoesNotContain("必须使用全角括号", p);
     }
 }

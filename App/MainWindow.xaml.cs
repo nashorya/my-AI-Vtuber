@@ -23,7 +23,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             MicrophoneCapture.ListDevices(),
             configManager.Save,
             runtime.ApplyConfigAsync,
-            () => runtime.GetVtsHotkeysAsync());
+            () => runtime.GetVtsHotkeysAsync(),
+            () => runtime.ContinuousVts, runtime.ConnectContinuousVtsAsync);
         _memoryVm = new MemoryViewModel(runtime, action => Dispatcher.BeginInvoke(action));
 
         ConsoleHost.Attach(_monitorVm, _configVm, _memoryVm);

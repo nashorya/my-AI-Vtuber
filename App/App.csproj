@@ -55,7 +55,7 @@
       <_GoExe Condition="Exists('C:\Program Files\Go\bin\go.exe')">C:\Program Files\Go\bin\go.exe</_GoExe>
       <_GoExe Condition="'$(_GoExe)' == ''">go</_GoExe>
     </PropertyGroup>
-    <Exec Command="set GOPROXY=https://goproxy.cn,direct&amp;&amp; set GOSUMDB=off&amp;&amp; &quot;$(_GoExe)&quot; build -ldflags &quot;-s -w&quot; -o danmaku_bridge.exe ."
+    <Exec Command="set GOPROXY=https://goproxy.cn,direct&amp;&amp; set GOSUMDB=sum.golang.org&amp;&amp; &quot;$(_GoExe)&quot; build -ldflags &quot;-s -w&quot; -o danmaku_bridge.exe ."
           WorkingDirectory="$(MSBuildThisFileDirectory)..\danmaku-bridge"
           IgnoreExitCode="true"
           Condition="Exists('$(MSBuildThisFileDirectory)..\danmaku-bridge\go.mod')" />
@@ -68,6 +68,18 @@
   <Target Name="EnsureWebRtcVadNativePublished" AfterTargets="Publish">
     <Error Condition="'$(PublishDir)' != '' AND !Exists('$(PublishDir)WebRtcVad.dll')"
            Text="WebRtcVad.dll missing from $(PublishDir). WebRtcVadSharp native asset failed to publish." />
+  </Target>
+
+  <!-- AsrSidecarProcess launches asr_server.py beside the executable. The sidecar/
+       copy remains the manifest-verified payload; both build and publish need the
+       root entry point as well. -->
+  <Target Name="CopyAsrLaunchScriptToOutput" AfterTargets="Build">
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\asr_server.py"
+          DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CopyAsrLaunchScriptToPublish" AfterTargets="Publish">
+    <Copy SourceFiles="$(MSBuildThisFileDirectory)..\asr_server.py"
+          DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
   </Target>
 
   <ItemGroup>
