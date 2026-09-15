@@ -95,6 +95,9 @@ internal sealed class FakeVts : IAsyncDisposable
                         "HotkeysInCurrentModelRequest" => new { availableHotkeys = Array.Empty<object>() },
                         _ => new { }
                     };
+                    if (type == "ModelLoadRequest" && data.TryGetProperty("modelID", out var loadId) &&
+                        loadId.GetString() is { Length: > 0 } loaded)
+                        ModelId = loaded;
                     if (type == "ParameterCreationRequest") _inputs.TryAdd(data.GetProperty("parameterName").GetString()!, 0);
                     if (type == "InjectParameterDataRequest")
                     {
@@ -104,6 +107,11 @@ internal sealed class FakeVts : IAsyncDisposable
                     }
                 }
                 await SendAsync(ws, new { messageType = responseType, requestID = request.GetProperty("requestID").GetString(), data = response });
+                if (type == "ModelLoadRequest")
+                {
+                    await SendAsync(ws, new { messageType = "ModelConfigChangedEvent", data = new { modelID = ModelId } });
+                    await SendAsync(ws, new { messageType = "ModelLoadedEvent", data = new { modelLoaded = true, modelID = ModelId } });
+                }
             }
         }
         catch (Exception) when (_life.IsCancellationRequested || !tcp.Connected) { }
@@ -167,8 +175,9 @@ public sealed class VtsContinuousIntegrationTests : IDisposable
         Assert.Equal(50, error.ErrorId); Assert.False(client.IsConnected);
         Assert.False(File.Exists(Token));
         server.DenyToken = false; server.FailType = "ParameterCreationRequest";
-        await Assert.ThrowsAsync<VtsApiException>(() => client.ConnectAsync());
-        Assert.False(client.IsConnected); Assert.Equal(0, client.PendingCount);
+        await client.ConnectAsync();
+        await Assert.ThrowsAsync<VtsApiException>(() => client.CreateParameterAsync("AIVTuberHeadRoll", -1, 1, 0));
+        Assert.True(client.IsConnected); Assert.Equal(0, client.PendingCount);
     }
     [Fact]
     public async Task DisconnectFailsPendingAndApiErrorsReachCaller()

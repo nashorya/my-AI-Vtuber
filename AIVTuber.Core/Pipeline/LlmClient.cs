@@ -151,7 +151,12 @@ public sealed class LlmClient : ILlmClient, IDisposable, IAvatarReplySource
 
         if (allowedChannels is not null)
         {
-            var plan = AvatarReplyProtocol.Parse(buffer.ToString(), allowedChannels);
+            var raw = buffer.ToString();
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[LLM原始] {raw}");
+            var plan = AvatarReplyProtocol.Parse(raw, allowedChannels);
+            if (plan.Intent is { } intent)
+                AIVTuber.Core.Diagnostics.DebugLog.Write(
+                    $"[Avatar/VTS] 已解析 {string.Join(',', intent.Targets.Select(p => p.Key + "=" + p.Value.ToString("0.##")))}");
             OnAvatarPlanReady?.Invoke(this, plan);
             buffer.Clear();
             buffer.Append(controlTags.Consume(plan.Reply));

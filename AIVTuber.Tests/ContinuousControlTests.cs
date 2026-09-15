@@ -8,6 +8,54 @@ namespace AIVTuber.Tests;
 
 public class ContinuousControlTests
 {
+    [Fact]
+    public void MotionFieldResolvesShakeHead()
+    {
+        var plan = AvatarReplyProtocol.Parse(
+            "{\"respond\":true,\"speech\":\"好呀。\",\"motion\":\"摇头\"}",
+            ["headYaw"]);
+        Assert.Equal("好呀。", plan.Reply);
+        Assert.Equal(.5f, plan.Intent!.Targets["headYaw"]);
+        Assert.Null(plan.Diagnostic);
+    }
+
+    [Fact]
+    public void InvitedEnvelopeReadsSpeechAndHeadYaw()
+    {
+        var plan = AvatarReplyProtocol.Parse(
+            "{\"respond\":true,\"speech\":\"好呀。\",\"avatar\":{\"targets\":{\"headYaw\":0.5}}}",
+            ["headYaw"]);
+        Assert.Equal("好呀。", plan.Reply);
+        Assert.Equal(.5f, plan.Intent!.Targets["headYaw"]);
+        Assert.Null(plan.Diagnostic);
+    }
+
+    [Fact]
+    public void UnknownMotionKeepsSpeech()
+    {
+        var plan = AvatarReplyProtocol.Parse(
+            "{\"respond\":true,\"speech\":\"好呀。\",\"motion\":\"转身\"}",
+            ["headYaw"]);
+        Assert.Equal("好呀。", plan.Reply);
+        Assert.Null(plan.Intent);
+        Assert.NotNull(plan.Diagnostic);
+    }
+
+    [Fact]
+    public void InvitedSilenceHasNoMotion()
+    {
+        var plan = AvatarReplyProtocol.Parse("{\"respond\":false,\"speech\":\"不要读\"}", ["headYaw"]);
+        Assert.Equal("【PASS】", plan.Reply);
+        Assert.Null(plan.Intent);
+    }
+
+    [Fact]
+    public void InferHeadShakeFromUserAsk()
+    {
+        Assert.Equal(.5f, AvatarReplyProtocol.InferRequestedMotion("使用者（纳什）：摇摇头呗")!.Targets["headYaw"]);
+        Assert.Null(AvatarReplyProtocol.InferRequestedMotion("今天天气不错"));
+    }
+
     [Theory]
     [InlineData("你好。", "Speak")]
     [InlineData("（围裙也饿了。）", "InnerThought")]
@@ -49,14 +97,32 @@ public class ContinuousControlTests
     [Fact]
     public void PromptContainsOnlySemanticCapabilities()
     {
-        var prompt = AvatarReplyProtocol.Prompt(["headRoll", "gazeX"]);
+        var prompt = AvatarReplyProtocol.Prompt(["headRoll", "gazeX", "bodyYaw"]);
         Assert.Contains("headRoll", prompt);
         Assert.Contains("gazeX", prompt);
+        Assert.Contains("0.5", prompt);
         Assert.DoesNotContain("headYaw", prompt);
+        Assert.Contains("bodyYaw", prompt);
+        Assert.Contains("0 身子正对镜头", prompt);
+        Assert.Contains("1 身子转到最右", prompt);
+        Assert.Contains("头通道只转头和脸", prompt);
         Assert.DoesNotContain("eyeOpenL", prompt);
         Assert.DoesNotContain("mouthOpen", prompt);
         Assert.DoesNotContain("AIVTuberHeadRoll", prompt);
         Assert.DoesNotContain("ParamAngleZ", prompt);
+    }
+
+    [Fact]
+    public void PromptExplainsHeadAndBodyScale()
+    {
+        var prompt = AvatarReplyProtocol.Prompt(["headYaw", "headPitch", "bodyYaw", "bodyPitch"]);
+        Assert.Contains("0 正对镜头，0.5 明显转向画面右", prompt);
+        Assert.Contains("1 头转到最右", prompt);
+        Assert.Contains("0 平视，0.5 明显抬头", prompt);
+        Assert.Contains("0 身子正对镜头，0.45 明显转腰", prompt);
+        Assert.Contains("0 腰背直立", prompt);
+        Assert.Contains("头通道只转头和脸，身体通道转脖子和身子", prompt);
+        Assert.Contains("1 或 -1 是该通道转到极限", prompt);
     }
     [Fact]
     public void LimitsAndUnverifiedChannels()
@@ -144,6 +210,24 @@ public class ContinuousControlTests
         Assert.True(first > 8);
         Assert.True(second < -8);
         Assert.InRange(done, -1.5f, 1.5f);
+    }
+
+    [Fact]
+    public async Task HeadYawShakeTakesBodyWithItUnlessBodyIsExplicit()
+    {
+        var clock = new ManualClock();
+        await using var director = new AvatarMotionDirector(new CaptureBackend(),
+            [Binding("headYaw"), Binding("bodyYaw")], clock);
+        director.Submit(1, new(new Dictionary<string, float> { ["headYaw"] = .5f }, 200, 200));
+        clock.Advance(300);
+        var head = director.Sample()["AIVTuberHeadYaw"];
+        var body = director.Sample()["AIVTuberBodyYaw"];
+        Assert.True(head > 8);
+        Assert.InRange(body, head * .69f, head * .71f);
+
+        director.Submit(2, new(new Dictionary<string, float> { ["headYaw"] = .5f, ["bodyYaw"] = .1f }, 200, 2000));
+        clock.Advance(400);
+        Assert.InRange(director.Sample()["AIVTuberBodyYaw"], 2.9f, 3.1f);
     }
 
     [Fact]

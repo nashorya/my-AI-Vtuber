@@ -121,6 +121,7 @@ public sealed class AvatarMotionDirector : IAsyncDisposable
                 }
                 pose[name] = value;
             }
+            FollowHeadWithBody(pose, _intent);
             _previous = pose;
             // Staggered deterministic cadence; eyelid intent remains effective during blinks.
             var phase = now % 4.7;
@@ -138,10 +139,27 @@ public sealed class AvatarMotionDirector : IAsyncDisposable
         }
     }
 
+    private static void FollowHeadWithBody(Dictionary<string, float> pose, AvatarIntent? intent)
+    {
+        // FaceAngle on this rig is the face/head mesh. Without body follow, 摇头
+        // looks like the face sliding on a frozen neck. Explicit body targets win.
+        Couple(pose, intent, "headYaw", "bodyYaw", .7f);
+        Couple(pose, intent, "headPitch", "bodyPitch", .55f);
+        Couple(pose, intent, "headRoll", "bodyRoll", .4f);
+    }
+
+    private static void Couple(Dictionary<string, float> pose, AvatarIntent? intent,
+        string head, string body, float ratio)
+    {
+        if (intent is null || !intent.Targets.ContainsKey(head) || intent.Targets.ContainsKey(body)) return;
+        if (!pose.ContainsKey(head) || !pose.ContainsKey(body)) return;
+        pose[body] = pose[head] * ratio;
+    }
+
     private static float HeadYawShake(double elapsedMs, float target, float baseline)
     {
         // One unhurried 摇头: right, left, settle. About 1.8s, not a 2 Hz hop.
-        var amp = Math.Clamp(Math.Max(Math.Abs(target), .42f), 0, .55f);
+        var amp = Math.Clamp(Math.Max(Math.Abs(target) * 1.25f, .65f), 0, .95f);
         const double duration = 1800;
         if (elapsedMs <= 0) return baseline;
         if (elapsedMs >= duration) return Lerp(0, baseline, Ease((elapsedMs - duration) / 280));

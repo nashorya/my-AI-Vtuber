@@ -62,6 +62,7 @@ public static class AvatarChannels
         new AvatarChannel("browFormR", "右眉形", "AIVTuberBrowFormR", "ParamBrowRForm"),
         new AvatarChannel("mouthSmile", "嘴形", "AIVTuberMouthSmile", "ParamMouthForm"),
         new AvatarChannel("bodyYaw", "身体左右", "AIVTuberBodyYaw", "ParamBodyAngleX"),
+        new AvatarChannel("bodyPitch", "身体前后", "AIVTuberBodyPitch", "ParamBodyAngleY"),
         new AvatarChannel("bodyRoll", "身体倾斜", "AIVTuberBodyRoll", "ParamBodyAngleZ"),
         new AvatarChannel("mouthOpen", "口型（音频）", "AIVTuberMouthOpen", "ParamMouthOpenY", true, false),
         new AvatarChannel("breath", "呼吸（自动）", "AIVTuberBreath", "ParamBreath", true, false),
@@ -83,14 +84,21 @@ public static class AvatarReplyProtocol
         using (document)
         {
         var root = document.RootElement;
-        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("reply", out var reply) || reply.ValueKind != JsonValueKind.String)
+        if (root.ValueKind != JsonValueKind.Object || !TryReadSpoken(root, out var text, out var silent))
             return new(json.Trim(), null, "动作已丢弃：连续控制回复缺少 reply 字符串");
-        var text = reply.GetString()!;
+        if (silent)
+            return new("【PASS】", null);
+        var allowed = allowedChannels.ToHashSet(StringComparer.Ordinal);
+        if (TryReadString(root, "motion", out var motionName) && motionName.Trim().Length > 0)
+        {
+            if (TryMapMotion(motionName.Trim(), allowed, out var mapped, out var error))
+                return new(text, mapped);
+            return new(text, null, "动作已丢弃：" + error);
+        }
         if (!root.TryGetProperty("avatar", out var avatar) || avatar.ValueKind == JsonValueKind.Null)
             return new(text, null);
         try
         {
-            var allowed = allowedChannels.ToHashSet(StringComparer.Ordinal);
             var targets = new Dictionary<string, float>();
             foreach (var property in avatar.GetProperty("targets").EnumerateObject())
             {
@@ -110,6 +118,94 @@ public static class AvatarReplyProtocol
         }
     }
 
+    private static readonly (string Verb, string Channel, float Value)[] Motions =
+    [
+        ("摇头", "headYaw", .5f),
+        ("点头", "headPitch", .5f),
+        ("歪头", "headRoll", .35f),
+    ];
+
+    public static AvatarIntent? InferRequestedMotion(string userInput)
+    {
+        if (string.IsNullOrWhiteSpace(userInput)) return null;
+        if (userInput.Contains("摇头", StringComparison.Ordinal) ||
+            userInput.Contains("摇脑袋", StringComparison.Ordinal))
+            return MotionIntent("headYaw", .5f);
+        if (userInput.Contains("点头", StringComparison.Ordinal))
+            return MotionIntent("headPitch", .5f);
+        if (userInput.Contains("歪头", StringComparison.Ordinal))
+            return MotionIntent("headRoll", .35f);
+        if (userInput.Contains("转身体", StringComparison.Ordinal) ||
+            userInput.Contains("扭身子", StringComparison.Ordinal))
+            return MotionIntent("bodyYaw", .45f);
+        if (userInput.Contains("弯腰", StringComparison.Ordinal) ||
+            userInput.Contains("哈腰", StringComparison.Ordinal))
+            return MotionIntent("bodyPitch", .4f);
+        if (userInput.Contains("侧身", StringComparison.Ordinal))
+            return MotionIntent("bodyRoll", .4f);
+        return null;
+    }
+
+    internal static bool TryMapMotion(string motion, ISet<string> allowed, out AvatarIntent? intent, out string error)
+    {
+        intent = null;
+        error = "";
+        var verb = NormalizeMotion(motion);
+        var match = Motions.FirstOrDefault(m => m.Verb == verb);
+        if (string.IsNullOrEmpty(match.Verb))
+        {
+            error = "不是已知动作";
+            return false;
+        }
+        if (!allowed.Contains(match.Channel))
+        {
+            error = "当前不能做这个动作";
+            return false;
+        }
+        intent = MotionIntent(match.Channel, match.Value);
+        return true;
+    }
+
+    private static string NormalizeMotion(string motion)
+    {
+        var value = motion.Trim().Trim('。', '！', '!', '～', '~');
+        if (value.Contains("摇头", StringComparison.Ordinal) || value.Contains("摇脑袋", StringComparison.Ordinal))
+            return "摇头";
+        if (value.Contains("点头", StringComparison.Ordinal)) return "点头";
+        if (value.Contains("歪头", StringComparison.Ordinal)) return "歪头";
+        return value;
+    }
+
+    private static AvatarIntent MotionIntent(string channel, float value) =>
+        new(new ReadOnlyDictionary<string, float>(new Dictionary<string, float> { [channel] = value }), 400, 1600);
+
+    private static bool TryReadSpoken(JsonElement root, out string text, out bool silent)
+    {
+        text = "";
+        silent = false;
+        if (root.TryGetProperty("respond", out var respond))
+        {
+            if (respond.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                return false;
+            if (!respond.GetBoolean())
+            {
+                silent = true;
+                return true;
+            }
+        }
+
+        return TryReadString(root, "speech", out text) || TryReadString(root, "reply", out text);
+    }
+
+    private static bool TryReadString(JsonElement root, string name, out string text)
+    {
+        text = "";
+        if (!root.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.String)
+            return false;
+        text = value.GetString() ?? "";
+        return true;
+    }
+
     private static bool TryExtractObject(string raw, out string payload)
     {
         payload = raw.Trim();
@@ -125,28 +221,51 @@ public static class AvatarReplyProtocol
     {
         var names = allowed.ToHashSet(StringComparer.Ordinal);
         var channels = AvatarChannels.All.Where(c => c.AiControlled && names.Contains(c.Name)).ToArray();
-        var descriptions = channels.Select(c => c.Name + "（" + c.Label + "）：" + (c.Unipolar ? "0 闭眼到 1 睁眼" :
-            "-1~1，0 中立，正值" + (c.Name switch
-            {
-                "headYaw" or "gazeX" or "bodyYaw" => "向画面右",
-                "headPitch" or "gazeY" or "browHeightL" or "browHeightR" => "向上",
-                "headRoll" or "bodyRoll" => "顺时针",
-                _ => "更开心"
-            })));
+        var hasHead = channels.Any(c => c.Name.StartsWith("head", StringComparison.Ordinal));
+        var hasBody = channels.Any(c => c.Name.StartsWith("body", StringComparison.Ordinal));
+        var split = hasHead && hasBody
+            ? "头通道只转头和脸，身体通道转脖子和身子；要一起动就在 targets 里同时写这两套。"
+            : hasHead ? "头通道转头和脸。"
+            : hasBody ? "身体通道转脖子和身子。"
+            : "";
+        var sample = channels.FirstOrDefault(c => c.Name == "headYaw") ?? channels.FirstOrDefault();
         var example = JsonSerializer.Serialize(new
         {
-            reply = "正文、（心里话）或【PASS】",
-            avatar = new { targets = channels.Take(1).ToDictionary(c => c.Name, _ => .2), transitionMs = 400, holdMs = 1500 }
+            respond = true,
+            speech = "准备朗读的口语正文",
+            avatar = sample is null ? null : new { targets = new Dictionary<string, float> { [sample.Name] = .5f } }
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
-        return "\n连续控制实验协议优先于正文输出格式：整次回复只输出一个 JSON 对象，不要代码块。格式 " + example + "。" +
-            "reply 内遵守原人设、字数、情绪标签和静默规则。avatar 可省略；PASS 不附动作。" +
-            "每轮最多一个目标姿态；不必每次变化。" +
-            (names.Contains("headYaw") ? "被要求摇头时输出 headYaw 0.5，程序会缓慢左右摆头。" : "") +
-            (names.Contains("headPitch") ? "点头用 headPitch。" : "") +
-            "仅使用以下可用语义通道（实际表现取决于当前模型映射）：" +
-            (channels.Length == 0 ? "无，请省略 avatar" : string.Join("；", descriptions)) + "。" +
-            "transitionMs 为 100~2000，holdMs 为 0~5000。缺省 400/1500。不要输出参数 ID 或文件名。";
+        return "\n用同一条 JSON 控制自己出不出声、说什么、头、身体和眼睛怎么摆。必须包含 respond 和 speech。" +
+            split +
+            "每个通道 0 是中立（正对镜头、平视、不歪、身子直立）。0.4~0.6 是镜头里能看清的一记；1 或 -1 是该通道转到极限，不要当默认幅度。" +
+            "要动时写 avatar.targets，值为连续数，不是动作名单。不要代码块。格式 " + example + "。" +
+            "静默只用 {\"respond\":false,\"speech\":\"\"}，不要附 avatar。" +
+            "speech 内遵守原人设、字数和情绪标签。" +
+            (names.Contains("headYaw") ? "被要求摇头时写 headYaw 0.5，程序按这个幅度左右摆头" +
+                (names.Contains("bodyYaw") ? "，身子会跟着一点，不必再写 bodyYaw，除非想额外拧腰。" : "。") : "") +
+            (names.Contains("headPitch") ? "点头写 headPitch 0.5。" : "") +
+            (names.Contains("bodyYaw") ? "只要转身子、不摇头时写 bodyYaw 0.45。" : "") +
+            "不要写 VTS/Live2D 参数名。可用语义通道：" +
+            (channels.Length == 0 ? "无，请省略 avatar" : string.Join("；", channels.Select(DescribeChannel))) + "。" +
+            "每轮最多一组目标；幅度自己选，不必每次都动。";
     }
+
+    private static string DescribeChannel(AvatarChannel channel) => channel.Name + "（" + channel.Label + "）：" + channel.Name switch
+    {
+        "headYaw" => "0 正对镜头，0.5 明显转向画面右（摇头用），1 头转到最右，-1 最左",
+        "headPitch" => "0 平视，0.5 明显抬头（点头用），1 抬到最高，-1 低头最低",
+        "headRoll" => "0 不歪，0.35 轻轻歪头，1 歪到最斜，负值向另一侧",
+        "bodyYaw" => "0 身子正对镜头，0.45 明显转腰，1 身子转到最右，-1 最左",
+        "bodyPitch" => "0 腰背直立，0.4 明显前倾哈腰，1 弯到最前，负值后仰",
+        "bodyRoll" => "0 身子不侧，0.4 明显侧身，1 侧到最斜，负值向另一侧",
+        "gazeX" => "0 看镜头，1 看向画面右，-1 左",
+        "gazeY" => "0 平视，1 看上，-1 看下",
+        "eyeOpenL" or "eyeOpenR" => "0 闭上，1 睁开",
+        "browHeightL" or "browHeightR" => "0 眉在中位，1 抬到最高，-1 压到最低",
+        "browFormL" or "browFormR" => "0 中性眉形，1 最舒展，-1 最皱",
+        "mouthSmile" => "0 中性嘴，1 最笑，-1 最抿",
+        _ => channel.Unipolar ? "0 到 1" : "-1~1，0 中立"
+    };
 }
 
 public interface IAvatarReplySource

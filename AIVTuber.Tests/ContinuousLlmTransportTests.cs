@@ -35,6 +35,27 @@ public class ContinuousLlmTransportTests
         Assert.DoesNotContain("AIVTuberHeadRoll", handler.Request.GetRawText());
     }
     [Fact]
+    public async Task InvitedEnvelopeParsesSpeechAndHeadYaw()
+    {
+        var handler = new ResponseHandler("{\"respond\":true,\"speech\":\"好呀。\",\"avatar\":{\"targets\":{\"headYaw\":0.5}}}");
+        using var client = new LlmClient("角色", () => ["headYaw"], handler);
+        AvatarReplyPlan? plan = null;
+        var body = new StringBuilder();
+        client.OnAvatarPlanReady += (_, p) => plan = p;
+        await foreach (var token in client.StreamAsync([], "摇摇头呗")) body.Append(token);
+        Assert.Equal("好呀。", body.ToString());
+        Assert.Equal(.5f, plan!.Intent!.Targets["headYaw"]);
+        var request = handler.Request.GetRawText();
+        Assert.Contains("respond", request);
+        Assert.Contains("speech", request);
+        Assert.Contains("headYaw", request);
+        Assert.Contains("0.5", request);
+        Assert.DoesNotContain("bodyYaw", request);
+        Assert.DoesNotContain("FaceAngleX", request);
+        Assert.DoesNotContain("ParamAngle", request);
+    }
+
+    [Fact]
     public async Task BrokenJsonBecomesPlainSpeechWithoutIntent()
     {
         var handler = new ResponseHandler("在的！你叫我就醒啦。");

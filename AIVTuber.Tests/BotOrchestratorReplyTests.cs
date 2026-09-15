@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using AIVTuber.Core.Audio;
+using AIVTuber.Core.Avatar;
 using AIVTuber.Core.Bot;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Pipeline;
@@ -14,7 +15,6 @@ public sealed class BotOrchestratorReplyTests
     [InlineData("{\"respond\":true,\"speech\":\"没说完", false)]
     [InlineData("PASS", false)]
     [InlineData("[PASS]", false)]
-    [InlineData("你好[emotion:happy]", false)]
     public async Task StructuredDecision_ControlsAllPublicEffects(string raw, bool speaks)
     {
         var tts = new CountingTts();
@@ -49,6 +49,22 @@ public sealed class BotOrchestratorReplyTests
     }
 
     [Fact]
+    public async Task StructuredDecision_KeepsSpeakableProse()
+    {
+        var tts = new CountingTts();
+        using var player = new AudioPlayer();
+        using var orchestrator = new BotOrchestrator(
+            new UnusedAsr(), new FixedLlm("你好"), tts, player, new TtsConfig(), null, null,
+            async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
+            () => { }, triggerHotkeyAsync: null);
+        var captions = new List<string>();
+        orchestrator.OnSentenceReady += (_, text) => captions.Add(text);
+        await orchestrator.ProcessTextAsync("大肥鱼，你觉得呢？", [], bypassWake: true, requireStructuredReply: true);
+        Assert.Equal(1, tts.CallCount);
+        Assert.Equal("你好", Assert.Single(captions));
+    }
+
+    [Fact]
     public async Task NewTranscriptDuringSynthesis_DoesNotCancelInvitedReply()
     {
         using var gate = new ConversationTurnGate(TimeSpan.Zero);
@@ -73,6 +89,41 @@ public sealed class BotOrchestratorReplyTests
         Assert.Single(turns);
         gate.CompleteTurn(revision);
         Assert.Equal("嗯嗯", Assert.Single(turns[1]).Text);
+    }
+
+    [Fact]
+    public async Task InvitedAvatarPlan_SpeaksAndSubmitsHeadYaw()
+    {
+        var motion = new CaptureMotion();
+        var llm = new PlannedLlm("好呀。", new AvatarReplyPlan("好呀。",
+            new AvatarIntent(new Dictionary<string, float> { ["headYaw"] = .5f })));
+        var tts = new CountingTts();
+        using var player = new AudioPlayer();
+        using var orchestrator = new BotOrchestrator(
+            new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
+            async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
+            () => { }, triggerHotkeyAsync: null);
+        orchestrator.ConfigureContinuousControl(motion);
+        await orchestrator.ProcessTextAsync("摇摇头呗", [], bypassWake: true, requireStructuredReply: true);
+        Assert.Equal(1, tts.CallCount);
+        Assert.Equal(.5f, motion.Last!.Targets["headYaw"]);
+    }
+
+    [Fact]
+    public async Task HeadShakeAsk_InfersMotionWhenModelOmitsAvatar()
+    {
+        var motion = new CaptureMotion();
+        var llm = new PlannedLlm("好呀。", new AvatarReplyPlan("好呀。", null));
+        var tts = new CountingTts();
+        using var player = new AudioPlayer();
+        using var orchestrator = new BotOrchestrator(
+            new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
+            async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
+            () => { }, triggerHotkeyAsync: null);
+        orchestrator.ConfigureContinuousControl(motion);
+        await orchestrator.ProcessTextAsync("大肥鱼，摇摇头呗", [], bypassWake: true, requireStructuredReply: true);
+        Assert.Equal(1, tts.CallCount);
+        Assert.Equal(.5f, motion.Last!.Targets["headYaw"]);
     }
 
     [Fact]
@@ -204,6 +255,34 @@ public sealed class BotOrchestratorReplyTests
         await orchestrator.ProcessTextAsync("你好", [], bypassWake: true, canCommit: () => valid);
         Assert.Equal(2, played);
         Assert.Equal(1, committed);
+    }
+
+    private sealed class PlannedLlm(string text, AvatarReplyPlan plan) : ILlmClient, IAvatarReplySource
+    {
+        public event EventHandler<string>? OnSentenceReady;
+        public event EventHandler<string>? OnEmotionDetected;
+        public event EventHandler<string>? OnActionDetected;
+        public event EventHandler<string>? OnPoseDetected;
+        public event EventHandler<AvatarReplyPlan>? OnAvatarPlanReady;
+
+        public async IAsyncEnumerable<string> StreamAsync(
+            List<Message> history,
+            string userInput,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            OnAvatarPlanReady?.Invoke(this, plan);
+            OnSentenceReady?.Invoke(this, text);
+            yield return text;
+            await Task.CompletedTask;
+        }
+    }
+
+    private sealed class CaptureMotion : IAvatarMotionSink
+    {
+        public AvatarIntent? Last;
+        public void Submit(long generation, AvatarIntent intent) => Last = intent;
+        public void Cancel(long generation) { }
+        public void OnRms(float rms) { }
     }
 
     private sealed class FixedLlm(string text) : ILlmClient

@@ -16,7 +16,6 @@ public sealed class VtsApiException(string message, int errorId = -1) : Exceptio
 /// <summary>One authenticated socket, one receive task and serialized sends. No hidden retries.</summary>
 public sealed class VtsClient : IDisposable, IAvatarParameterBackend
 {
-    public const string MouthParameterId = "AIVTuberMouthOpen";
     private const string PluginName = "AIVTuber";
     private const string PluginDeveloper = "AIVTuberDev";
     private readonly VtsConfig _config;
@@ -43,7 +42,7 @@ public sealed class VtsClient : IDisposable, IAvatarParameterBackend
     internal VtsClient(VtsConfig config, string tokenPath) { _config = config; _tokenPath = tokenPath; }
     private void SetState(string value) { State = value; OnStateChanged?.Invoke(this, value); }
 
-    public async Task ConnectAsync(CancellationToken ct = default, bool createLegacyMouth = true)
+    public async Task ConnectAsync(CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         await _connectLock.WaitAsync(ct).ConfigureAwait(false);
@@ -74,7 +73,6 @@ public sealed class VtsClient : IDisposable, IAvatarParameterBackend
                 finally { if (File.Exists(temp)) File.Delete(temp); }
             }
             _authenticated = true;
-            if (createLegacyMouth) await CreateParameterAsync(MouthParameterId, 0, 1, 0, ct).ConfigureAwait(false);
             SetState("已连接");
             OnConnected?.Invoke(this, EventArgs.Empty);
         }
@@ -122,9 +120,6 @@ public sealed class VtsClient : IDisposable, IAvatarParameterBackend
         }, ct);
     public Task InjectParameterAsync(string paramId, float value, CancellationToken ct = default)
         => InjectAsync(new Dictionary<string, float> { [paramId] = value }, ct);
-    public Task SetMouthAsync(float rms, CancellationToken ct = default)
-        => InjectParameterAsync(MouthParameterId, Math.Clamp(rms * _config.MouthScale, 0, 1), ct);
-    public Task CloseMouthAsync(CancellationToken ct = default) => InjectParameterAsync(MouthParameterId, 0, ct);
     public Task TriggerHotkeyAsync(string hotkeyId, CancellationToken ct = default)
         => RequestAuthenticatedAsync("HotkeyTriggerRequest", new() { ["hotkeyID"] = hotkeyId }, ct);
     public Task LoadModelAsync(string modelId, CancellationToken ct = default)

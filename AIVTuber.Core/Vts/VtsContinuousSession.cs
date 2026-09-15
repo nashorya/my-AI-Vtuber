@@ -38,6 +38,8 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
             if (done.IsFaulted && !_disposed) SetStatus("VTS 后台任务失败：" + done.Exception!.GetBaseException().Message);
         }, TaskScheduler.Default);
     }
+    private int _suppressModelEvents;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _reloadedModels = new();
     private bool _receivedModelEvent;
     private string _revision = Guid.NewGuid().ToString("N");
     public string Status { get; private set; } = "实验未启用";
@@ -50,7 +52,8 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
         _client.OnDisconnected += OnDisconnected;
         _client.OnStateChanged += OnState;
     }
-    public string[] AllowedChannels => _paused ? [] : Volatile.Read(ref _allowedChannels).ToArray();
+    public string[] DeclaredChannels => Volatile.Read(ref _allowedChannels).ToArray();
+    public string[] AllowedChannels => _paused ? [] : DeclaredChannels;
     private void SetStatus(string message)
     {
         Status = message;
@@ -66,10 +69,20 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
     public void Submit(long generation, AvatarIntent intent)
     {
         var director = _director;
-        if (_paused || generation <= Interlocked.Read(ref _canceledThrough) ||
-            generation != Interlocked.Read(ref _turnGeneration) || Interlocked.Read(ref _turnEpoch) != Interlocked.Read(ref _controlEpoch))
+        if (_paused)
         {
-            DebugLog.Write($"[Avatar/VTS] generation={generation} model={Model?.Id} rejected: control paused or turn invalidated");
+            DebugLog.Write($"[Avatar/VTS] generation={generation} model={Model?.Id} rejected: injection paused");
+            return;
+        }
+        if (generation <= Interlocked.Read(ref _canceledThrough) ||
+            generation != Interlocked.Read(ref _turnGeneration))
+        {
+            DebugLog.Write($"[Avatar/VTS] generation={generation} model={Model?.Id} rejected: turn superseded");
+            return;
+        }
+        if (Interlocked.Read(ref _turnEpoch) != Interlocked.Read(ref _controlEpoch))
+        {
+            DebugLog.Write($"[Avatar/VTS] generation={generation} model={Model?.Id} rejected: control rebuilt after turn started");
             return;
         }
         var allowed = AllowedChannels.ToHashSet();
@@ -85,7 +98,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
         while (Interlocked.CompareExchange(ref _canceledThrough, generation, old) != old);
         _director?.Cancel(generation);
     }
-    public void OnRms(float rms) { if (!_paused) _director?.OnRms(rms); }
+    public void OnRms(float rms) { _director?.OnRms(rms); }
     public void NoteListening() { if (!_paused) _director?.NoteListening(); }
 
     private void InvalidateControl()
@@ -98,29 +111,56 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
 
     private void OnEvent(object? sender, VtsResponse response)
     {
-        if (response.MessageType is "ModelLoadedEvent" or "ModelConfigChangedEvent")
-        {
-            InvalidateControl();
-            _receivedModelEvent = true;
-            _revision = Guid.NewGuid().ToString("N");
-            Supervise(RefreshAfterEventAsync());
-        }
-        // Hotkeys and expressions stay under AI while this session owns the model.
+        if (response.MessageType is not ("ModelLoadedEvent" or "ModelConfigChangedEvent")) return;
+        _receivedModelEvent = true;
+        if (Volatile.Read(ref _suppressModelEvents) != 0) return;
+        // Reloading the same model is not a switch. Mapping edits still invalidate custom profiles.
+        if (response.MessageType == "ModelLoadedEvent" && IsSameLoadedModel(response)) return;
+        if (response.MessageType == "ModelConfigChangedEvent" && _config.UseBuiltInTracking) return;
+        InvalidateControl();
+        _revision = Guid.NewGuid().ToString("N");
+        Supervise(RefreshAfterEventAsync());
+    }
+
+    private bool IsSameLoadedModel(VtsResponse response)
+    {
+        if (response.Data is not { } data || data.ValueKind != JsonValueKind.Object) return false;
+        if (data.TryGetProperty("modelLoaded", out var loaded) &&
+            loaded.ValueKind is JsonValueKind.False or JsonValueKind.Null)
+            return false;
+        if (!data.TryGetProperty("modelID", out var id) || id.GetString() is not { Length: > 0 } modelId)
+            return false;
+        return Model is { } current && string.Equals(current.Id, modelId, StringComparison.OrdinalIgnoreCase);
     }
     private async Task RefreshAfterEventAsync()
     {
         if (Interlocked.Exchange(ref _refreshing, 1) != 0) return;
         try
         {
-            string revision;
-            do
+            for (var attempt = 0; attempt < 8 && !_disposed; attempt++)
             {
-                revision = _revision;
-                await StopAsync(false).ConfigureAwait(false);
-                await RefreshAsync(_life.Token).ConfigureAwait(false);
-                if (_config.Enabled && _config.UseBuiltInTracking && !_disposed)
-                    await ApplyAsync(_config, _life.Token).ConfigureAwait(false);
-            } while (revision != _revision && !_disposed);
+                var revision = _revision;
+                try
+                {
+                    await StopAsync(false).ConfigureAwait(false);
+                    var model = await RefreshAsync(_life.Token).ConfigureAwait(false);
+                    if (model is null)
+                    {
+                        SetStatus("正在等待新模型加载");
+                        await Task.Delay(400, _life.Token).ConfigureAwait(false);
+                        continue;
+                    }
+                    if (_config.Enabled && _config.UseBuiltInTracking)
+                        await ApplyAsync(_config, _life.Token).ConfigureAwait(false);
+                    if (revision == _revision) return;
+                }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("请刷新", StringComparison.Ordinal))
+                {
+                    await Task.Delay(300, _life.Token).ConfigureAwait(false);
+                }
+            }
+            if (!_disposed && (Model is null || _paused))
+                SetStatus("换模型后未接上，请点恢复控制");
         }
         catch (Exception ex) { if (!_disposed) SetStatus("模型刷新失败：" + ex.Message); }
         finally { Interlocked.Exchange(ref _refreshing, 0); }
@@ -151,31 +191,42 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
     public async Task ConnectAsync(CancellationToken ct = default)
     {
         await StopAsync(false).ConfigureAwait(false);
-        await _client.ConnectAsync(ct, createLegacyMouth: !_config.Enabled || !_config.UseBuiltInTracking).ConfigureAwait(false);
-        foreach (var eventName in new[] { "ModelLoadedEvent", "ModelConfigChangedEvent" })
-            await _client.SubscribeAsync(eventName, ct).ConfigureAwait(false);
-        await RefreshAsync(ct).ConfigureAwait(false);
-        // Reconnect only restores idle, never a previous utterance. Previously verified mappings
-        // are checked again against actual output ranges; manual config events invalidate Revision.
-        await ApplyAsync(_config, ct).ConfigureAwait(false);
+        Interlocked.Increment(ref _suppressModelEvents);
+        try
+        {
+            await _client.ConnectAsync(ct).ConfigureAwait(false);
+            foreach (var eventName in new[] { "ModelLoadedEvent", "ModelConfigChangedEvent" })
+                await _client.SubscribeAsync(eventName, ct).ConfigureAwait(false);
+            await RefreshAsync(ct).ConfigureAwait(false);
+            // Reconnect only restores idle, never a previous utterance. Previously verified mappings
+            // are checked again against actual output ranges; manual config events invalidate Revision.
+            await ApplyAsync(_config, ct).ConfigureAwait(false);
+        }
+        finally { Interlocked.Decrement(ref _suppressModelEvents); }
     }
     public async Task<VtsModelSnapshot?> RefreshAsync(CancellationToken ct = default)
     {
         var revision = _revision;
         var current = await _client.QueryAsync("CurrentModelRequest", ct).ConfigureAwait(false);
         if (!current.GetProperty("modelLoaded").GetBoolean())
-        { await StopAsync(false).ConfigureAwait(false); Volatile.Write(ref _model, null); SetStatus("VTS 未加载模型"); return null; }
+        {
+            await StopAsync(false).ConfigureAwait(false);
+            Volatile.Write(ref _model, null);
+            Volatile.Write(ref _allowedChannels, []);
+            SetStatus("VTS 未加载模型");
+            return null;
+        }
         var id = current.GetProperty("modelID").GetString()!;
         if (Model is { } previous && previous.Id != id) await StopAsync(false).ConfigureAwait(false);
         var parameters = await _client.QueryAsync("Live2DParameterListRequest", ct).ConfigureAwait(false);
         var inputs = await _client.QueryAsync("InputParameterListRequest", ct).ConfigureAwait(false);
         var expressions = await _client.QueryAsync("ExpressionStateRequest", ct).ConfigureAwait(false);
-        if (parameters.GetProperty("modelID").GetString() != id) throw new InvalidOperationException("查询时模型已切换，请刷新");
+        if (parameters.GetProperty("modelID").GetString() != id) return null;
         var list = parameters.GetProperty("parameters").EnumerateArray().Select(p => new VtsParameter(
             p.GetProperty("name").GetString()!, p.GetProperty("min").GetSingle(), p.GetProperty("max").GetSingle(),
             p.GetProperty("defaultValue").GetSingle(), p.GetProperty("value").GetSingle())).ToArray();
         if (inputs.TryGetProperty("modelID", out var inputModel) && inputModel.GetString() != id)
-            throw new InvalidOperationException("查询输入时模型已切换，请刷新");
+            return null;
         var defaultInputs = new List<VtsParameter>();
         if (inputs.TryGetProperty("defaultParameters", out var defaults))
             foreach (var p in defaults.EnumerateArray())
@@ -189,7 +240,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
                 foreach (var p in array.EnumerateArray()) inputNames.Add(p.GetProperty("name").GetString()!);
         var active = expressions.TryGetProperty("expressions", out var expressionList) &&
             expressionList.EnumerateArray().Any(p => p.TryGetProperty("active", out var a) && a.GetBoolean());
-        if (revision != _revision) throw new InvalidOperationException("查询期间模型配置已变化，请刷新");
+        if (revision != _revision) return null;
         if (!_receivedModelEvent && Model is null && _config.Profiles.TryGetValue(id, out var saved) && !string.IsNullOrEmpty(saved.Revision))
             _revision = saved.Revision;
         var model = new VtsModelSnapshot(id, current.GetProperty("modelName").GetString()!, _revision, list, inputNames, active) { DefaultInputs = defaultInputs };
@@ -297,55 +348,94 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
     public async Task ApplyAsync(ContinuousControlConfig config, CancellationToken ct = default)
     {
         var epoch = Interlocked.Increment(ref _controlEpoch);
+        Interlocked.Increment(ref _suppressModelEvents);
         string? reloadId = null;
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        VtsTrackingBackend? tracking = null;
+        AvatarChannelBinding[]? trackingBindings = null;
+        var modelName = "";
         try
         {
-            if (epoch != Interlocked.Read(ref _controlEpoch)) return;
-            await StopCoreAsync(true).ConfigureAwait(false);
-            var restoreLegacyMouth = _config.Enabled && _config.UseBuiltInTracking && !config.Enabled;
-            _config = config.Snapshot();
-            if (restoreLegacyMouth && _client.IsConnected)
-                await _client.CreateParameterAsync(VtsClient.MouthParameterId, 0, 1, 0, ct).ConfigureAwait(false);
-            if (!_config.Enabled) { SetStatus("实验未启用"); return; }
-            if (Model is not { } model || !_client.IsConnected) { SetStatus("未连接模型"); return; }
-            if (_config.UseBuiltInTracking)
+            await _gate.WaitAsync(ct).ConfigureAwait(false);
+            try
             {
-                var backend = new VtsTrackingBackend(_client, model.DefaultInputs);
-                var trackingBindings = backend.CreateBindings();
-                if (trackingBindings.Length == 0) { SetStatus("没有可用的标准面捕输入，请检查 VTS 版本或使用高级映射"); return; }
-                if (VtsModelFile.TryPinLoadedModel(model.Id))
+                if (epoch != Interlocked.Read(ref _controlEpoch)) return;
+                await StopCoreAsync(true).ConfigureAwait(false);
+                _config = config.Snapshot();
+                if (!_config.Enabled) { SetStatus("实验未启用"); return; }
+                if (Model is not { } model || !_client.IsConnected) { SetStatus("未连接模型"); return; }
+                if (_config.UseBuiltInTracking)
                 {
-                    reloadId = model.Id;
-                    SetStatus("已把身体/步伐从头部输入拆开，正在重新加载模型");
+                    var baseline = new VtsTrackingBackend(_client, model.DefaultInputs);
+                    if (baseline.CreateBindings().Length == 0)
+                    {
+                        SetStatus("没有可用的标准面捕输入，请检查 VTS 版本或使用高级映射");
+                        return;
+                    }
+                    var extras = await EnsureBodyInputsAsync(ct).ConfigureAwait(false);
+                    tracking = new VtsTrackingBackend(_client, model.DefaultInputs.Concat(extras));
+                    trackingBindings = tracking.CreateBindings();
+                    Volatile.Write(ref _allowedChannels, trackingBindings
+                        .Where(b => AvatarChannels.All.Any(c => c.Name == b.Channel && c.AiControlled))
+                        .Select(b => b.Channel).ToArray());
+                    modelName = model.Name;
+                    var firstLoad = _reloadedModels.TryAdd(model.Id, 0);
+                    if (VtsModelFile.TryPinLoadedModel(model.Id) || firstLoad)
+                        reloadId = model.Id;
+                }
+                else
+                {
+                    if (!_config.Profiles.TryGetValue(model.Id, out var profile) || profile.Revision != model.Revision)
+                    { SetStatus("模型尚未验证；请刷新、试动后保存"); return; }
+                    var bindings = profile.Channels.Where(b => b.Verified && b.IsValid && model.Inputs.Contains(b.InputId) &&
+                        model.Parameters.Any(p => p.Id == b.ParameterId && b.Minimum >= p.Min && b.Maximum <= p.Max)).ToArray();
+                    if (bindings.Length == 0) { SetStatus("没有已验证且可用的通道"); return; }
+                    if (bindings.Select(b => b.Channel).Distinct().Count() != bindings.Length ||
+                        bindings.Select(b => b.ParameterId).Distinct().Count() != bindings.Length)
+                        throw new InvalidOperationException("通道或目标参数重复，请重新配置");
+                    // Custom inputs are global in VTS, whereas calibration is per model. Restore
+                    // their ranges after reconnect.
+                    foreach (var binding in bindings)
+                        await _client.CreateParameterAsync(binding.InputId, binding.Minimum, binding.Maximum, binding.Neutral, ct).ConfigureAwait(false);
+                    ValidateModel(profile);
+                    if (epoch != Interlocked.Read(ref _controlEpoch)) return;
+                    StartDirector(_client, bindings);
+                    SetStatus($"连续控制运行中：{model.Name}，{bindings.Length} 个通道");
                     return;
                 }
-                if (epoch != Interlocked.Read(ref _controlEpoch)) return;
-                StartDirector(backend, trackingBindings);
-                SetStatus($"内置面捕控制运行中：{model.Name}，{trackingBindings.Length} 个输入通道；复用已有映射，未验证视觉效果");
-                return;
             }
-            if (!_config.Profiles.TryGetValue(model.Id, out var profile) || profile.Revision != model.Revision)
-            { SetStatus("模型尚未验证；请刷新、试动后保存"); return; }
-            var bindings = profile.Channels.Where(b => b.Verified && b.IsValid && model.Inputs.Contains(b.InputId) &&
-                model.Parameters.Any(p => p.Id == b.ParameterId && b.Minimum >= p.Min && b.Maximum <= p.Max)).ToArray();
-            if (bindings.Length == 0) { SetStatus("没有已验证且可用的通道"); return; }
-            if (bindings.Select(b => b.Channel).Distinct().Count() != bindings.Length ||
-                bindings.Select(b => b.ParameterId).Distinct().Count() != bindings.Length)
-                throw new InvalidOperationException("通道或目标参数重复，请重新配置");
-            // Custom inputs are global in VTS, whereas calibration is per model. Restore
-            // their ranges after reconnect (including the legacy mouth input's defaults).
-            foreach (var binding in bindings)
-                await _client.CreateParameterAsync(binding.InputId, binding.Minimum, binding.Maximum, binding.Neutral, ct).ConfigureAwait(false);
-            ValidateModel(profile);
-            if (epoch != Interlocked.Read(ref _controlEpoch)) return;
-            StartDirector(_client, bindings);
-            SetStatus($"连续控制运行中：{model.Name}，{bindings.Length} 个通道");
+            finally { _gate.Release(); }
+
+            if (reloadId is not null)
+            {
+                SetStatus("已把身体反向、步伐钉死，正在重新加载模型");
+                try { await _client.LoadModelAsync(reloadId, ct).ConfigureAwait(false); }
+                catch (Exception ex) when (!_disposed) { SetStatus("重新加载模型失败：" + ex.Message); }
+            }
+            if (tracking is null || trackingBindings is not { Length: > 0 }) return;
+            await _gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                if (epoch != Interlocked.Read(ref _controlEpoch)) return;
+                StartDirector(tracking, trackingBindings);
+                SetStatus($"内置面捕控制运行中：{modelName}，{trackingBindings.Length} 个输入通道；复用已有映射，未验证视觉效果");
+            }
+            finally { _gate.Release(); }
         }
-        finally { _gate.Release(); }
-        if (reloadId is not null)
-            await _client.LoadModelAsync(reloadId, ct).ConfigureAwait(false);
+        finally { Interlocked.Decrement(ref _suppressModelEvents); }
     }
+    private async Task<List<VtsParameter>> EnsureBodyInputsAsync(CancellationToken ct)
+    {
+        var extras = new List<VtsParameter>();
+        foreach (var channel in AvatarChannels.All.Where(c => c.Name.StartsWith("body", StringComparison.Ordinal)))
+        {
+            var id = channel.InputId;
+            try { await _client.CreateParameterAsync(id, -1, 1, 0, ct).ConfigureAwait(false); }
+            catch (VtsApiException) { /* already exists */ }
+            extras.Add(new VtsParameter(id, -1, 1, 0, 0));
+        }
+        return extras;
+    }
+
     private void StartDirector(IAvatarParameterBackend backend, AvatarChannelBinding[] bindings)
     {
         Volatile.Write(ref _allowedChannels, bindings.Where(b => AvatarChannels.All.Any(c => c.Name == b.Channel && c.AiControlled)).Select(b => b.Channel).ToArray());
@@ -373,7 +463,6 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
     {
         _previewCancellation?.Cancel();
         _paused = true;
-        Volatile.Write(ref _allowedChannels, []);
         var director = Interlocked.Exchange(ref _director, null);
         if (director is null) return;
         if (neutral && _client.IsConnected) await director.ReturnToNeutralAsync().ConfigureAwait(false);

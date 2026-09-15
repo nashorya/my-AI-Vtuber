@@ -576,7 +576,9 @@ public sealed class BotRuntime : IAsyncDisposable
             _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model,
                 BuildLlmSystemPrompt(),
                 _config.Avatar.UsesVts && _config.Vts.ContinuousControl.Enabled
-                    ? () => _continuousVts?.AllowedChannels ?? [] : null);
+                    ? () => _continuousVts is { } vts && vts.DeclaredChannels.Length > 0
+                        ? vts.DeclaredChannels
+                        : [] : null);
         }
         if (_tts is null || rebuild.HasFlag(RuntimeChange.RebuildTts))
         {

@@ -1,3 +1,4 @@
+using AIVTuber.Core.Avatar;
 using AIVTuber.Core.Bot;
 
 namespace AIVTuber.Tests;
@@ -27,7 +28,6 @@ public class StructuredReplyTests
     [InlineData("{\"respond\":true}")]
     [InlineData("{\"respond\":\"true\",\"speech\":\"你好\"}")]
     [InlineData("{\"respond\":true,\"speech\":\"你好\"")]
-    [InlineData("{\"respond\":true,\"speech\":\"你好\",\"reason\":\"被叫到\"}")]
     [InlineData("{\"respond\":false,\"respond\":true,\"speech\":\"你好\"}")]
     [InlineData("{\"respond\":true,\"speech\":null}")]
     [InlineData("{\"respond\":true,\"speech\":\"好的[PASS]\"}")]
@@ -45,6 +45,49 @@ public class StructuredReplyTests
         Assert.Equal(ReplyKind.Speak, reply.Kind);
         Assert.Equal("我觉得可以。", reply.Spoken);
         Assert.Equal("[emotion:happy]", Assert.Single(reply.StagedControls));
+    }
+
+    [Fact]
+    public void OptionalAvatarField_DoesNotInvalidateSpeak()
+    {
+        var reply = ReplyClassifier.ClassifyStructured(
+            "{\"respond\":true,\"speech\":\"好呀。\",\"motion\":\"摇头\"}");
+        Assert.Equal(ReplyKind.Speak, reply.Kind);
+        Assert.Equal("好呀。", reply.Spoken);
+    }
+
+    [Fact]
+    public void ClassifyTurn_UsesExtractedSpeechInsteadOfStructuredJson()
+    {
+        var plan = new AvatarReplyPlan("好呀。", new AvatarIntent(new Dictionary<string, float> { ["headYaw"] = .5f }));
+        var reply = ReplyClassifier.ClassifyTurn("好呀。", plan, requireStructuredReply: true);
+        Assert.Equal(ReplyKind.Speak, reply.Kind);
+        Assert.Equal("好呀。", reply.Spoken);
+        Assert.Equal(.5f, reply.AvatarIntent!.Targets["headYaw"]);
+    }
+
+    [Fact]
+    public void ExtraJsonFields_DoNotDiscardSpeech()
+    {
+        var reply = ReplyClassifier.ClassifyStructured(
+            "{\"respond\":true,\"speech\":\"你好\",\"reason\":\"被叫到\"}");
+        Assert.Equal(ReplyKind.Speak, reply.Kind);
+        Assert.Equal("你好", reply.Spoken);
+    }
+
+    [Fact]
+    public void ClassifyTurn_SpeakableProseIsKept()
+    {
+        var plan = new AvatarReplyPlan("在的！", null, "动作已丢弃：回复不是 JSON 对象");
+        var reply = ReplyClassifier.ClassifyTurn("在的！", plan, true);
+        Assert.Equal(ReplyKind.Speak, reply.Kind);
+        Assert.Equal("在的！", reply.Spoken);
+    }
+
+    [Fact]
+    public void ClassifyTurn_BrokenJsonStillFailsClosed()
+    {
+        Assert.Equal(ReplyKind.Invalid, ReplyClassifier.ClassifyTurn("{\"respond\":true,\"speech\":\"你好\"", null, true).Kind);
     }
 
     [Fact]

@@ -50,15 +50,15 @@ internal static class ReplyClassifier
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object) return ClassifiedReply.Invalid;
             var fields = root.EnumerateObject().ToArray();
-            if (fields.Length != 2 || fields.Count(p => p.Name == "respond") != 1 ||
-                fields.Count(p => p.Name == "speech") != 1 ||
+            if (fields.Count(p => p.Name == "respond") != 1 ||
+                fields.Count(p => p.Name is "speech" or "reply") != 1 ||
                 !root.TryGetProperty("respond", out var respond) ||
                 respond.ValueKind is not (JsonValueKind.True or JsonValueKind.False) ||
-                !root.TryGetProperty("speech", out var speech) || speech.ValueKind != JsonValueKind.String)
+                !TryReadSpokenField(root, out var speech))
                 return ClassifiedReply.Invalid;
             if (!respond.GetBoolean())
                 return new ClassifiedReply(ReplyKind.Pass, "", "", []);
-            var spoken = Classify(speech.GetString());
+            var spoken = Classify(speech);
             if (spoken.Kind != ReplyKind.Speak) return spoken with { StagedControls = [] };
             // Do not read a nested/misplaced envelope as dialogue.
             if (spoken.Spoken.StartsWith('{') || spoken.Spoken.StartsWith('[') || spoken.Spoken.Contains("```"))
@@ -66,6 +66,45 @@ internal static class ReplyClassifier
             return spoken;
         }
         catch (JsonException) { return ClassifiedReply.Invalid; }
+    }
+
+    public static ClassifiedReply ClassifyTurn(string raw, AIVTuber.Core.Avatar.AvatarReplyPlan? avatarPlan, bool requireStructuredReply)
+    {
+        if (avatarPlan is not null && IsExtractedAvatarReply(avatarPlan))
+            return Classify(avatarPlan.Reply) with { AvatarIntent = avatarPlan.Intent };
+        if (!requireStructuredReply) return Classify(raw);
+        var structured = ClassifyStructured(raw);
+        if (structured.Kind != ReplyKind.Invalid) return structured;
+        var fallback = Classify(raw);
+        return fallback.Kind == ReplyKind.Speak && !LooksLikeJson(raw) ? fallback : structured;
+    }
+
+    private static bool LooksLikeJson(string raw)
+    {
+        var body = raw.Trim();
+        if (body.StartsWith("```", StringComparison.Ordinal)) return true;
+        return body.StartsWith('{') || body.StartsWith('[');
+    }
+
+    private static bool IsExtractedAvatarReply(AIVTuber.Core.Avatar.AvatarReplyPlan plan) =>
+        plan.Diagnostic is null ||
+        (!plan.Diagnostic.Contains("不是 JSON", StringComparison.Ordinal) &&
+         !plan.Diagnostic.Contains("缺少", StringComparison.Ordinal));
+
+    private static bool TryReadSpokenField(JsonElement root, out string? speech)
+    {
+        speech = null;
+        if (root.TryGetProperty("speech", out var value) && value.ValueKind == JsonValueKind.String)
+        {
+            speech = value.GetString();
+            return true;
+        }
+        if (root.TryGetProperty("reply", out value) && value.ValueKind == JsonValueKind.String)
+        {
+            speech = value.GetString();
+            return true;
+        }
+        return false;
     }
     private static readonly Regex ControlTagRegex = new(
         @"\[(?:emotion|action|pose):[^\]\r\n]+\]",

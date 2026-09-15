@@ -4,7 +4,12 @@ using System.Text.Json.Nodes;
 
 namespace AIVTuber.Core.Vts;
 
-/// <summary>Rewrites VTS model mappings so FaceAngle does not also drive body or footsteps.</summary>
+/// <summary>
+/// Official VTS models wire FaceAngleX to head, body, and footsteps together
+/// (webcam "turn" looks like the whole person turns). Head shake must keep the
+/// feet planted and drive body the opposite way so ParamAngleX's torso deformers
+/// do not read as a hop.
+/// </summary>
 public static class VtsModelFile
 {
     public static bool IsBodyFollowOutput(string output)
@@ -25,18 +30,93 @@ public static class VtsModelFile
         {
             if (node is not JsonObject item) continue;
             var output = item["OutputLive2D"]?.GetValue<string>() ?? "";
-            var input = item["Input"]?.GetValue<string>() ?? "";
-            if (!IsBodyFollowOutput(output) || !IsHeadCoupledInput(input)) continue;
-            item["Input"] = "";
-            changed = true;
+            var name = item["Name"]?.GetValue<string>() ?? "";
+            if (!IsBodyFollowOutput(output) && !IsBodyFollowOutput(name) && !IsMouthOpenOutput(output, name))
+                continue;
+            if (PinOne(item, output, name)) changed = true;
         }
         if (!changed) return false;
         updated = root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
         return true;
     }
 
+    private static bool PinOne(JsonObject item, string output, string name)
+    {
+        var input = item["Input"]?.GetValue<string>() ?? "";
+        if (IsMouthOpenOutput(output, name))
+        {
+            if (input.Equals("MouthOpen", StringComparison.OrdinalIgnoreCase)) return false;
+            item["Input"] = "MouthOpen";
+            return true;
+        }
+        if (IsStep(output, name))
+        {
+            if (input.Length == 0) return false;
+            item["Input"] = "";
+            return true;
+        }
+
+        var body = BodyInputFor(output, name);
+        var lower = ReadFloat(item, "OutputRangeLower", -10);
+        var upper = ReadFloat(item, "OutputRangeUpper", 10);
+        if (input.Equals(body, StringComparison.OrdinalIgnoreCase) && lower < upper)
+            return false;
+
+        var magnitude = Math.Max(Math.Abs(lower), Math.Abs(upper));
+        if (magnitude < 1) magnitude = 10;
+        item["Input"] = body;
+        item["InputRangeLower"] = -1;
+        item["InputRangeUpper"] = 1;
+        item["OutputRangeLower"] = -magnitude;
+        item["OutputRangeUpper"] = magnitude;
+        return true;
+    }
+
+    internal static string BodyInputFor(string output, string name)
+    {
+        var face = FaceInputForBody(output, name);
+        return face switch
+        {
+            "FaceAngleY" => "AIVTuberBodyPitch",
+            "FaceAngleZ" => "AIVTuberBodyRoll",
+            _ => "AIVTuberBodyYaw"
+        };
+    }
+
+    internal static string FaceInputForBody(string output, string name)
+    {
+        var key = output + " " + name;
+        if (ContainsAxis(key, "Y") || key.Contains("Pitch", StringComparison.OrdinalIgnoreCase))
+            return "FaceAngleY";
+        if (ContainsAxis(key, "Z") || key.Contains("Roll", StringComparison.OrdinalIgnoreCase) ||
+            key.Contains("Lean", StringComparison.OrdinalIgnoreCase) ||
+            key.Contains("Tilt", StringComparison.OrdinalIgnoreCase))
+            return "FaceAngleZ";
+        return "FaceAngleX";
+    }
+
+    internal static bool IsMouthOpenOutput(string output, string name)
+        => output.Contains("MouthOpen", StringComparison.OrdinalIgnoreCase) ||
+           (name.Equals("Mouth Open", StringComparison.OrdinalIgnoreCase) &&
+            !name.Contains("Smile", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsStep(string output, string name)
+        => output.Contains("Step", StringComparison.OrdinalIgnoreCase) ||
+           name.Contains("Step", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ContainsAxis(string key, string axis)
+        => key.Contains("Angle" + axis, StringComparison.OrdinalIgnoreCase) ||
+           key.Contains("Rotation " + axis, StringComparison.OrdinalIgnoreCase) ||
+           key.Contains("Rotation" + axis, StringComparison.OrdinalIgnoreCase);
+
+    private static float ReadFloat(JsonObject item, string key, float fallback)
+        => item[key] is JsonValue value && value.TryGetValue<float>(out var number) ? number : fallback;
+
+    internal static readonly AsyncLocal<Func<string, bool>?> TryPinOverride = new();
+
     public static bool TryPinLoadedModel(string modelId)
     {
+        if (TryPinOverride.Value is { } hook) return hook(modelId);
         if (string.IsNullOrWhiteSpace(modelId)) return false;
         foreach (var file in CandidateFiles())
         {

@@ -10,6 +10,7 @@ public sealed class VtsTrackingBackend : IAvatarParameterBackend
     private static readonly IReadOnlyDictionary<string, string[]> Routes = new Dictionary<string, string[]>
     {
         ["headYaw"] = ["FaceAngleX"], ["headPitch"] = ["FaceAngleY"], ["headRoll"] = ["FaceAngleZ"],
+        ["bodyYaw"] = ["AIVTuberBodyYaw"], ["bodyPitch"] = ["AIVTuberBodyPitch"], ["bodyRoll"] = ["AIVTuberBodyRoll"],
         ["gazeX"] = ["EyeLeftX", "EyeRightX"], ["gazeY"] = ["EyeLeftY", "EyeRightY"],
         ["eyeOpenL"] = ["EyeOpenLeft"], ["eyeOpenR"] = ["EyeOpenRight"],
         ["browHeightL"] = ["BrowLeftY", "Brows"], ["browHeightR"] = ["BrowRightY", "Brows"],
@@ -85,7 +86,9 @@ public sealed class VtsTrackingBackend : IAvatarParameterBackend
             // center them to retain both directions without assuming a model's output ranges.
             var neutral = min < 0 && max > 0 ? 0 : min + (max - min) / 2;
             var extent = value >= 0 ? max - neutral : neutral - min;
-            var amplitude = channel.StartsWith("head", StringComparison.Ordinal) ? Math.Min(16, extent) : extent * .5;
+            var amplitude = channel.StartsWith("head", StringComparison.Ordinal) ||
+                channel.StartsWith("body", StringComparison.Ordinal)
+                ? Math.Min(28, extent) : extent * .5;
             mapped = neutral + value * amplitude;
         }
         return (float)Math.Clamp(mapped, min, max);

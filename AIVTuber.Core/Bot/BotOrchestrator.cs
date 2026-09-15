@@ -182,11 +182,11 @@ public sealed class BotOrchestrator : IDisposable
         {
             _rmsUpdatedHandler = (_, rms) =>
             {
-                if (!_disposed) HandleRmsAsync(rms);
+                if (!_disposed) HandleRms(rms);
             };
             _playbackFinishedHandler = (_, _) =>
             {
-                if (!_disposed) TryCloseMouthAsync();
+                if (!_disposed) TryCloseMouth();
             };
             _player.RmsUpdated += _rmsUpdatedHandler;
             _player.PlaybackFinished += _playbackFinishedHandler;
@@ -375,37 +375,9 @@ public sealed class BotOrchestrator : IDisposable
         return false;
     }
 
-    private bool _rmsErrorLogged;
+    private void HandleRms(float rms) => _motion?.OnRms(rms * _vtsConfig.MouthScale);
 
-    private async void HandleRmsAsync(float rms)
-    {
-        if (_motion is not null) { _motion.OnRms(rms * _vtsConfig.MouthScale); return; }
-        if (_vts is null) return;
-        try
-        {
-            await _vts.SetMouthAsync(rms);
-            _rmsErrorLogged = false;
-        }
-        catch (Exception ex)
-        {
-            // Log only the first failure per outage to avoid spamming the ~30ms RMS loop.
-            if (!_rmsErrorLogged)
-            {
-                _rmsErrorLogged = true;
-                var msg = $"[VTS] 口型注入失败: {ex.Message}";
-                Console.Error.WriteLine(msg);
-                OnError?.Invoke(this, msg);
-            }
-        }
-    }
-
-    private async void TryCloseMouthAsync()
-    {
-        if (_motion is not null) { _motion.OnRms(0); return; }
-        if (_vts is null) return;
-        try { await _vts.CloseMouthAsync(); }
-        catch { /* ignore */ }
-    }
+    private void TryCloseMouth() => _motion?.OnRms(0);
 
     /// <summary>Process a speech segment from VAD. Interrupts any ongoing processing.</summary>
     public Task ProcessSpeechAsync(SpeechSegment speech, List<Message> history, string micTemplate) =>
@@ -617,17 +589,6 @@ public sealed class BotOrchestrator : IDisposable
         _deferLlmEvents = false;
         ClearDeferredControls();
         _stopPlayback();
-        if (_motion is null && _vts is not null)
-        {
-            try { _vts.CloseMouthAsync().GetAwaiter().GetResult(); }
-            catch (Exception ex)
-            {
-                // Stop/disposal must remain safe when VTS is already disconnected.
-                var message = $"[VTS] 关闭口型失败: {ex.Message}";
-                AIVTuber.Core.Diagnostics.DebugLog.Write(message);
-                if (!_disposed) OnError?.Invoke(this, message);
-            }
-        }
     }
 
     public bool IsProcessing => _coordinator.IsBusy;
@@ -678,11 +639,11 @@ public sealed class BotOrchestrator : IDisposable
                 }
 
                 if (!IsCurrent(envelope, ct)) return;
-                var classified = requireStructuredReply
-                    ? ReplyClassifier.ClassifyStructured(rawAll.ToString())
-                    : ReplyClassifier.Classify(rawAll.ToString());
-                if (_avatarPlans.TryRemove(context.Generation, out var avatarPlan))
-                    classified = classified with { AvatarIntent = avatarPlan.Intent };
+                _avatarPlans.TryRemove(context.Generation, out var avatarPlan);
+                var classified = ReplyClassifier.ClassifyTurn(rawAll.ToString(), avatarPlan, requireStructuredReply);
+                if (classified.Kind == ReplyKind.Speak && classified.AvatarIntent is null &&
+                    AvatarReplyProtocol.InferRequestedMotion(userInput) is { } inferred)
+                    classified = classified with { AvatarIntent = inferred };
                 _deferLlmEvents = false;
                 if (canCommit is not null && !canCommit()) return;
                 if (classified.Kind == ReplyKind.Speak)
