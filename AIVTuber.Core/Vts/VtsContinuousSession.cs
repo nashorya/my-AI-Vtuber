@@ -312,6 +312,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
         string? failure = null;
         test.Faulted += (_, error) => { failure = error; previewCancellation.Cancel(); };
         await _gate.WaitAsync(ct).ConfigureAwait(false);
+        var resumeAfter = !_paused && _director is not null;
         try
         {
             await StopCoreAsync(true).ConfigureAwait(false);
@@ -355,7 +356,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
         }
         SetStatus("试动结束；请观察是否正确运动，再确认此通道。数值响应不能替代视觉确认。");
         // The trial stopped the running writer; diagnostics must not leave the avatar dead.
-        if (!_disposed) Supervise(ResumeAsync());
+        if (resumeAfter && !_disposed) Supervise(ResumeAsync());
     }
     public async Task ApplyAsync(ContinuousControlConfig config, CancellationToken ct = default)
     {
@@ -614,6 +615,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
         string? failure = null;
         test.Faulted += (_, error) => { failure = error; previewCancellation.Cancel(); };
         await _gate.WaitAsync(ct).ConfigureAwait(false);
+        var resumeAfter = !_paused && _director is not null;
         try
         {
             await StopCoreAsync(true).ConfigureAwait(false);
@@ -658,7 +660,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
         }
         // The axis test stopped the running writer; restore continuous control so a
         // diagnostic never leaves the avatar motionless until a manual resume.
-        if (!_disposed) Supervise(ResumeAsync());
+        if (resumeAfter && !_disposed) Supervise(ResumeAsync());
     }
 
     public bool TryRestoreModelPatch(out string path)

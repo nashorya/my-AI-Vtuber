@@ -248,6 +248,53 @@ public sealed class VtsTrackingTests : IDisposable
     }
 
     [Fact]
+    public async Task FileVerifiedBodyMappingSkipsLiveProbeAndStaysOpen()
+    {
+        VtsModelFile.TryInspectOverride.Value = _ =>
+            new[] { new VtsMappingInspection("ParamBodyAngleX", "AIVTuberBodyYaw", -1, 1, -10, 10, "") };
+        try
+        {
+            await using var server = new FakeVts
+            {
+                DefaultInputs = [P("FaceAngleX", -30, 30)],
+                Live2DParameters = [new("ParamAngleX", -30, 30, 0, 0)]
+            };
+            using var client = new VtsClient(server.Config, Token);
+            await using var session = new VtsContinuousSession(client, new() { Enabled = true });
+            await session.ConnectAsync();
+            Assert.Contains("bodyYaw", session.AllowedChannels);
+            Assert.Contains(session.BodyMappings, r => r.Channel == "bodyYaw" &&
+                r.State == "verified" && r.Reason.Contains("模型文件"));
+            // The model file already proves the wiring: the file-verified channel is never
+            // live-probed, so a correctly wired model does not twitch on connect.
+            Assert.DoesNotContain(Frames(server), f => f.TryGetValue("AIVTuberBodyYaw", out var v) && v > .3f);
+            // Channels the file cannot vouch for are still probed once with a readback.
+            Assert.Contains(Frames(server), f => f.TryGetValue("AIVTuberBodyPitch", out var v) && v > .3f);
+            Assert.Contains(session.BodyMappings, r => r.Channel == "bodyPitch" && r.State == "unknown");
+        }
+        finally { VtsModelFile.TryInspectOverride.Value = null; }
+    }
+
+    [Fact]
+    public async Task AxisTestRestoresContinuousControlAfterwards()
+    {
+        await using var server = new FakeVts
+        {
+            DefaultInputs = [P("FaceAngleX", -30, 30)],
+            Live2DParameters = [new("ParamAngleX", -30, 30, 0, 0), new("ParamBodyAngleX", -10, 10, 0, 0)]
+        };
+        server.Live2DFromInput["AIVTuberBodyYaw"] = "ParamBodyAngleX";
+        using var client = new VtsClient(server.Config, Token);
+        await using var session = new VtsContinuousSession(client, new() { Enabled = true });
+        await session.ConnectAsync();
+        Assert.Contains("bodyYaw", session.AllowedChannels);
+        await session.TestTrackingAxisAsync("bodyYaw", .45f);
+        // A diagnostic must not leave the avatar dead until a manual resume.
+        await VtsContinuousIntegrationTests.WaitUntilAsync(() =>
+            session.Status.Contains("运行中") && session.AllowedChannels.Contains("headYaw"));
+    }
+
+    [Fact]
     public void PinBodyFollowRewritesOnlyBodyAndStepMappings()
     {
         const string json = """

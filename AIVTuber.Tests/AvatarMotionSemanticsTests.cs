@@ -217,7 +217,7 @@ public class AvatarMotionSemanticsTests
         director.Cancel(1);
         clock.Advance(150);
         var opening = director.Sample()["AIVTuberEyeOpenL"];
-        clock.Advance(300);
+        clock.Advance(750);
         var settled = director.Sample();
         // 0 is "closed" for eyelids: cancelling must reopen toward rest, never shut them.
         Assert.True(opening > narrowed + .1f, $"cancel drifted toward closed: {narrowed} -> {opening}");
@@ -233,18 +233,19 @@ public class AvatarMotionSemanticsTests
             [Binding("headYaw"), Binding("bodyYaw")], clock);
         director.Submit(1, new(new Dictionary<string, float> { ["bodyYaw"] = .45f }, 200, 3000));
         clock.Advance(200);
+        // Binding maps semantic -1..1 onto ±30; assert in injected units throughout.
         var previous = director.Sample()["AIVTuberBodyYaw"];
-        Assert.InRange(previous, .4f, .5f);
+        Assert.InRange(previous, 13f, 14f);
 
         director.Cancel(1);
         for (var i = 0; i < 12; i++)
         {
             clock.Advance(50);
             var current = director.Sample()["AIVTuberBodyYaw"];
-            Assert.True(Math.Abs(current - previous) <= .15f, $"snap of {Math.Abs(current - previous)} at frame {i}");
+            Assert.True(Math.Abs(current - previous) <= 4.5f, $"snap of {Math.Abs(current - previous)} at frame {i}");
             previous = current;
         }
-        Assert.InRange(previous, -.05f, .05f);
+        Assert.InRange(previous, -1.5f, 1.5f);
     }
 
     [Fact]
@@ -256,7 +257,7 @@ public class AvatarMotionSemanticsTests
         director.Submit(1, new(new Dictionary<string, float> { ["headYaw"] = .8f }, 200, 4000));
         director.Submit(1, new(new Dictionary<string, float> { ["bodyYaw"] = 0 }, 200, 800));
         clock.Advance(600);
-        Assert.InRange(director.Sample()["AIVTuberBodyYaw"], -.05f, .05f);
+        Assert.InRange(director.Sample()["AIVTuberBodyYaw"], -1.5f, 1.5f);
 
         // The explicit neutral pose lives 200+800+400ms; after it expires the default
         // follow policy may re-engage, but only as a smooth drift, never a snap.
@@ -267,9 +268,10 @@ public class AvatarMotionSemanticsTests
         {
             clock.Advance(50);
             var current = director.Sample()["AIVTuberBodyYaw"];
-            Assert.True(Math.Abs(current - previous) <= .06f, $"follow snap of {Math.Abs(current - previous)} at frame {i}");
+            Assert.True(Math.Abs(current - previous) <= 1.8f, $"follow snap of {Math.Abs(current - previous)} at frame {i}");
             previous = current;
         }
-        Assert.InRange(previous, .1f, .28f);
+        // Desired follow is headYaw(.8)*.35 = .28 semantic ≈ 8.4 injected units.
+        Assert.InRange(previous, 3f, 8.4f);
     }
 }
