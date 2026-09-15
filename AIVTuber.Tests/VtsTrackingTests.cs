@@ -28,14 +28,15 @@ public sealed class VtsTrackingTests : IDisposable
         await using var session = new VtsContinuousSession(client, config);
         await session.ConnectAsync();
         Assert.Contains("headRoll", session.AllowedChannels);
-        Assert.Contains("bodyYaw", session.AllowedChannels);
+        Assert.DoesNotContain("bodyYaw", session.AllowedChannels);
         Assert.Empty(config.Profiles);
         Assert.DoesNotContain(server.Requests, r => r.GetProperty("messageType").GetString() == "ParameterCreationRequest" &&
             r.GetProperty("data").GetProperty("parameterName").GetString() == "AIVTuberMouthOpen");
         session.BeginTurn(1);
         session.Submit(1, new(new Dictionary<string, float> { ["headRoll"] = 1 }, 100, 5000));
         session.OnRms(.8f);
-        await VtsContinuousIntegrationTests.WaitUntilAsync(() => Frames(server).Any(f => f["FaceAngleZ"] > 10 && f["MouthOpen"] > .5));
+        await VtsContinuousIntegrationTests.WaitUntilAsync(() => Frames(server).Any(f =>
+            f.TryGetValue("FaceAngleZ", out var z) && z > 10 && f.TryGetValue("MouthOpen", out var m) && m > .5));
         Assert.All(Frames(server), f => Assert.All(f.Keys, id =>
         {
             if (id.StartsWith("AIVTuberBody", StringComparison.Ordinal)) return;
@@ -75,7 +76,8 @@ public sealed class VtsTrackingTests : IDisposable
         await session.ConnectAsync();
         session.BeginTurn(1);
         session.Submit(1, new(new Dictionary<string, float> { ["headRoll"] = 1 }, 100, 5000));
-        await VtsContinuousIntegrationTests.WaitUntilAsync(() => Frames(server).Any(f => f["FaceAngleZ"] > 10));
+        await VtsContinuousIntegrationTests.WaitUntilAsync(() => Frames(server).Any(f =>
+            f.TryGetValue("FaceAngleZ", out var z) && z > 10));
         server.Drop();
         await VtsContinuousIntegrationTests.WaitUntilAsync(() => server.Count("AuthenticationRequest") >= 2 && session.Status.Contains("运行中"));
         var count = Frames(server).Length;
@@ -86,7 +88,7 @@ public sealed class VtsTrackingTests : IDisposable
         server.ActiveExpression = true;
         await session.ResumeAsync();
         Assert.Contains("headRoll", session.AllowedChannels);
-        Assert.Contains("bodyYaw", session.AllowedChannels);
+        Assert.DoesNotContain("bodyYaw", session.AllowedChannels);
         Assert.Contains("运行中", session.Status);
     }
 
@@ -152,7 +154,7 @@ public sealed class VtsTrackingTests : IDisposable
         {
             await using var server = new FakeVts { DefaultInputs = [P("FaceAngleX", -30, 30)] };
             using var client = new VtsClient(server.Config, Token);
-            await using var session = new VtsContinuousSession(client, new() { Enabled = true });
+            await using var session = new VtsContinuousSession(client, new() { Enabled = true, AllowModelFilePatch = true });
             await session.ConnectAsync();
             Assert.Equal(1, server.Count("ModelLoadRequest"));
             Assert.Contains("运行中", session.Status);
@@ -183,7 +185,8 @@ public sealed class VtsTrackingTests : IDisposable
         Assert.DoesNotContain("人工操作", session.Status);
         Assert.Contains("headRoll", session.AllowedChannels);
         session.Submit(1, new(new Dictionary<string, float> { ["headRoll"] = 1 }));
-        await VtsContinuousIntegrationTests.WaitUntilAsync(() => Frames(server).Any(f => f["FaceAngleZ"] > 10));
+        await VtsContinuousIntegrationTests.WaitUntilAsync(() => Frames(server).Any(f =>
+            f.TryGetValue("FaceAngleZ", out var z) && z > 10));
         server.ModelId = "22222222222222222222222222222222";
         server.DefaultInputs = [P("EyeOpenLeft")];
         await server.EventAsync("ModelLoadedEvent", new { modelID = server.ModelId });
@@ -205,6 +208,43 @@ public sealed class VtsTrackingTests : IDisposable
         Assert.Equal(0, capture.Frame["FacePositionX"]);
         Assert.Equal(0, capture.Frame["FacePositionY"]);
         Assert.False(capture.Frame.ContainsKey("FacePositionZ"));
+    }
+
+    [Fact]
+    public async Task BodyChannelStaysClosedUntilMappingIsVerified()
+    {
+        await using var server = new FakeVts { DefaultInputs = [P("FaceAngleX", -30, 30)] };
+        using var client = new VtsClient(server.Config, Token);
+        await using var session = new VtsContinuousSession(client, new() { Enabled = true });
+        await session.ConnectAsync();
+        Assert.Equal(0, server.Count("ModelLoadRequest"));
+        Assert.DoesNotContain("bodyYaw", session.AllowedChannels);
+        Assert.Contains(session.BodyMappings, r => r.Channel == "bodyYaw" && r.State is "missing" or "unknown");
+        Assert.DoesNotContain("复用已有映射，未验证视觉效果", session.Status);
+    }
+
+    [Fact]
+    public async Task VerifiedBodyProbeOpensBodyChannel()
+    {
+        await using var server = new FakeVts
+        {
+            DefaultInputs = [P("FaceAngleX", -30, 30)],
+            Live2DParameters = [new("ParamAngleZ", -30, 30, 0, 0), new("ParamBodyAngleX", -10, 10, 0, 0)]
+        };
+        server.Live2DFromInput["AIVTuberBodyYaw"] = "ParamBodyAngleX";
+        using var client = new VtsClient(server.Config, Token);
+        await using var session = new VtsContinuousSession(client, new() { Enabled = true });
+        await session.ConnectAsync();
+        Assert.Contains("bodyYaw", session.AllowedChannels);
+        Assert.Contains(session.BodyMappings, r => r.Channel == "bodyYaw" && r.State == "verified" && r.Readback is not null);
+        session.BeginTurn(1);
+        session.Submit(1, new(new Dictionary<string, float> { ["bodyYaw"] = .6f }, 100, 5000));
+        await VtsContinuousIntegrationTests.WaitUntilAsync(() => Frames(server).Any(f =>
+            f.TryGetValue("AIVTuberBodyYaw", out var value) && value > .2f));
+        await session.TestTrackingAxisAsync("bodyYaw", .45f);
+        var axis = Frames(server).Where(f => f.ContainsKey("AIVTuberBodyYaw")).ToArray();
+        Assert.Contains(axis, f => f.Count == 1);
+        Assert.DoesNotContain(axis.TakeLast(8), f => f.ContainsKey("FaceAngleX") && Math.Abs(f["FaceAngleX"]) > 1);
     }
 
     [Fact]

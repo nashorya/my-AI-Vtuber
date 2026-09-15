@@ -600,10 +600,17 @@
     $("continuousAdvanced").hidden = builtIn;
     $("trackingCapabilities").hidden = !builtIn;
     $("trackingHint").hidden = !builtIn;
+    $("trackingAxisTest").hidden = !builtIn;
     const channels = (data.trackingChannels || []).filter(c => c.available);
-    $("trackingCapabilities").textContent = channels.length
-      ? "可发送：" + channels.map(c => c.label).join("、") + "。输入存在不等于模型已映射；眉高可能联动，身体跟随、呼吸和物理沿用模型设置。"
-      : "连接后读取内置面捕输入。";
+    const mappings = data.bodyMappings || [];
+    const mappingText = mappings.length
+      ? mappings.map(r => `${r.channel}:${r.state}${r.readback == null ? "" : " 读回 " + r.readback}`).join("；")
+      : "";
+    $("trackingCapabilities").textContent = [
+      channels.length ? "头/面捕输入：" + channels.map(c => c.label).join("、") : "连接后读取内置面捕输入。",
+      mappingText ? "身体映射：" + mappingText : "",
+      "发送成功不等于模型已经产生动作。"
+    ].filter(Boolean).join(" ");
     const shape = JSON.stringify([data.profile, data.model?.revision, data.model?.inputs]);
     if (shape === lastContinuousShape) return;
     lastContinuousShape = shape;
@@ -628,7 +635,12 @@
   $("continuousPanel").addEventListener("click", event => {
     const button = event.target.closest("[data-vts-operation]");
     if (!button) return;
-    send("continuousVts", { operation: button.dataset.vtsOperation, index: Number(button.dataset.index), value: Number(button.dataset.value) });
+    send("continuousVts", {
+      operation: button.dataset.vtsOperation,
+      index: Number(button.dataset.index),
+      value: Number(button.dataset.value),
+      channel: button.dataset.channel
+    });
     if (button.dataset.vtsOperation !== "stop") button.disabled = true;
   });
   $("continuousPanel").addEventListener("change", event => {

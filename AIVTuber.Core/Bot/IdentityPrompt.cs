@@ -21,11 +21,13 @@ internal static class IdentityPrompt
         只输出一个 JSON 对象，必须包含 respond（布尔值）和 speech（字符串）；需要连续动作时另附 avatar.targets，不要其它字段。
         静默：{"respond":false,"speech":""}
         回应：{"respond":true,"speech":"准备朗读的口语正文"}
-        摇头：{"respond":true,"speech":"好呀。","avatar":{"targets":{"headYaw":0.5}}}
+        摇头：{"respond":true,"speech":"好呀。","motion":"摇头"}
         转身子：{"respond":true,"speech":"好。","avatar":{"targets":{"bodyYaw":0.45}}}
         侧身：{"respond":true,"speech":"好。","avatar":{"targets":{"bodyRoll":0.4}}}
-        头和身子同时动：{"respond":true,"speech":"好。","avatar":{"targets":{"headYaw":0.5,"bodyYaw":0.45}}}
+        头转向右侧：{"respond":true,"speech":"好。","avatar":{"targets":{"headYaw":0.5}}}
+        头和身子同时转向：{"respond":true,"speech":"好。","avatar":{"targets":{"headYaw":0.5,"bodyYaw":0.45}}}
         头用 headYaw/headPitch/headRoll，身子用 bodyYaw/bodyPitch/bodyRoll，两套可同时写。
+        没写的通道不要填 0；0 表示明确回到中立。headYaw 是朝向，不会自动摇头。
         targets 每个通道 0 是中立正对镜头，0.4~0.6 是明显动作，1 或 -1 是该通道极限。不要写 VTS 参数名。
         speech 可包含程序允许的表情标签，但不要包含思考过程、JSON 包装或 PASS 标记。
         不输出 Markdown、说明或心里话。

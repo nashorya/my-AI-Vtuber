@@ -346,13 +346,21 @@
               <section id="continuousPanel" class="continuous-panel">
                 <label class="switch"><input type="checkbox" data-path="vts.continuousControl.enabled" data-type="bool" />VTS 连续控制实验（保存后生效）</label>
                 <label class="switch"><input type="checkbox" data-path="vts.continuousControl.useBuiltInTracking" data-type="bool" checked />复用模型已有面捕映射（推荐，保存后生效）</label>
-                <p id="trackingHint" class="hint">加载能正常面捕的模型，授权连接并保存启用即可。程序发送内置面捕输入，不需要新建绑定。实际动作取决于已有映射；人工热键会暂停控制。</p>
+                <label class="switch"><input type="checkbox" data-path="vts.continuousControl.allowModelFilePatch" data-type="bool" />允许改写本地 .vtube.json 身体映射</label>
+                <p class="hint">开启后会先写 .aivtuber.bak 备份，再改身体输入绑定；不会改输出范围。可用下面的恢复备份还原。</p>
+                <p id="trackingHint" class="hint">加载能正常面捕的模型，授权连接并保存启用即可。</p>
                 <p id="continuousStatus" role="status" aria-live="polite">尚未连接</p>
                 <div class="map-actions">
                   <button type="button" class="btn ghost sm" data-vts-operation="connect">重新连接 / 授权</button>
                   <button type="button" class="btn ghost sm" data-vts-operation="refresh">刷新模型与通道</button>
                   <button type="button" class="btn ghost sm" data-vts-operation="resume">恢复已保存的控制</button>
                   <button type="button" class="btn ghost sm" data-vts-operation="stop">回中并停止控制</button>
+                  <button type="button" class="btn ghost sm" data-vts-operation="restorePatch">恢复模型备份</button>
+                </div>
+                <div id="trackingAxisTest" class="map-actions">
+                  <button type="button" class="btn ghost sm" data-vts-operation="testAxis" data-channel="bodyYaw" data-value="0.45">试身体左右</button>
+                  <button type="button" class="btn ghost sm" data-vts-operation="testAxis" data-channel="bodyPitch" data-value="0.4">试身体前后</button>
+                  <button type="button" class="btn ghost sm" data-vts-operation="testAxis" data-channel="bodyRoll" data-value="0.4">试身体倾斜</button>
                 </div>
                 <p id="trackingCapabilities" class="hint"></p>
                 <div id="continuousAdvanced" hidden>

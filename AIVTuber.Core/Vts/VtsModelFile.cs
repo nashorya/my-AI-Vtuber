@@ -20,6 +20,36 @@ public static class VtsModelFile
         => input.StartsWith("FaceAngle", StringComparison.OrdinalIgnoreCase) ||
            input.StartsWith("FacePosition", StringComparison.OrdinalIgnoreCase);
 
+    public static IReadOnlyList<VtsMappingInspection> InspectBodyMappings(string json)
+    {
+        var list = new List<VtsMappingInspection>();
+        var root = JsonNode.Parse(json)?.AsObject();
+        if (root?["ParameterSettings"] is not JsonArray settings) return list;
+        foreach (var node in settings)
+        {
+            if (node is not JsonObject item) continue;
+            var output = item["OutputLive2D"]?.GetValue<string>() ?? "";
+            var name = item["Name"]?.GetValue<string>() ?? "";
+            if ((!IsBodyFollowOutput(output) && !IsBodyFollowOutput(name)) || IsStep(output, name))
+                continue;
+            var input = item["Input"]?.GetValue<string>() ?? "";
+            var inputLower = ReadFloat(item, "InputRangeLower", -1);
+            var inputUpper = ReadFloat(item, "InputRangeUpper", 1);
+            var outputLower = ReadFloat(item, "OutputRangeLower", 0);
+            var outputUpper = ReadFloat(item, "OutputRangeUpper", 0);
+            var expected = BodyInputFor(output, name);
+            var issue = "";
+            if (IsHeadCoupledInput(input) || input.Length == 0)
+                issue = "head-coupled";
+            else if (!input.Equals(expected, StringComparison.OrdinalIgnoreCase))
+                issue = "missing-body-input";
+            else if (LooksLikeFaceAngleInputRange(inputLower, inputUpper))
+                issue = "range-mismatch";
+            list.Add(new(output.Length > 0 ? output : name, input, inputLower, inputUpper, outputLower, outputUpper, issue));
+        }
+        return list;
+    }
+
     public static bool PinBodyFollow(string json, out string updated)
     {
         updated = json;
@@ -57,20 +87,27 @@ public static class VtsModelFile
         }
 
         var body = BodyInputFor(output, name);
-        var lower = ReadFloat(item, "OutputRangeLower", -10);
-        var upper = ReadFloat(item, "OutputRangeUpper", 10);
-        if (input.Equals(body, StringComparison.OrdinalIgnoreCase) && lower < upper)
-            return false;
-
-        var magnitude = Math.Max(Math.Abs(lower), Math.Abs(upper));
-        if (magnitude < 1) magnitude = 10;
-        item["Input"] = body;
-        item["InputRangeLower"] = -1;
-        item["InputRangeUpper"] = 1;
-        item["OutputRangeLower"] = -magnitude;
-        item["OutputRangeUpper"] = magnitude;
-        return true;
+        var inputLower = ReadFloat(item, "InputRangeLower", -1);
+        var inputUpper = ReadFloat(item, "InputRangeUpper", 1);
+        var changed = false;
+        if (!input.Equals(body, StringComparison.OrdinalIgnoreCase))
+        {
+            item["Input"] = body;
+            item["InputRangeLower"] = -1;
+            item["InputRangeUpper"] = 1;
+            changed = true;
+        }
+        else if (LooksLikeFaceAngleInputRange(inputLower, inputUpper))
+        {
+            item["InputRangeLower"] = -1;
+            item["InputRangeUpper"] = 1;
+            changed = true;
+        }
+        return changed;
     }
+
+    internal static bool LooksLikeFaceAngleInputRange(float lower, float upper)
+        => Math.Max(Math.Abs(lower), Math.Abs(upper)) > 2;
 
     internal static string BodyInputFor(string output, string name)
     {
@@ -113,11 +150,12 @@ public static class VtsModelFile
         => item[key] is JsonValue value && value.TryGetValue<float>(out var number) ? number : fallback;
 
     internal static readonly AsyncLocal<Func<string, bool>?> TryPinOverride = new();
+    internal static readonly AsyncLocal<Func<string, IReadOnlyList<VtsMappingInspection>?>?> TryInspectOverride = new();
 
-    public static bool TryPinLoadedModel(string modelId)
+    public static bool TryPinLoadedModel(string modelId, bool allowWrite = false)
     {
         if (TryPinOverride.Value is { } hook) return hook(modelId);
-        if (string.IsNullOrWhiteSpace(modelId)) return false;
+        if (!allowWrite || string.IsNullOrWhiteSpace(modelId)) return false;
         foreach (var file in CandidateFiles())
         {
             try
@@ -125,6 +163,7 @@ public static class VtsModelFile
                 var json = File.ReadAllText(file);
                 if (!json.Contains(modelId, StringComparison.OrdinalIgnoreCase)) continue;
                 if (!PinBodyFollow(json, out var updated)) return false;
+                Backup(file);
                 File.WriteAllText(file, updated);
                 return true;
             }
@@ -132,6 +171,60 @@ public static class VtsModelFile
         }
         return false;
     }
+
+    public static bool TryInspectLoadedModel(string modelId, out IReadOnlyList<VtsMappingInspection> inspections)
+    {
+        inspections = [];
+        if (string.IsNullOrWhiteSpace(modelId)) return false;
+        if (TryInspectOverride.Value is { } hook)
+        {
+            var hooked = hook(modelId);
+            if (hooked is null) return false;
+            inspections = hooked;
+            return true;
+        }
+        foreach (var file in CandidateFiles())
+        {
+            try
+            {
+                var json = File.ReadAllText(file);
+                if (!json.Contains(modelId, StringComparison.OrdinalIgnoreCase)) continue;
+                inspections = InspectBodyMappings(json);
+                return true;
+            }
+            catch { /* unreadable model files stay unknown */ }
+        }
+        return false;
+    }
+
+    public static bool TryRestorePinnedModel(string modelId, out string restored)
+    {
+        restored = "";
+        if (string.IsNullOrWhiteSpace(modelId)) return false;
+        foreach (var file in CandidateFiles())
+        {
+            var backup = BackupPath(file);
+            try
+            {
+                if (!File.Exists(backup)) continue;
+                var json = File.ReadAllText(backup);
+                if (!json.Contains(modelId, StringComparison.OrdinalIgnoreCase)) continue;
+                File.WriteAllText(file, json);
+                restored = file;
+                return true;
+            }
+            catch { /* locked backup stays unused */ }
+        }
+        return false;
+    }
+
+    private static void Backup(string file)
+    {
+        var backup = BackupPath(file);
+        if (!File.Exists(backup)) File.Copy(file, backup);
+    }
+
+    internal static string BackupPath(string file) => file + ".aivtuber.bak";
 
     internal static IEnumerable<string> CandidateFiles()
     {

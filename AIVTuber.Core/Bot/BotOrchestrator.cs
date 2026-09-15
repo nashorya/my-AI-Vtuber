@@ -721,11 +721,9 @@ public sealed class BotOrchestrator : IDisposable
         {
             _coordinator.SetHold(false);
             _avatarPlans.TryRemove(context.Generation, out _);
-            if (ttsStarted || ct.IsCancellationRequested || pipelineEx is not null)
-            {
+            _motion?.OnRms(0);
+            if (ct.IsCancellationRequested || pipelineEx is not null)
                 _motion?.Cancel(avatarGeneration);
-                _motion?.OnRms(0);
-            }
             if (ttsStarted && IsCurrent(envelope, ct, allowCancellation: true))
                 OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
         }

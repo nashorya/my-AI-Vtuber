@@ -5,6 +5,11 @@ using AIVTuber.Core.Diagnostics;
 namespace AIVTuber.Core.Vts;
 
 public sealed record VtsParameter(string Id, float Min, float Max, float Default, float Value);
+public sealed record VtsMappingInspection(
+    string Output, string Input, float InputLower, float InputUpper, float OutputLower, float OutputUpper, string Issue);
+public sealed record BodyChannelVerification(
+    string Channel, string InputId, bool InputExists, string State, string Reason,
+    string? Output = null, float? Readback = null);
 public sealed record VtsModelSnapshot(string Id, string Name, string Revision,
     IReadOnlyList<VtsParameter> Parameters, IReadOnlySet<string> Inputs, bool HasActiveExpressions)
 {
@@ -26,6 +31,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
     private CancellationTokenSource? _previewCancellation;
     private int _refreshing, _reconnecting;
     private string[] _allowedChannels = [];
+    private IReadOnlyList<BodyChannelVerification> _bodyMappings = [];
     private long _canceledThrough;
     private long _controlEpoch, _turnEpoch, _turnGeneration;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Task, byte> _background = new();
@@ -54,6 +60,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
     }
     public string[] DeclaredChannels => Volatile.Read(ref _allowedChannels).ToArray();
     public string[] AllowedChannels => _paused ? [] : DeclaredChannels;
+    public IReadOnlyList<BodyChannelVerification> BodyMappings => Volatile.Read(ref _bodyMappings);
     private void SetStatus(string message)
     {
         Status = message;
@@ -87,6 +94,9 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
         }
         var allowed = AllowedChannels.ToHashSet();
         var filtered = intent.Targets.Where(p => allowed.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value);
+        var dropped = intent.Targets.Where(p => !allowed.Contains(p.Key)).Select(p => p.Key).ToArray();
+        if (dropped.Length > 0)
+            DebugLog.Write($"[Avatar/VTS] generation={generation} dropped unavailable channels: {string.Join(',', dropped)}（见状态里的身体映射报告）");
         if (filtered.Count == 0) return;
         director?.Submit(generation, intent with { Targets = filtered });
         DebugLog.Write($"[Avatar/VTS] generation={generation} model={Model?.Id} targets={string.Join(',', filtered.Select(p => p.Key + "=" + p.Value.ToString("0.##")))} accepted");
@@ -344,6 +354,8 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
             finally { _gate.Release(); }
         }
         SetStatus("试动结束；请观察是否正确运动，再确认此通道。数值响应不能替代视觉确认。");
+        // The trial stopped the running writer; diagnostics must not leave the avatar dead.
+        if (!_disposed) Supervise(ResumeAsync());
     }
     public async Task ApplyAsync(ContinuousControlConfig config, CancellationToken ct = default)
     {
@@ -372,14 +384,18 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
                         return;
                     }
                     var extras = await EnsureBodyInputsAsync(ct).ConfigureAwait(false);
-                    tracking = new VtsTrackingBackend(_client, model.DefaultInputs.Concat(extras));
+                    var bodyReport = await VerifyBodyChannelsAsync(model, extras, ct).ConfigureAwait(false);
+                    Volatile.Write(ref _bodyMappings, bodyReport);
+                    var verifiedBody = extras.Where(p => bodyReport.Any(r =>
+                        r.InputId == p.Id && r.State == "verified")).ToArray();
+                    tracking = new VtsTrackingBackend(_client, model.DefaultInputs.Concat(verifiedBody));
                     trackingBindings = tracking.CreateBindings();
                     Volatile.Write(ref _allowedChannels, trackingBindings
                         .Where(b => AvatarChannels.All.Any(c => c.Name == b.Channel && c.AiControlled))
                         .Select(b => b.Channel).ToArray());
                     modelName = model.Name;
-                    var firstLoad = _reloadedModels.TryAdd(model.Id, 0);
-                    if (VtsModelFile.TryPinLoadedModel(model.Id) || firstLoad)
+                    _reloadedModels.TryAdd(model.Id, 0);
+                    if (_config.AllowModelFilePatch && VtsModelFile.TryPinLoadedModel(model.Id, true))
                         reloadId = model.Id;
                 }
                 else
@@ -417,7 +433,7 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
             {
                 if (epoch != Interlocked.Read(ref _controlEpoch)) return;
                 StartDirector(tracking, trackingBindings);
-                SetStatus($"内置面捕控制运行中：{modelName}，{trackingBindings.Length} 个输入通道；复用已有映射，未验证视觉效果");
+                SetStatus(DescribeTrackingStatus(modelName, trackingBindings, BodyMappings));
             }
             finally { _gate.Release(); }
         }
@@ -425,16 +441,239 @@ public sealed class VtsContinuousSession : IAsyncDisposable, IAvatarMotionSink
     }
     private async Task<List<VtsParameter>> EnsureBodyInputsAsync(CancellationToken ct)
     {
-        var extras = new List<VtsParameter>();
         foreach (var channel in AvatarChannels.All.Where(c => c.Name.StartsWith("body", StringComparison.Ordinal)))
         {
-            var id = channel.InputId;
-            try { await _client.CreateParameterAsync(id, -1, 1, 0, ct).ConfigureAwait(false); }
-            catch (VtsApiException) { /* already exists */ }
-            extras.Add(new VtsParameter(id, -1, 1, 0, 0));
+            try { await _client.CreateParameterAsync(channel.InputId, -1, 1, 0, ct).ConfigureAwait(false); }
+            catch (VtsApiException) { /* already exists or rejected */ }
+        }
+        var extras = new List<VtsParameter>();
+        try
+        {
+            var inputs = await _client.QueryAsync("InputParameterListRequest", ct).ConfigureAwait(false);
+            if (inputs.TryGetProperty("customParameters", out var custom))
+            {
+                foreach (var p in custom.EnumerateArray())
+                {
+                    var name = p.GetProperty("name").GetString() ?? "";
+                    if (!name.StartsWith("AIVTuberBody", StringComparison.Ordinal)) continue;
+                    var min = p.TryGetProperty("min", out var lo) && lo.TryGetSingle(out var minV) ? minV : -1;
+                    var max = p.TryGetProperty("max", out var hi) && hi.TryGetSingle(out var maxV) ? maxV : 1;
+                    var rest = p.TryGetProperty("defaultValue", out var def) && def.TryGetSingle(out var restV) ? restV : 0;
+                    extras.Add(new VtsParameter(name, min, max, rest, rest));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            DebugLog.Write($"[Avatar/VTS] 读取身体输入失败：{ex.Message}");
         }
         return extras;
     }
+
+    private async Task<IReadOnlyList<BodyChannelVerification>> VerifyBodyChannelsAsync(
+        VtsModelSnapshot model, IReadOnlyList<VtsParameter> extras, CancellationToken ct)
+    {
+        var fileKnown = VtsModelFile.TryInspectLoadedModel(model.Id, out var inspections);
+
+        var reports = new List<BodyChannelVerification>();
+        foreach (var channel in AvatarChannels.All.Where(c => c.Name.StartsWith("body", StringComparison.Ordinal)))
+        {
+            var extra = extras.FirstOrDefault(p => p.Id == channel.InputId);
+            var exists = extra is not null || model.Inputs.Contains(channel.InputId);
+            var inspect = inspections.FirstOrDefault(i =>
+                i.Input.Equals(channel.InputId, StringComparison.OrdinalIgnoreCase) ||
+                i.Output.Equals(channel.SuggestedParameter, StringComparison.OrdinalIgnoreCase));
+            if (!exists)
+            {
+                reports.Add(new(channel.Name, channel.InputId, false, "missing",
+                    "自定义身体输入不存在，不能当作通道可用"));
+                continue;
+            }
+            if (extra is not null && VtsModelFile.LooksLikeFaceAngleInputRange(extra.Min, extra.Max))
+            {
+                reports.Add(new(channel.Name, channel.InputId, true, "range-mismatch",
+                    $"输入范围 {extra.Min:0.##}~{extra.Max:0.##} 不像 ±1 的身体输入"));
+                continue;
+            }
+            if (inspect is { Issue: "range-mismatch" })
+            {
+                reports.Add(new(channel.Name, channel.InputId, true, "range-mismatch",
+                    $"映射名称是 {inspect.Input}，但输入范围仍是 {inspect.InputLower:0.##}~{inspect.InputUpper:0.##}",
+                    inspect.Output));
+                continue;
+            }
+            if (inspect is { Issue: "head-coupled" or "missing-body-input" })
+            {
+                reports.Add(new(channel.Name, channel.InputId, true, inspect.Issue,
+                    inspect.Issue == "head-coupled"
+                        ? $"身体输出 {inspect.Output} 仍绑定 {inspect.Input}，独立身体输入不会驱动它"
+                        : $"身体输出 {inspect.Output} 未接到 {channel.InputId}",
+                    inspect.Output));
+                continue;
+            }
+
+            float? readback = null;
+            var state = fileKnown && inspect is { Issue: "" } ? "verified" : "unknown";
+            var reason = state == "verified"
+                ? $"模型文件已把 {inspect!.Output} 接到 {channel.InputId}"
+                : "已发送身体输入，但尚未看到模型输出变化";
+            string? output = inspect?.Output;
+            // The model file is hard evidence of the wiring; live-probe only channels it
+            // cannot vouch for, so a correctly wired model does not twitch on every connect.
+            if (state != "verified")
+            {
+                try
+                {
+                    // Fresh baseline per channel: the previous probe's reset may still be
+                    // settling, and a stale shared baseline could credit its leftover
+                    // motion to this channel.
+                    var baseline = await ReadLive2DAsync(ct).ConfigureAwait(false);
+                    await _client.InjectAsync(new Dictionary<string, float> { [channel.InputId] = .55f }, ct).ConfigureAwait(false);
+                    var after = await ReadLive2DAsync(ct).ConfigureAwait(false);
+                    var expected = inspect?.Output ?? channel.SuggestedParameter;
+                    var hit = after.FirstOrDefault(p =>
+                        (string.Equals(p.Id, expected, StringComparison.OrdinalIgnoreCase) ||
+                         (expected.Length == 0 && IsBodyLive2D(p.Id))) &&
+                        Math.Abs(p.Value - (baseline.FirstOrDefault(b => b.Id == p.Id)?.Value ?? p.Default)) > .05f);
+                    if (hit is not null)
+                    {
+                        readback = hit.Value;
+                        output = hit.Id;
+                        state = "verified";
+                        reason = $"读回 {hit.Id}={hit.Value:0.##}";
+                    }
+                    else if (!after.Any(p => IsBodyLive2D(p.Id)))
+                    {
+                        reason = fileKnown
+                            ? reason
+                            : "当前模型没有可识别的身体 Live2D 参数，读回未知";
+                    }
+                    else
+                    {
+                        state = "missing";
+                        reason = "身体输入已发送，模型身体参数没有跟着变";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    state = "unknown";
+                    reason = "无法读回模型参数：" + ex.Message;
+                }
+                finally
+                {
+                    try { await _client.InjectAsync(new Dictionary<string, float> { [channel.InputId] = 0 }, ct).ConfigureAwait(false); }
+                    catch { /* reset is best-effort */ }
+                }
+            }
+            reports.Add(new(channel.Name, channel.InputId, true, state, reason, output, readback));
+        }
+        DebugLog.Write("[Avatar/VTS] body-mapping " + string.Join("；", reports.Select(r =>
+            $"{r.Channel}:{r.State} input={(r.InputExists ? "yes" : "no")} readback={(r.Readback.HasValue ? r.Readback.Value.ToString("0.##") : "unknown")} {r.Reason}")));
+        return reports;
+    }
+
+    private async Task<IReadOnlyList<VtsParameter>> ReadLive2DAsync(CancellationToken ct)
+    {
+        var parameters = await _client.QueryAsync("Live2DParameterListRequest", ct).ConfigureAwait(false);
+        return parameters.GetProperty("parameters").EnumerateArray().Select(p => new VtsParameter(
+            p.GetProperty("name").GetString()!, p.GetProperty("min").GetSingle(), p.GetProperty("max").GetSingle(),
+            p.GetProperty("defaultValue").GetSingle(), p.GetProperty("value").GetSingle())).ToArray();
+    }
+
+    internal static bool IsBodyLive2D(string id)
+        => id.Contains("Body", StringComparison.OrdinalIgnoreCase);
+
+    private static string DescribeTrackingStatus(string modelName, AvatarChannelBinding[] bindings,
+        IReadOnlyList<BodyChannelVerification> body)
+    {
+        var heads = bindings.Count(b => b.Channel.StartsWith("head", StringComparison.Ordinal));
+        if (body.Count == 0)
+            return $"内置面捕控制运行中：{modelName}，头通道 {heads}；身体：未创建输入";
+        var verified = body.Count(r => r.State == "verified");
+        if (verified == 0)
+            return $"内置面捕控制运行中：{modelName}，头通道 {heads}；身体未向 AI 开放（{body[0].Reason}）";
+        return $"内置面捕控制运行中：{modelName}，头通道 {heads}，已验证身体 {verified}；发送成功不等于已经看到动作";
+    }
+
+    public async Task TestTrackingAxisAsync(string channel, float value, CancellationToken ct = default)
+    {
+        var descriptor = AvatarChannels.All.FirstOrDefault(c => c.Name == channel)
+            ?? throw new InvalidOperationException("未知通道");
+        if (!descriptor.Name.StartsWith("body", StringComparison.Ordinal))
+            throw new InvalidOperationException("单轴试动只用于身体通道");
+        if (!float.IsFinite(value) || value < (descriptor.Unipolar ? 0 : -1) || value > 1)
+            throw new InvalidOperationException("试动幅度无效");
+        var epoch = Interlocked.Increment(ref _controlEpoch);
+        var binding = new AvatarChannelBinding
+        {
+            Channel = channel, ParameterId = "tracking:" + channel,
+            Minimum = descriptor.Unipolar ? 0 : -1, Maximum = 1, Neutral = 0, Verified = true
+        };
+        using var previewCancellation = CancellationTokenSource.CreateLinkedTokenSource(ct, _life.Token);
+        await using var test = new AvatarMotionDirector(_client, [binding], preview: true);
+        string? failure = null;
+        test.Faulted += (_, error) => { failure = error; previewCancellation.Cancel(); };
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await StopCoreAsync(true).ConfigureAwait(false);
+            if (Model is null || !_client.IsConnected) throw new InvalidOperationException("未连接模型");
+            if (!Model.Inputs.Contains(binding.InputId) && BodyMappings.All(r => r.InputId != binding.InputId || !r.InputExists))
+                throw new InvalidOperationException("身体输入不存在");
+            if (epoch != Interlocked.Read(ref _controlEpoch)) throw new OperationCanceledException("试动已被停止");
+            _previewCancellation = previewCancellation;
+            _director = test;
+            test.Submit(0, new(new Dictionary<string, float> { [channel] = value }, 800, 1200));
+            test.Start();
+        }
+        finally { _gate.Release(); }
+        try
+        {
+            await Task.Delay(2400, previewCancellation.Token).ConfigureAwait(false);
+            float? readback = null;
+            string readbackStatus = "unknown";
+            try
+            {
+                var live = await ReadLive2DAsync(previewCancellation.Token).ConfigureAwait(false);
+                var hit = live.FirstOrDefault(p => IsBodyLive2D(p.Id) && Math.Abs(p.Value - p.Default) > .05f);
+                if (hit is not null) { readback = hit.Value; readbackStatus = hit.Id + "=" + hit.Value.ToString("0.##"); }
+            }
+            catch { readbackStatus = "unknown"; }
+            DebugLog.Write($"[Avatar/VTS] axis-test channel={channel} target={value:0.##} sent={Format(test.LastSent)} semantic={Format(test.LastSemantic)} readback={readbackStatus} mapping={(BodyMappings.FirstOrDefault(r => r.Channel == channel)?.State ?? "unknown")}");
+            _ = readback;
+            SetStatus($"身体单轴试动结束：{channel}={value:0.##}，读回 {readbackStatus}。发送成功不等于已经看到动作。");
+        }
+        catch (OperationCanceledException) when (failure is not null) { throw new IOException("试动失败：" + failure); }
+        finally
+        {
+            await _gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (ReferenceEquals(_previewCancellation, previewCancellation)) _previewCancellation = null;
+                if (Interlocked.CompareExchange(ref _director, null, test) == test &&
+                    epoch == Interlocked.Read(ref _controlEpoch))
+                    await test.ReturnToNeutralAsync().ConfigureAwait(false);
+            }
+            finally { _gate.Release(); }
+        }
+        // The axis test stopped the running writer; restore continuous control so a
+        // diagnostic never leaves the avatar motionless until a manual resume.
+        if (!_disposed) Supervise(ResumeAsync());
+    }
+
+    public bool TryRestoreModelPatch(out string path)
+    {
+        if (VtsModelFile.TryRestorePinnedModel(Model?.Id ?? "", out path))
+        {
+            SetStatus("已恢复模型备份，请在 VTS 重新加载模型后再点恢复控制");
+            return true;
+        }
+        path = "";
+        return false;
+    }
+
+    private static string Format(IReadOnlyDictionary<string, float> values)
+        => string.Join(',', values.Select(p => p.Key + "=" + p.Value.ToString("0.##")));
 
     private void StartDirector(IAvatarParameterBackend backend, AvatarChannelBinding[] bindings)
     {

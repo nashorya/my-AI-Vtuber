@@ -32,7 +32,7 @@ public class IdentityPromptTests
         Assert.Contains("headYaw", IdentityPrompt.InvitationPolicy);
         Assert.Contains("bodyYaw", IdentityPrompt.InvitationPolicy);
         Assert.Contains("中立正对镜头", IdentityPrompt.InvitationPolicy);
-        Assert.DoesNotContain("motion", IdentityPrompt.InvitationPolicy);
+        Assert.Contains("motion", IdentityPrompt.InvitationPolicy);
         Assert.DoesNotContain("恰好包含", IdentityPrompt.InvitationPolicy);
     }
 

@@ -13,7 +13,7 @@ public class ContinuousReplyPipelineTests
     private sealed class Sink : IAvatarMotionSink
     {
         public int Submits, Cancels, AudioSamples;
-        public long LastGeneration;
+        public long LastGeneration = -1;
         public void Submit(long generation, AvatarIntent intent) { Submits++; LastGeneration = generation; }
         public void Cancel(long generation) { if (generation == LastGeneration) Cancels++; }
         public void OnRms(float rms) { if (rms > 0) AudioSamples++; }
@@ -128,6 +128,41 @@ public class ContinuousReplyPipelineTests
         Assert.Equal(0, llm.Subscriptions); Assert.Equal(20, sink.Submits);
         EmitAudio(); Assert.Equal(20, sink.AudioSamples);
     }
+    [Fact]
+    public async Task NaturalSpeakEndDoesNotCancelAvatar()
+    {
+        var llm = new Llm("你好"); var tts = new Tts(); var sink = new Sink();
+        using var player = new AudioPlayer();
+        using var orchestrator = new BotOrchestrator(new Asr(), llm, tts, player, new(), null, null,
+            async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } }, () => { }, null);
+        orchestrator.ConfigureContinuousControl(sink, async (chunks, ct, start) =>
+        {
+            await foreach (var _ in chunks.WithCancellation(ct)) start();
+        });
+        await orchestrator.ProcessTextAsync("hello", [], bypassWake: true);
+        Assert.Equal(1, sink.Submits);
+        Assert.Equal(0, sink.Cancels);
+    }
+
+    [Fact]
+    public async Task InterruptCancelsSubmittedAvatar()
+    {
+        var llm = new Llm("你好"); var tts = new Tts(); var sink = new Sink();
+        using var player = new AudioPlayer();
+        using var orchestrator = new BotOrchestrator(new Asr(), llm, tts, player, new(), null, null,
+            async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } }, () => { }, null);
+        orchestrator.ConfigureContinuousControl(sink, async (chunks, ct, start) =>
+        {
+            await foreach (var _ in chunks.WithCancellation(ct)) start();
+            await Task.Delay(Timeout.Infinite, ct);
+        });
+        var processing = orchestrator.ProcessTextAsync("hello", [], bypassWake: true);
+        await VtsContinuousIntegrationTests.WaitUntilAsync(() => sink.Submits > 0);
+        await Task.Run(orchestrator.Interrupt).WaitAsync(TimeSpan.FromSeconds(3));
+        await processing;
+        Assert.True(sink.Cancels > 0);
+    }
+
     [Fact]
     public async Task CancelledLateLlmEventCannotMove()
     {

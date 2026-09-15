@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using AIVTuber.Core.Diagnostics;
 
 namespace AIVTuber.Core.Avatar;
 
@@ -18,21 +19,24 @@ public sealed class AvatarMotionDirector : IAsyncDisposable
     private readonly Channel<IReadOnlyDictionary<string, float>> _frames = Channel.CreateBounded<IReadOnlyDictionary<string, float>>(
         new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true, SingleWriter = true });
     private Task? _sampleTask, _sendTask;
-    private AvatarIntent? _intent;
     private long _generation = -1, _canceledThrough = -1;
-    private double _intentAt, _listeningUntil, _lastSample;
+    private double _listeningUntil, _lastSample;
     private readonly double _origin;
     private Dictionary<string, float> _previous = new();
-    private Dictionary<string, float> _from = new();
+    private readonly Dictionary<string, ChannelPose> _active = new();
+    private readonly Dictionary<string, float> _follow = new();
     private float _rms, _mouth;
     private readonly bool _preview;
     private bool _returning;
     private double _returnAt;
     private long _produced, _sent;
+    private int _diagSkip;
     public event EventHandler<string>? Faulted;
     public long ProducedFrames => Interlocked.Read(ref _produced);
     public long SentFrames => Interlocked.Read(ref _sent);
     public long SupersededFrames => Math.Max(0, ProducedFrames - SentFrames - 2);
+    public IReadOnlyDictionary<string, float> LastSemantic { get; private set; } = new Dictionary<string, float>();
+    public IReadOnlyDictionary<string, float> LastSent { get; private set; } = new Dictionary<string, float>();
 
     public AvatarMotionDirector(IAvatarParameterBackend backend, IEnumerable<AvatarChannelBinding> bindings, TimeProvider? clock = null, bool preview = false)
     {
@@ -59,10 +63,26 @@ public sealed class AvatarMotionDirector : IAsyncDisposable
         {
             if (generation <= _canceledThrough || generation < _generation || _returning) return;
             _generation = generation;
-            _from = new(_previous);
-            _intent = new AvatarIntent(new Dictionary<string, float>(intent.Targets),
-                Math.Clamp(intent.TransitionMs, 100, 2000), Math.Clamp(intent.HoldMs, 0, 5000));
-            _intentAt = Now;
+            var now = Now;
+            var transition = Math.Clamp(intent.TransitionMs, 100, 2000);
+            var hold = Math.Clamp(intent.HoldMs, 0, 5000);
+            foreach (var (name, target) in intent.Targets)
+            {
+                _active[name] = new ChannelPose
+                {
+                    From = _previous.GetValueOrDefault(name),
+                    Target = target,
+                    StartedAt = now,
+                    TransitionMs = transition,
+                    HoldMs = hold,
+                    Gesture = intent.Gesture
+                };
+            }
+            if (intent.Gesture is null && intent.Targets.ContainsKey("headYaw") &&
+                _active.TryGetValue("headYaw", out var look))
+                look.Gesture = null;
+            DebugLog.WriteThrottled("avatar-submit",
+                $"[Avatar/VTS] submit gen={generation} specified={FormatTargets(intent.Targets)} gesture={intent.Gesture ?? "-"}");
         }
     }
 
@@ -72,10 +92,21 @@ public sealed class AvatarMotionDirector : IAsyncDisposable
         {
             _canceledThrough = Math.Max(_canceledThrough, generation);
             if (generation != _generation) return;
-            // Blend back from the current pose rather than snapping to idle.
-            _from = new(_previous);
-            _intent = new AvatarIntent(new Dictionary<string, float>(), 300, 0);
-            _intentAt = Now;
+            var now = Now;
+            foreach (var name in _active.Keys.ToArray())
+            {
+                // Blend toward each channel's own rest pose: 0 is "neutral" only for
+                // signed channels; eyelids rest open and must not be cancelled shut.
+                var binding = _bindings.FirstOrDefault(b => b.Channel == name);
+                _active[name] = new ChannelPose
+                {
+                    From = _previous.GetValueOrDefault(name),
+                    Target = binding is null ? 0 : RestTarget(binding, now),
+                    StartedAt = now,
+                    TransitionMs = 300,
+                    HoldMs = 0
+                };
+            }
             _rms = 0;
         }
     }
@@ -92,37 +123,35 @@ public sealed class AvatarMotionDirector : IAsyncDisposable
             _lastSample = now;
             _mouth += (_rms - _mouth) * (float)(1 - Math.Exp(-dt / (_rms > _mouth ? .045 : .09)));
             var pose = new Dictionary<string, float>();
+            var specified = new Dictionary<string, bool>();
             foreach (var binding in _bindings)
             {
                 var name = binding.Channel;
-                float baseline = name switch
-                {
-                    "eyeOpenL" or "eyeOpenR" => EyeRest(binding),
-                    "mouthOpen" => _mouth,
-                    "breath" => (float)(.5 + .5 * Math.Sin(now * 1.3)),
-                    "gazeX" => (float)(.025 * Math.Sin(now * 1.1)),
-                    "gazeY" => (float)(.015 * Math.Sin(now * .7)),
-                    "bodyRoll" => (float)(.018 * Math.Sin(now * 1.6)),
-                    "headRoll" when now < _listeningUntil => .035f,
-                    _ => 0,
-                };
+                var baseline = RestTarget(binding, now);
                 var value = baseline;
-                if (_intent is not null && (_preview || name is not ("mouthOpen" or "breath")))
+                specified[name] = _active.ContainsKey(name);
+                if (_active.TryGetValue(name, out var channel) && (_preview || name is not ("mouthOpen" or "breath")))
                 {
-                    var elapsed = (now - _intentAt) * 1000;
-                    var target = _intent.Targets.GetValueOrDefault(name, baseline);
-                    var start = _from.GetValueOrDefault(name, baseline);
-                    if (name == "headYaw" && _intent.Targets.ContainsKey("headYaw"))
-                        value = HeadYawShake(elapsed, target, baseline);
-                    else if (elapsed <= _intent.TransitionMs)
-                        value = Lerp(start, target, Ease(elapsed / _intent.TransitionMs));
-                    else if (elapsed <= _intent.TransitionMs + _intent.HoldMs) value = target;
-                    else value = Lerp(target, baseline, Ease((elapsed - _intent.TransitionMs - _intent.HoldMs) / 400));
+                    var elapsed = (now - channel.StartedAt) * 1000;
+                    if (name == "headYaw" && channel.Gesture == "摇头")
+                        value = HeadYawShake(elapsed, channel.Target, baseline);
+                    else if (elapsed <= channel.TransitionMs)
+                        value = Lerp(channel.From, channel.Target, Ease(elapsed / channel.TransitionMs));
+                    else if (elapsed <= channel.TransitionMs + channel.HoldMs) value = channel.Target;
+                    else
+                    {
+                        value = Lerp(channel.Target, baseline, Ease((elapsed - channel.TransitionMs - channel.HoldMs) / 400));
+                        if (elapsed >= channel.TransitionMs + channel.HoldMs + 400)
+                            _active.Remove(name);
+                    }
+                    if (name == "headYaw" && channel.Gesture == "摇头" && elapsed >= 2080)
+                        _active.Remove(name);
                 }
                 pose[name] = value;
             }
-            FollowHeadWithBody(pose, _intent);
+            FollowHeadWithBody(pose, dt);
             _previous = pose;
+            LastSemantic = new Dictionary<string, float>(pose);
             // Staggered deterministic cadence; eyelid intent remains effective during blinks.
             var phase = now % 4.7;
             var blink = phase < .18 ? (float)Math.Abs(phase / .09 - 1) : 1;
@@ -135,37 +164,79 @@ public sealed class AvatarMotionDirector : IAsyncDisposable
                 if (_returning) mapped = Lerp(mapped, binding.Neutral, Ease((now - _returnAt) / .3));
                 result[binding.InputId] = mapped;
             }
+            LastSent = result;
+            if ((_diagSkip++ % 15) == 0)
+            {
+                DebugLog.WriteThrottled("avatar-sample",
+                    "[Avatar/VTS] specified=" + string.Join(',', specified.Where(p => p.Value).Select(p => p.Key)) +
+                    " semantic=" + FormatTargets(pose) +
+                    " sent=" + FormatTargets(result));
+            }
             return result;
         }
     }
 
-    private static void FollowHeadWithBody(Dictionary<string, float> pose, AvatarIntent? intent)
+    /// <summary>Idle pose a channel relaxes to when no intent holds it. 0 is neutral
+    /// only for signed channels; eyelids rest open, breath/gaze/idle sway move on their own.</summary>
+    private float RestTarget(AvatarChannelBinding binding, double now) => binding.Channel switch
     {
-        // FaceAngle on this rig is the face/head mesh. Without body follow, 摇头
-        // looks like the face sliding on a frozen neck. Explicit body targets win.
-        Couple(pose, intent, "headYaw", "bodyYaw", .7f);
-        Couple(pose, intent, "headPitch", "bodyPitch", .55f);
-        Couple(pose, intent, "headRoll", "bodyRoll", .4f);
+        "eyeOpenL" or "eyeOpenR" => EyeRest(binding),
+        "mouthOpen" => _mouth,
+        "breath" => (float)(.5 + .5 * Math.Sin(now * 1.3)),
+        "gazeX" => (float)(.025 * Math.Sin(now * 1.1)),
+        "gazeY" => (float)(.015 * Math.Sin(now * .7)),
+        "bodyRoll" => (float)(.018 * Math.Sin(now * 1.6)),
+        "headRoll" when now < _listeningUntil => .035f,
+        _ => 0,
+    };
+
+    private void FollowHeadWithBody(Dictionary<string, float> pose, double dt)
+    {
+        Couple(pose, dt, "headYaw", "bodyYaw", .35f, .25f);
+        Couple(pose, dt, "headPitch", "bodyPitch", .22f, .35f);
+        Couple(pose, dt, "headRoll", "bodyRoll", .16f, .35f);
     }
 
-    private static void Couple(Dictionary<string, float> pose, AvatarIntent? intent,
-        string head, string body, float ratio)
+    private void Couple(Dictionary<string, float> pose, double dt,
+        string head, string body, float ratio, float minAbs)
     {
-        if (intent is null || !intent.Targets.ContainsKey(head) || intent.Targets.ContainsKey(body)) return;
-        if (!pose.ContainsKey(head) || !pose.ContainsKey(body)) return;
-        pose[body] = pose[head] * ratio;
+        if (!pose.ContainsKey(body)) return;
+        if (_active.ContainsKey(body))
+        {
+            _follow[body] = pose[body];
+            return;
+        }
+        var desired = 0f;
+        if (_active.TryGetValue(head, out var headChannel))
+        {
+            if (headChannel.Gesture == "摇头")
+                desired = pose.GetValueOrDefault(head) * .18f;
+            else if (Math.Abs(headChannel.Target) >= minAbs)
+                desired = headChannel.Target * ratio;
+        }
+        var current = _follow.GetValueOrDefault(body, pose[body]);
+        var alpha = (float)(1 - Math.Exp(-dt / .28));
+        current += (desired - current) * alpha;
+        _follow[body] = current;
+        if (body == "bodyRoll")
+            pose[body] = current + pose[body];
+        else
+            pose[body] = current;
     }
 
     private static float HeadYawShake(double elapsedMs, float target, float baseline)
     {
-        // One unhurried 摇头: right, left, settle. About 1.8s, not a 2 Hz hop.
-        var amp = Math.Clamp(Math.Max(Math.Abs(target) * 1.25f, .65f), 0, .95f);
+        var amp = Math.Clamp(Math.Abs(target), 0, .95f);
+        if (amp == 0) return baseline;
         const double duration = 1800;
         if (elapsedMs <= 0) return baseline;
         if (elapsedMs >= duration) return Lerp(0, baseline, Ease((elapsedMs - duration) / 280));
         var t = elapsedMs / duration;
-        return amp * (float)Math.Sin(t * Math.PI * 3);
+        return Math.Sign(target) * amp * (float)Math.Sin(t * Math.PI * 3);
     }
+
+    private static string FormatTargets(IReadOnlyDictionary<string, float> values)
+        => string.Join(',', values.Select(p => p.Key + "=" + p.Value.ToString("0.##")));
 
     private static float Ease(double value) { var t = (float)Math.Clamp(value, 0, 1); return t * t * (3 - 2 * t); }
     private static float Lerp(float a, float b, float t) => a + (b - a) * t;
@@ -222,4 +293,14 @@ public sealed class AvatarMotionDirector : IAsyncDisposable
         if (_sendTask is not null) await _sendTask.ConfigureAwait(false);
     }
     public void Halt() => _life.Cancel();
+
+    private sealed class ChannelPose
+    {
+        public float From;
+        public float Target;
+        public double StartedAt;
+        public int TransitionMs;
+        public int HoldMs;
+        public string? Gesture;
+    }
 }

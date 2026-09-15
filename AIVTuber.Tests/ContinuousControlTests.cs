@@ -190,42 +190,27 @@ public class ContinuousControlTests
         }
     }
     [Fact]
-    public async Task HeadYawShakesSlowlyThenReturns()
+    public async Task HeadYawLooksThenReturnsWithoutShake()
     {
         var clock = new ManualClock();
         await using var director = new AvatarMotionDirector(new CaptureBackend(), [Binding("headYaw")], clock);
         director.Sample();
         director.Submit(1, new(new Dictionary<string, float> { ["headYaw"] = 1 }, 200, 200));
-        Assert.InRange(director.Sample()["AIVTuberHeadYaw"], -1f, 1f);
-        clock.Advance(150);
-        var rising = director.Sample()["AIVTuberHeadYaw"];
-        clock.Advance(150);
-        var first = director.Sample()["AIVTuberHeadYaw"];
-        clock.Advance(600);
-        var second = director.Sample()["AIVTuberHeadYaw"];
-        clock.Advance(900);
-        var done = director.Sample()["AIVTuberHeadYaw"];
-        Assert.True(rising > 2);
-        Assert.True(first > rising);
-        Assert.True(first > 8);
-        Assert.True(second < -8);
-        Assert.InRange(done, -1.5f, 1.5f);
+        clock.Advance(200);
+        Assert.Equal(30, director.Sample()["AIVTuberHeadYaw"], 3);
+        clock.Advance(200);
+        Assert.Equal(30, director.Sample()["AIVTuberHeadYaw"], 3);
+        clock.Advance(400);
+        Assert.Equal(0, director.Sample()["AIVTuberHeadYaw"], 3);
     }
 
     [Fact]
-    public async Task HeadYawShakeTakesBodyWithItUnlessBodyIsExplicit()
+    public async Task ExplicitBodyWinsOverLookFollow()
     {
         var clock = new ManualClock();
         await using var director = new AvatarMotionDirector(new CaptureBackend(),
             [Binding("headYaw"), Binding("bodyYaw")], clock);
-        director.Submit(1, new(new Dictionary<string, float> { ["headYaw"] = .5f }, 200, 200));
-        clock.Advance(300);
-        var head = director.Sample()["AIVTuberHeadYaw"];
-        var body = director.Sample()["AIVTuberBodyYaw"];
-        Assert.True(head > 8);
-        Assert.InRange(body, head * .69f, head * .71f);
-
-        director.Submit(2, new(new Dictionary<string, float> { ["headYaw"] = .5f, ["bodyYaw"] = .1f }, 200, 2000));
+        director.Submit(1, new(new Dictionary<string, float> { ["headYaw"] = .5f, ["bodyYaw"] = .1f }, 200, 2000));
         clock.Advance(400);
         Assert.InRange(director.Sample()["AIVTuberBodyYaw"], 2.9f, 3.1f);
     }

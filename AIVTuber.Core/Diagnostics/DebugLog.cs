@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 
 namespace AIVTuber.Core.Diagnostics;
@@ -15,6 +16,8 @@ public static class DebugLog
     /// <summary>When false, Write is a no-op (near-zero overhead).</summary>
     public static bool Enabled { get; set; } = true;
 
+    private static readonly ConcurrentDictionary<string, long> LastWrite = new();
+
     public static void Write(string line)
     {
         if (!Enabled) return;
@@ -24,6 +27,14 @@ public static class DebugLog
             try { File.AppendAllText(_path, $"{stamp}  {line}{Environment.NewLine}", Encoding.UTF8); }
             catch { /* logging must never break the pipeline */ }
         }
+    }
+
+    public static void WriteThrottled(string key, string line, int minMs = 500)
+    {
+        var now = Environment.TickCount64;
+        if (LastWrite.TryGetValue(key, out var previous) && now - previous < minMs) return;
+        LastWrite[key] = now;
+        Write(line);
     }
 
     /// <summary>Peak absolute amplitude (0..1) of a 16-bit mono PCM buffer — for level evidence.</summary>

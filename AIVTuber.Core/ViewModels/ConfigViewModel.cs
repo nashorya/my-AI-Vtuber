@@ -756,6 +756,7 @@ public sealed partial class ConfigViewModel : INotifyPropertyChanged
             {
                 if (TryBool(continuous, "enabled", out var enabled)) Working.Vts.ContinuousControl.Enabled = enabled;
                 if (TryBool(continuous, "useBuiltInTracking", out var builtIn)) Working.Vts.ContinuousControl.UseBuiltInTracking = builtIn;
+                if (TryBool(continuous, "allowModelFilePatch", out var patch)) Working.Vts.ContinuousControl.AllowModelFilePatch = patch;
             }
             if (TryString(vts, "host", out var h)) Working.Vts.Host = h;
             if (TryInt(vts, "port", out var port)) Working.Vts.Port = port;

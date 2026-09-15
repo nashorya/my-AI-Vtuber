@@ -23,6 +23,11 @@ internal sealed class FakeVts : IAsyncDisposable
     public ConcurrentQueue<JsonElement> Requests { get; } = new();
     public string ModelId = "11111111111111111111111111111111";
     public VtsParameter[] DefaultInputs = [];
+    public VtsParameter[] Live2DParameters =
+    [
+        new("ParamAngleZ", -30, 30, 0, 0)
+    ];
+    public Dictionary<string, string> Live2DFromInput { get; } = new();
     public bool ModelLoaded = true;
     public bool DenyToken;
     public string? FailType, IgnoreType;
@@ -89,8 +94,14 @@ internal sealed class FakeVts : IAsyncDisposable
                         "AuthenticationTokenRequest" => new { authenticationToken = "test-token" },
                         "AuthenticationRequest" => new { authenticated = true },
                         "CurrentModelRequest" => new { modelLoaded = ModelLoaded, modelID = ModelId, modelName = BigModelName ? new string('鲸', 10000) : "Sample" },
-                        "Live2DParameterListRequest" => new { modelID = ModelId, parameters = new[] { new { name = "ParamAngleZ", min = -30, max = 30, defaultValue = 0, value = _inputs.GetValueOrDefault("AIVTuberHeadRoll") } } },
-                        "InputParameterListRequest" => new { modelID = ModelId, defaultParameters = DefaultInputs.Select(p => new { name = p.Id, min = p.Min, max = p.Max, defaultValue = p.Default, value = p.Value }).ToArray(), customParameters = _inputs.Keys.Select(name => new { name }).ToArray() },
+                        "Live2DParameterListRequest" => new { modelID = ModelId, parameters = Live2DParameters.Select(p =>
+                        {
+                            var source = Live2DFromInput.FirstOrDefault(kv => kv.Value == p.Id).Key;
+                            var value = !string.IsNullOrEmpty(source) && _inputs.TryGetValue(source, out var mapped) ? mapped
+                                : p.Id == "ParamAngleZ" ? _inputs.GetValueOrDefault("AIVTuberHeadRoll") : p.Value;
+                            return new { name = p.Id, min = p.Min, max = p.Max, defaultValue = p.Default, value };
+                        }).ToArray() },
+                        "InputParameterListRequest" => new { modelID = ModelId, defaultParameters = DefaultInputs.Select(p => new { name = p.Id, min = p.Min, max = p.Max, defaultValue = p.Default, value = p.Value }).ToArray(), customParameters = _inputs.Keys.Except(DefaultInputs.Select(p => p.Id)).Select(name => new { name, min = -1f, max = 1f, defaultValue = 0f, value = _inputs.GetValueOrDefault(name) }).ToArray() },
                         "ExpressionStateRequest" => new { expressions = ActiveExpression ? new object[] { new { active = true } } : Array.Empty<object>() },
                         "HotkeysInCurrentModelRequest" => new { availableHotkeys = Array.Empty<object>() },
                         _ => new { }

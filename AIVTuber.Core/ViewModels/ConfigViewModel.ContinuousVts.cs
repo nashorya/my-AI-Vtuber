@@ -42,7 +42,18 @@ public sealed partial class ConfigViewModel
             status = session?.Status ?? "请在 config.json 将 avatar.backend 设为 vts 或 both，再重启应用",
             busy = _continuousBusy,
             useBuiltInTracking = Working.Vts.ContinuousControl.UseBuiltInTracking,
+            allowModelFilePatch = Working.Vts.ContinuousControl.AllowModelFilePatch,
             trackingChannels = model is null ? [] : VtsTrackingBackend.Describe(model.DefaultInputs),
+            bodyMappings = (session?.BodyMappings ?? []).Select(r => new
+            {
+                channel = r.Channel,
+                inputId = r.InputId,
+                inputExists = r.InputExists,
+                state = r.State,
+                reason = r.Reason,
+                output = r.Output,
+                readback = r.Readback
+            }),
             model,
             profile = model is null ? null : Working.Vts.ContinuousControl.Profiles.GetValueOrDefault(model.Id),
             descriptors = AvatarChannels.All
@@ -70,6 +81,17 @@ public sealed partial class ConfigViewModel
                 return;
             }
             if (operation == "resume") { await session.ResumeAsync(); return; }
+            if (operation == "restorePatch")
+            {
+                if (!session.TryRestoreModelPatch(out var path))
+                    throw new InvalidOperationException("没有可恢复的模型备份");
+                return;
+            }
+            if (operation == "testAxis")
+            {
+                await session.TestTrackingAxisAsync(data.GetProperty("channel").GetString() ?? "", data.GetProperty("value").GetSingle());
+                return;
+            }
             if (Working.Vts.ContinuousControl.UseBuiltInTracking)
                 throw new InvalidOperationException("内置面捕模式无需创建或校准映射；高级操作请切换模式并保存");
             if (session.Model is not { } model || !Working.Vts.ContinuousControl.Profiles.TryGetValue(model.Id, out var profile))
