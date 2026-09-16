@@ -192,9 +192,12 @@ public sealed class AvatarMotionDirector : IAsyncDisposable
 
     private void FollowHeadWithBody(Dictionary<string, float> pose, double dt)
     {
-        Couple(pose, dt, "headYaw", "bodyYaw", .35f, .25f);
-        Couple(pose, dt, "headPitch", "bodyPitch", .22f, .35f);
-        Couple(pose, dt, "headRoll", "bodyRoll", .16f, .35f);
+        // Official VTS rigs wire body outputs to the face inputs at ~0.9 semantic, so a
+        // head turn reads as the whole person turning. Match that feel through the
+        // independent body inputs, weaker on pitch/roll, still gated off tiny looks.
+        Couple(pose, dt, "headYaw", "bodyYaw", .8f, .15f);
+        Couple(pose, dt, "headPitch", "bodyPitch", .45f, .2f);
+        Couple(pose, dt, "headRoll", "bodyRoll", .35f, .2f);
     }
 
     private void Couple(Dictionary<string, float> pose, double dt,

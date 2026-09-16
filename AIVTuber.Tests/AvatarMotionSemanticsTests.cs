@@ -138,9 +138,11 @@ public class AvatarMotionSemanticsTests
         var late = director.Sample();
         Assert.True(late["AIVTuberHeadYaw"] > 20);
         Assert.True(late["AIVTuberBodyYaw"] > early["AIVTuberBodyYaw"]);
-        Assert.True(late["AIVTuberBodyYaw"] > 2);
-        Assert.True(Math.Abs(late["AIVTuberBodyYaw"]) < Math.Abs(late["AIVTuberHeadYaw"]) * .55f);
-        Assert.False(Math.Abs(late["AIVTuberBodyYaw"] - late["AIVTuberHeadYaw"] * .7f) < 1);
+        // Body follows a large look substantially (official-rig feel, ~0.8 semantic)
+        // but stays below the head and eases in over several frames, not frame-copied.
+        Assert.True(late["AIVTuberBodyYaw"] > Math.Abs(late["AIVTuberHeadYaw"]) * .55f,
+            $"body {late["AIVTuberBodyYaw"]} did not follow head {late["AIVTuberHeadYaw"]}");
+        Assert.True(late["AIVTuberBodyYaw"] < Math.Abs(late["AIVTuberHeadYaw"]) * .95f);
     }
 
     [Fact]
@@ -268,10 +270,10 @@ public class AvatarMotionSemanticsTests
         {
             clock.Advance(50);
             var current = director.Sample()["AIVTuberBodyYaw"];
-            Assert.True(Math.Abs(current - previous) <= 1.8f, $"follow snap of {Math.Abs(current - previous)} at frame {i}");
+            Assert.True(Math.Abs(current - previous) <= 3.5f, $"follow snap of {Math.Abs(current - previous)} at frame {i}");
             previous = current;
         }
-        // Desired follow is headYaw(.8)*.35 = .28 semantic ≈ 8.4 injected units.
-        Assert.InRange(previous, 3f, 8.4f);
+        // Desired follow is headYaw(.8)*.8 = .64 semantic ≈ 19 injected units.
+        Assert.InRange(previous, 3f, 19.2f);
     }
 }
