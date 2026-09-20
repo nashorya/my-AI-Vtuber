@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using AIVTuber.Core.Cortico;
 using System.Threading.Channels;
 using AIVTuber.Core.Audio;
 using AIVTuber.Core.Config;
@@ -68,6 +69,8 @@ public sealed class BotOrchestrator : IDisposable
     /// Probe text is ASR transcript or the full text turn (danmaku template, etc.).
     /// </summary>
     public Func<string, bool>? ShouldSpeak { get; set; }
+
+    public ICorticoPerformance? Cortico { get; set; }
 
     public BotOrchestrator(
         IAsrClient asr, ILlmClient llm, ITtsClient tts,
@@ -617,6 +620,11 @@ public sealed class BotOrchestrator : IDisposable
         CancellationToken ct,
         Func<bool>? canCommit = null)
     {
+        if (Cortico is not null)
+        {
+            await RunCorticoAsync(history, userInput, envelope, ct, canCommit).ConfigureAwait(false);
+            return;
+        }
         AIVTuber.Core.Diagnostics.DebugLog.Write($"[LLM输入] {userInput}");
         _coordinator.SetHold(true);
         var sentenceChannel = Channel.CreateBounded<string>(3);
@@ -712,6 +720,68 @@ public sealed class BotOrchestrator : IDisposable
         }
 
         if (pipelineEx is not null) throw pipelineEx;
+    }
+
+    private async Task RunCorticoAsync(List<Message> history, string userInput,
+        InputEnvelope envelope, CancellationToken ct, Func<bool>? canCommit)
+    {
+        var performance = Cortico!;
+        var context = new RequestContext(envelope.Generation, ct);
+        var oldContext = _eventContext.Value;
+        var committed = false;
+        var started = false;
+        _coordinator.SetHold(true);
+        _eventContext.Value = context;
+        _deferLlmEvents = true;
+        ClearDeferredControls();
+        try
+        {
+            var raw = new StringBuilder();
+            await foreach (var token in _llm.StreamAsync(history, userInput, ct))
+            {
+                if (!IsCurrent(envelope, ct)) return;
+                raw.Append(token);
+            }
+            if (!IsCurrent(envelope, ct) || canCommit?.Invoke() == false) return;
+            var script = raw.ToString();
+            var reply = ReplyClassifier.Classify(script);
+            if (reply.Kind != ReplyKind.Speak)
+            {
+                CommitClassifiedReply(context, reply, script);
+                return;
+            }
+            var spoken = await performance.PrepareAsync(script, ct).ConfigureAwait(false);
+            if (!LlmClient.IsSpeakableText(spoken)) return;
+            reply = reply with { Spoken = spoken, StagedControls = [] };
+            if (!IsCurrent(envelope, ct) || canCommit?.Invoke() == false) return;
+            await performance.PerformAsync(script, () =>
+            {
+                if (!IsCurrent(envelope, ct) || canCommit?.Invoke() == false) return false;
+                if (!committed)
+                {
+                    committed = true;
+                    // Upstream owns all VTS controls. Publish only clean speech to history/OBS.
+                    OnReplyCommitted?.Invoke(this, reply);
+                    PublishSpokenSentence(context, spoken);
+                    OnFirstSentenceToTts?.Invoke(this, EventArgs.Empty);
+                }
+                return true;
+            }, () =>
+            {
+                if (started || !IsCurrent(envelope, ct)) return;
+                started = true;
+                OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
+            }, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _eventContext.Value = oldContext;
+            _deferLlmEvents = false;
+            ClearDeferredControls();
+            _coordinator.SetHold(false);
+            if (started && IsCurrent(envelope, ct, allowCancellation: true))
+                OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     private void CommitClassifiedReply(RequestContext context, ClassifiedReply classified, string raw)

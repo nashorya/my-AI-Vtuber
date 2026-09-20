@@ -1,3 +1,4 @@
+using AIVTuber.Core.Cortico;
 using AIVTuber.Core.Audio;
 using System.Threading.Channels;
 using AIVTuber.Core.Avatar;
@@ -45,6 +46,8 @@ public sealed class BotRuntime : IAsyncDisposable
     private LlmClient _memoryLlm = null!; // owned by BotRuntime so it can be disposed (MemoryExtractor is not IDisposable)
     private LlmClient _pkCuratorLlm = null!; // dedicated client: no character system prompt
     private VtsClient? _vts;
+    private CorticoProcess? _cortico;
+    private CorticoOptions? _corticoOptions;
     private PixelAvatarDriver? _pixelAvatar;
     private AvatarConfigWatcher? _avatarConfigWatcher;
     private EventHandler<float>? _avatarRmsHandler;
@@ -96,7 +99,7 @@ public sealed class BotRuntime : IAsyncDisposable
     /// <summary>Fired per loopback frame with RMS in [0,1] for a level indicator.</summary>
     public event EventHandler<float>? LoopbackLevelUpdated;
 
-    public bool VtsConnected => _vts?.IsConnected == true;
+    public bool VtsConnected => _cortico?.IsConnected ?? (_vts?.IsConnected == true);
     /// <summary>In-process PNG avatar driver when backend is pixel/both; null otherwise.</summary>
     public PixelAvatarDriver? PixelAvatar => _pixelAvatar;
     public bool ObsConnected => _obs is not null;
@@ -301,6 +304,14 @@ public sealed class BotRuntime : IAsyncDisposable
 
     private async Task InitVtsAsync()
     {
+        _corticoOptions ??= CorticoOptions.Load(_baseDir);
+        if (_corticoOptions.Enabled)
+        {
+            _cortico = await CorticoProcess.StartAsync(_corticoOptions, _baseDir, _config.Vts,
+                () => _tts, () => _config.Tts,
+                message => AIVTuber.Core.Diagnostics.DebugLog.Write($"[Cortico] {message}"), _cts.Token);
+            return;
+        }
         try
         {
             _vts = new VtsClient(_config.Vts);
@@ -561,6 +572,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _orchestrator = new BotOrchestrator(
             _asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts,
             ttsEmotionMap: _config.Avatar.EmotionMap);
+        _orchestrator.Cortico = _cortico;
         _orchestrator.ShouldSpeak = probe => _wakeGate.ShouldSpeak(
             _config.Interaction.IsPkMode,
             _config.Interaction.WakeKeywords,
@@ -668,6 +680,8 @@ public sealed class BotRuntime : IAsyncDisposable
         var extra = string.IsNullOrWhiteSpace(_config.Identity.ExtraNotes)
             ? ""
             : "\n" + _config.Identity.ExtraNotes.Trim();
+        if (_cortico is not null)
+            return _config.Llm.SystemPrompt + "\n\n" + protocol + extra + "\n\n" + _cortico.Prompt;
         return string.IsNullOrWhiteSpace(basePrompt) ? protocol + extra : basePrompt + "\n\n" + protocol + extra;
     }
 
@@ -1350,6 +1364,11 @@ public sealed class BotRuntime : IAsyncDisposable
 
     private async Task ReconnectVtsAsync()
     {
+        if (_cortico is not null)
+        {
+            await _cortico.DisposeAsync();
+            _cortico = null;
+        }
         if (!_config.Avatar.UsesVts)
         {
             if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); _vts = null; }
@@ -1407,6 +1426,7 @@ public sealed class BotRuntime : IAsyncDisposable
         if (_danmaku is not null) { await _danmaku.StopAsync(); _danmaku.Dispose(); }
         if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); }
         if (_obs is not null) { await _obs.DisconnectAsync(); _obs.Dispose(); }
+        if (_cortico is not null) { await _cortico.DisposeAsync(); _cortico = null; }
         await _asrSidecar.DisposeAsync();
         _turnGate?.Dispose();
         _turnGate = null;

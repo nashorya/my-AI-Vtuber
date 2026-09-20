@@ -45,3 +45,8 @@ artifacts/**/*.zip
 
 # ONNX model files (large, download separately)
 models/WebRtcVad.dll
+
+# Cortico experiment local dependencies and VTS authorization
+sidecar/cortico/node_modules/
+.cortico-vts-token
+cortico.json

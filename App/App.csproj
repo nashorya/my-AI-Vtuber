@@ -71,6 +71,11 @@
   </Target>
 
   <ItemGroup>
+    <None Include="..\sidecar\cortico\**\*"
+          Exclude="..\sidecar\cortico\node_modules\**\*;..\sidecar\cortico\tests\**\*"
+          Link="sidecar\cortico\%(RecursiveDir)%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"
+          ExcludeFromSingleFile="true" />
     <None Include="..\config.json.template" Link="config.json.template" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\danmaku_bridge.py" Link="danmaku_bridge.py" CopyToPublishDirectory="PreserveNewest" />
     <None Include="..\danmaku-bridge\danmaku_bridge.exe"
