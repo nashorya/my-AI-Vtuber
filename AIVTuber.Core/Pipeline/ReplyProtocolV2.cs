@@ -105,21 +105,27 @@ public sealed class ReplyProtocolV2Parser
     }
 
     /// <summary>Close the stream. Missing end, mid-line truncation and finish_reason=length
-    /// all fail closed — a truncated protocol must never be treated as complete.</summary>
+    /// all fail closed — a truncated protocol must never be treated as complete. A final line
+    /// without a trailing newline is still valid JSONL: it is parsed here under the same
+    /// one-complete-JSON-object rule before any truncation verdict.</summary>
     public IReadOnlyList<ReplyStreamEvent> Complete(string? finishReason)
     {
         if (_failed) return [];
         var leftover = _line.ToString().Trim();
         _line.Clear();
+        var events = new List<ReplyStreamEvent>();
         if (leftover.Length > 0)
-            return Fail($"协议错误：流在行中间被截断（末行不完整：{Preview(leftover)}）");
+        {
+            events.AddRange(ProcessLine(leftover));
+            if (_failed) return events;
+        }
         if (!_ended)
         {
             if (string.Equals(finishReason, "length", StringComparison.OrdinalIgnoreCase))
                 return Fail("协议错误：finish_reason=length，输出预算把协议截断（无 end 事件）");
             return Fail("协议错误：流结束但缺少 end 事件");
         }
-        return [];
+        return events;
     }
 
     private static string Preview(string text) => text.Length <= 60 ? text : text[..60] + "…";

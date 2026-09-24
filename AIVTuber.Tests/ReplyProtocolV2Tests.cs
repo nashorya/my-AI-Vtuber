@@ -127,6 +127,19 @@ public sealed class ReplyProtocolV2ParserTests
     }
 
     [Fact]
+    public void FinalLineWithoutTrailingNewline_IsAccepted()
+    {
+        // Real LLM providers (via proxy) often omit the newline after the last event;
+        // a complete JSON object at EOF is valid JSONL and must not fail closed.
+        var events = ParseAll(
+            "{\"v\":2,\"type\":\"decision\",\"mode\":\"speak\"}\n" +
+            "{\"v\":2,\"type\":\"speech\",\"seq\":0,\"text\":\"好\"}\n" +
+            "{\"v\":2,\"type\":\"end\"}");
+        Assert.DoesNotContain(events, e => e.Kind == ReplyStreamEventKind.ProtocolError);
+        Assert.Contains(events, e => e.Kind == ReplyStreamEventKind.End);
+    }
+
+    [Fact]
     public void FinishReasonLengthWithoutEnd_FailsClosedWithExplicitReason()
     {
         var events = ParseAll("{\"v\":2,\"type\":\"decision\",\"mode\":\"speak\"}\n", finishReason: "length");
