@@ -28,7 +28,8 @@
     "api_key": "<your-llm-api-key>",
     "model": "deepseek-chat",
     "system_prompt": "你是一个VTuber...",
-    "max_history_tokens": 4096
+    "max_history_tokens": 4096,
+    "reply_protocol": "legacy"
   },
   "tts": {
     "provider": "fish-audio",

@@ -254,6 +254,11 @@ public sealed class LlmConfig
     public string SystemPrompt { get; set; } =
         "你是直播中的 AI VTuber。口语短句回答，正文不超过80字（控制标记不计入），一句顶十句，别啰嗦、别列点。";
     public int MaxHistoryTokens { get; set; } = 4096;
+    /// <summary>Reply protocol for the main dialogue LLM: "legacy" = one structured JSON
+    /// object per turn (whole-reply buffering, kept as rollback path); "v2" = streamed
+    /// NDJSON events (decision/speech/control/end) so the first approved segment reaches
+    /// TTS before the model finishes. Default legacy — migration safety switch.</summary>
+    public string ReplyProtocol { get; set; } = "legacy";
 
     internal string VendorId => ProviderSecrets.InferLlmVendor(Provider, BaseUrl);
 

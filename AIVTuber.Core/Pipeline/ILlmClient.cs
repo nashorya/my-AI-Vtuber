@@ -53,3 +53,25 @@ public interface ILlmClient
         string userInput,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// Optional capability implemented by LLM clients that support the versioned
+/// reply protocol (RT-05): typed NDJSON events streamed line-by-line so the
+/// first approved speech segment can reach TTS before the model finishes.
+/// "legacy" clients do not implement this and keep the whole-reply contract.
+/// </summary>
+public interface IReplyProtocolStream
+{
+    /// <summary>Configured protocol version: "legacy" or "v2".</summary>
+    string ReplyProtocol { get; }
+
+    /// <summary>
+    /// Streams validated reply-protocol events. Speech events are only produced after a
+    /// decision=speak event; every violation is reported as a single fail-closed
+    /// <see cref="ReplyStreamEventKind.ProtocolError"/> terminal event.
+    /// </summary>
+    IAsyncEnumerable<ReplyStreamEvent> StreamEventsAsync(
+        List<Message> history,
+        string userInput,
+        CancellationToken cancellationToken = default);
+}

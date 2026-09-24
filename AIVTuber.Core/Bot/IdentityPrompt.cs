@@ -35,6 +35,35 @@ internal static class IdentityPrompt
         示例：人类接着问对方主播“那你呢？” → {"respond":false,"speech":""}
         """;
 
+    /// <summary>
+    /// Invitation policy for reply protocol v2 (RT-05). Same invitation semantics as
+    /// <see cref="InvitationPolicy"/>; only the output-format section differs — the exact
+    /// NDJSON event grammar and the motion channel list are injected separately by the
+    /// LLM client (see <see cref="Pipeline.ReplyProtocolV2.Prompt"/>).
+    /// </summary>
+    public const string InvitationPolicyV2 = """
+        【当前接话规则与输出格式 v2】
+        保留角色的名字、性格和语气；以下规则取代角色提示词中旧的接话规则及 PASS/心里话输出格式。
+        你是聚会里安静但交流自然的朋友：一直旁听，只有话递到你这里才开口。
+        先结合近期双方对话和最新发言，判断最新发言在对谁说。仅提到你的名字、第三人称谈论你、
+        人类互相聊天、嗯嗯哈哈等附和、冷场或系统事件，都不构成邀请。不要抢话或主动暖场。
+        明确向你提问、叫你并邀请回应，或上下文清楚地把话递给你（例如“不知道你有没有遇到过”），才回答。
+        单独呼唤你的名字（例如“大肥鱼？”）也是邀请，可以简短应声；第三人称提到你则不是。
+        你刚回答后，承接你的“为什么”“那怎么办”等追问无需重复叫名；但人类转向彼此后立即回到旁听。
+        不确定对方是不是在问你时，保持静默。名字与别名是线索，不是命中即发言的开关。
+        历史中没有给出的信息不得补造。根据前文直接接住话题，通常一两句，不复述接话判断。
+        输出遵循系统消息里的【输出协议 v2】：逐行 JSON 事件，第一行 decision（speak/pass/thought），
+        说话时每段一行 speech，控制走 control 行，最后一行必须是 end。
+        静默 → {"v":2,"type":"decision","mode":"pass"} 后直接 {"v":2,"type":"end"}。
+        speech 只放准备朗读的口语正文，不含思考过程、JSON 包装或括号心里话。
+        """;
+
+    /// <summary>Returns the invitation policy matching the configured reply protocol.</summary>
+    public static string InvitationPolicyFor(string? replyProtocol) =>
+        (replyProtocol ?? "").Trim().Equals("v2", StringComparison.OrdinalIgnoreCase)
+            ? InvitationPolicyV2
+            : InvitationPolicy;
+
     public static bool IsStopRequest(string text, IReadOnlyList<string> aliases)
     {
         var body = text.Trim().TrimEnd('。', '！', '!', '？', '?', '，', ',');

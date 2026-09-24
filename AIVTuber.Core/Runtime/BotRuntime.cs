@@ -618,7 +618,8 @@ public sealed class BotRuntime : IAsyncDisposable
                 _config.Avatar.UsesVts && _config.Vts.ContinuousControl.Enabled
                     ? () => _continuousVts is { } vts && vts.DeclaredChannels.Length > 0
                         ? vts.DeclaredChannels
-                        : [] : null);
+                        : [] : null,
+                _config.Llm.ReplyProtocol);
         }
         if (_tts is null || rebuild.HasFlag(RuntimeChange.RebuildTts))
         {
@@ -873,7 +874,7 @@ public sealed class BotRuntime : IAsyncDisposable
             history.RemoveAll(_queuedInputs.Contains);
             foreach (var line in lines)
                 if (line.HistoryMessage is { } message) _queuedInputs.Remove(message);
-            history.Add(new Message { Role = MessageRole.System, Content = IdentityPrompt.InvitationPolicy });
+            history.Add(new Message { Role = MessageRole.System, Content = IdentityPrompt.InvitationPolicyFor(_config.Llm.ReplyProtocol) });
             return history;
         }
     }
