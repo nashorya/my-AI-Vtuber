@@ -8,7 +8,7 @@ public class ConfigDiffContractTests
     private static readonly string[] RegisteredRuntimeFields =
     [
         "Asr.Provider", "Asr.ApiKey", "Asr.ApiKeys", "Asr.AppId", "Asr.Model", "Asr.LocalAsrUrl", "Asr.PythonPath",
-        "Asr.PersistConnection", "Asr.Streaming",
+        "Asr.PersistConnection", "Asr.Streaming", "Asr.SecretId", "Asr.ResourceId", "Asr.Hotwords",
         "Tts.Provider", "Tts.ApiKey", "Tts.ApiKeys", "Tts.VoiceId", "Tts.Model", "Tts.GroupId", "Tts.Speed",
         "Tts.BaseUrl", "Tts.Language", "Tts.Seed", "Tts.NumSteps", "Tts.GuidanceScale", "Tts.SampleRate", "Tts.Transport",
     ];
@@ -24,6 +24,9 @@ public class ConfigDiffContractTests
         { "Asr.PythonPath", c => c.Asr.PythonPath = "python3", RuntimeChange.RebuildAsr },
         { "Asr.PersistConnection", c => c.Asr.PersistConnection = false, RuntimeChange.RebuildAsr },
         { "Asr.Streaming", c => c.Asr.Streaming = false, RuntimeChange.RebuildAsr | RuntimeChange.RestartAudio },
+        { "Asr.SecretId", c => c.Asr.SecretId = "new-secret-id", RuntimeChange.RebuildAsr },
+        { "Asr.ResourceId", c => c.Asr.ResourceId = "volc.async.asr.sauc.bigmodel", RuntimeChange.RebuildAsr },
+        { "Asr.Hotwords", c => c.Asr.Hotwords = ["可缇"], RuntimeChange.RebuildAsr },
         { "Tts.Provider", c => c.Tts.Provider = "minimax", RuntimeChange.RebuildTts },
         { "Tts.ApiKey", c => c.Tts.ApiKey = "new-tts-key", RuntimeChange.RebuildTts },
         { "Tts.ApiKeys", c => c.Tts.ApiKeys["minimax"] = "stashed-tts-key", RuntimeChange.RebuildTts },
