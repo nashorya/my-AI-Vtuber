@@ -90,6 +90,10 @@
     "danmaku_label": "直播间弹幕",
     "extra_notes": ""
   },
+  "realtime": {
+    "turn_manager_v2_enabled": false,
+    "speculative_generation_enabled": false
+  },
   "avatar": {
     "backend": "vts",
     "assets_path": "assets/avatar",

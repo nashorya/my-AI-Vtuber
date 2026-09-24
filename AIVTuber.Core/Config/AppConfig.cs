@@ -18,6 +18,8 @@ public sealed class AppConfig
     public InteractionConfig Interaction { get; set; } = new();
     /// <summary>Display names for 使用者 / 对方主播 / 直播间弹幕.</summary>
     public IdentityConfig Identity { get; set; } = new();
+    /// <summary>Realtime-mode capability switches (RT-04+). All default to legacy behaviour.</summary>
+    public RealtimeConfig Realtime { get; set; } = new();
     /// <summary>In-process PNG avatar + backend selection (vts / pixel / both).</summary>
     public AvatarRuntimeConfig Avatar { get; set; } = new();
     /// <summary>Realtime pipeline overhaul switches (RT-00+). Defaults are all legacy/off:
@@ -62,6 +64,20 @@ public sealed class RealtimeConfig
 
     public bool IsCloudOnly =>
         string.Equals(InferenceMode, "cloud_only", StringComparison.OrdinalIgnoreCase);
+}
+
+/// <summary>
+/// Independent, versioned capability switches for the realtime rework. Defaults keep the
+/// legacy pipeline byte-for-byte; each flag is a migration/rollback boundary (plan §8).
+/// </summary>
+public sealed class RealtimeConfig
+{
+    /// <summary>RT-04 Turn Manager v2 state machine. Default false: legacy ConversationTurnGate.</summary>
+    public bool TurnManagerV2Enabled { get; set; } = false;
+
+    /// <summary>Speculative (试探) generation. P0 performs context preparation only; this flag
+    /// stays false and turning it on does not yet generate output.</summary>
+    public bool SpeculativeGenerationEnabled { get; set; } = false;
 }
 
 public sealed class IdentityConfig

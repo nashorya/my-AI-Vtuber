@@ -3,6 +3,7 @@ using AIVTuber.Core.Audio;
 using System.Threading.Channels;
 using AIVTuber.Core.Avatar;
 using AIVTuber.Core.Bot;
+using AIVTuber.Core.Bot.Turns;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.LiveStream;
 using AIVTuber.Core.Memory;
@@ -71,6 +72,8 @@ public sealed class BotRuntime : IAsyncDisposable
     private DanmakuSelector? _selector;
     private readonly WakeGate _wakeGate = new();
     private ConversationTurnGate? _turnGate;
+    private TurnManagerV2? _turnManagerV2; // RT-04 v2, only when realtime.turn_manager_v2_enabled
+    private long _pendingV2Generation;
     private readonly object _talkInputSync = new();
     private readonly HashSet<Message> _queuedInputs = [];
     private IReadOnlyList<TalkLine> _pendingTurnLines = [];
@@ -185,6 +188,7 @@ public sealed class BotRuntime : IAsyncDisposable
         lock (_talkInputSync)
         {
             _turnGate?.Clear();
+            _turnManagerV2?.NoteStopCommand();
             _queuedInputs.Clear();
         }
         _orchestrator?.SetHold(false);
@@ -230,6 +234,7 @@ public sealed class BotRuntime : IAsyncDisposable
         if (_loopbackVadMuted)
         {
             _loopbackVad.Reset(); // drop any half-open segment so it can't merge across the gap
+            _turnManagerV2?.NoteVoiceActivity(TurnSource.Loopback, false);
             AbandonLoopbackSpeechChannel();
             return;
         }
@@ -749,10 +754,73 @@ public sealed class BotRuntime : IAsyncDisposable
 
     private void EnsureTurnGate()
     {
-        if (_turnGate is not null) return;
-        _turnGate = new ConversationTurnGate();
-        _turnGate.StatusChanged += status => TurnStatusChanged?.Invoke(this, status);
-        _turnGate.TurnReady += lines => SuperviseBackgroundTask(HandleTurnReadyAsync(lines));
+        if (_turnGate is null)
+        {
+            _turnGate = new ConversationTurnGate();
+            _turnGate.StatusChanged += status => TurnStatusChanged?.Invoke(this, status);
+            _turnGate.TurnReady += lines => SuperviseBackgroundTask(HandleTurnReadyAsync(lines));
+        }
+        // RT-04 v2 is created lazily behind its flag; the legacy gate above is untouched and
+        // remains the only path while the flag is false (default).
+        if (_turnManagerV2 is null && _config.Realtime.TurnManagerV2Enabled)
+        {
+            _turnManagerV2 = new TurnManagerV2(new TurnManagerOptions
+            {
+                SelfNames = [_config.Identity.SelfName, .. _config.Interaction.WakeKeywords],
+                SpeculativeGenerationEnabled = _config.Realtime.SpeculativeGenerationEnabled,
+            });
+            _turnManagerV2.StatusChanged += status => ReportTurnStatus(status);
+            _turnManagerV2.TurnReady += (ctx, lines) => SuperviseBackgroundTask(HandleTurnReadyV2Async(ctx, lines));
+            _turnManagerV2.TurnCancelled += (_, reason) =>
+                AIVTuber.Core.Diagnostics.DebugLog.Write($"[回合v2] 已取消 generation，原因={reason}");
+            _turnManagerV2.DecisionRecorded += d =>
+                AIVTuber.Core.Diagnostics.DebugLog.Write(
+                    $"[回合v2] 决策 respond={d.Respond} level={d.Level} reason={d.ReasonCode}");
+        }
+    }
+
+    /// <summary>RT-04 v2 turn dispatch. Mirrors the legacy path, with CanCommit additionally
+    /// bound to the v2 generation (voice recovery / match change / retraction / stop).</summary>
+    private async Task HandleTurnReadyV2Async(TurnContextV2 context, IReadOnlyList<TalkLine> lines)
+    {
+        var manager = _turnManagerV2;
+        if (manager is null) return;
+        var turnMatchId = _pkBuffer.MatchId;
+        var orchestrator = _orchestrator;
+        try
+        {
+            if (orchestrator is null) return;
+            lines = lines.Where(IsCurrentMatch).ToArray();
+            if (lines.Count == 0) return;
+            var formatted = IdentityPrompt.FormatTurn(lines);
+            if (string.IsNullOrWhiteSpace(formatted)) return;
+
+            var history = BuildTurnHistory(lines, formatted);
+
+            bool CanCommit()
+            {
+                return ReferenceEquals(orchestrator, _orchestrator) && ReferenceEquals(manager, _turnManagerV2) &&
+                    manager.CanCommit(context.GenerationId) &&
+                    turnMatchId == _pkBuffer.MatchId && lines.All(IsCurrentMatch);
+            }
+            lock (_talkInputSync) _pendingV2Generation = context.GenerationId;
+            _stateTracker.TextInputStarted(Environment.TickCount64);
+            UserTranscript?.Invoke(this, formatted);
+            await orchestrator.ProcessTextAsync(formatted, history, bypassWake: true, canCommit: CanCommit,
+                requireStructuredReply: true).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            PipelineError?.Invoke(this, $"[回合v2] {ex.Message}");
+        }
+        finally
+        {
+            lock (_talkInputSync)
+                foreach (var line in lines)
+                    if (line.HistoryMessage is { } message) _queuedInputs.Remove(message);
+            _stateTracker.SpeakingStopped();
+            manager.CompleteTurn(context.GenerationId);
+        }
     }
 
     internal void AcceptTalkLine(TalkLine line)
@@ -762,13 +830,17 @@ public sealed class BotRuntime : IAsyncDisposable
             IdentityPrompt.IsStopRequest(line.Text, _config.Interaction.WakeKeywords);
         lock (_talkInputSync)
         {
-            if (_turnGate is null || _conversation is null) return;
+            if (_conversation is null) return;
             var message = _conversation.ObserveUserMessage(IdentityPrompt.FormatTurn([line]));
             if (!stop)
             {
                 _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TurnCandidate);
                 _queuedInputs.Add(message);
-                _turnGate.AddLine(line with { HistoryMessage = message });
+                var lineWithHistory = line with { HistoryMessage = message };
+                if (_turnManagerV2 is not null && _config.Realtime.TurnManagerV2Enabled)
+                    _turnManagerV2.AddFinal(lineWithHistory, SourceOf(line.Identity));
+                else
+                    _turnGate?.AddLine(lineWithHistory);
             }
         }
         if (stop)
@@ -777,6 +849,14 @@ public sealed class BotRuntime : IAsyncDisposable
             StopSpeaking();
         }
     }
+
+    private static TurnSource SourceOf(TalkIdentity identity) => identity switch
+    {
+        TalkIdentity.Self => TurnSource.Microphone,
+        TalkIdentity.Opponent => TurnSource.Loopback,
+        TalkIdentity.Danmaku => TurnSource.Danmaku,
+        _ => TurnSource.System,
+    };
 
     internal List<Message> BuildTurnHistory(IReadOnlyList<TalkLine> lines, string formatted)
     {
@@ -856,6 +936,7 @@ public sealed class BotRuntime : IAsyncDisposable
                 ReportTurnStatus("回答已生成，开始播放");
                 _conversation.MarkInputsPersistable(lines.Select(l => l.HistoryMessage).OfType<Message>());
                 _conversation.AddAssistantMessage(reply.Spoken);
+                _turnManagerV2?.NoteAssistantMessage(reply.Spoken);
                 // PK curation also reads assistant text; it must not provide a
                 // second persistence route for a paraphrased PASS observation.
                 if (!_conversation.HasTransientContext)
@@ -1068,6 +1149,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _vad.SpeechFrame += (_, frame) =>
         {
             if (_micMuted) return;
+            _turnManagerV2?.NoteVoiceActivity(TurnSource.Microphone, true);
             _continuousVts?.NoteListening();
             if (!_config.Asr.Streaming) return;
             _micSpeechChannel ??= NewSpeechChannel();
@@ -1075,6 +1157,7 @@ public sealed class BotRuntime : IAsyncDisposable
         };
         _vad.SpeechDetected += async (_, seg) =>
         {
+            _turnManagerV2?.NoteVoiceActivity(TurnSource.Microphone, false);
             try { await ObserveMicSegmentAsync(seg).ConfigureAwait(false); }
             catch (Exception ex) { PipelineError?.Invoke(this, $"[麦克风] {ex.Message}"); }
         };
@@ -1123,6 +1206,7 @@ public sealed class BotRuntime : IAsyncDisposable
                 _loopbackVad.SpeechFrame += (_, frame) =>
                 {
                     if (_loopbackVadMuted) return;
+                    _turnManagerV2?.NoteVoiceActivity(TurnSource.Loopback, true);
                     _capturedOpponent ??= CaptureOpponent();
                     _continuousVts?.NoteListening();
                     if (!_config.Asr.Streaming) return;
@@ -1131,6 +1215,7 @@ public sealed class BotRuntime : IAsyncDisposable
                 };
                 _loopbackVad.SpeechDetected += async (_, seg) =>
                 {
+                    _turnManagerV2?.NoteVoiceActivity(TurnSource.Loopback, false);
                     try { await ObserveLoopbackSegmentAsync(seg).ConfigureAwait(false); }
                     catch (Exception ex) { PipelineError?.Invoke(this, $"[内录] {ex.Message}"); }
                 };
@@ -1221,6 +1306,7 @@ public sealed class BotRuntime : IAsyncDisposable
             $"[PK] 对手 {pk.Username}（{pk.FollowerCount} 粉，房间 {pk.RoomId}）");
 
         var matchId = _pkBuffer.Start(pk);
+        _turnManagerV2?.NoteMatchChanged(matchId);
         SuperviseBackgroundTask(StartPkMatchAsync(pk, matchId));
 
         var summary = $"PK 开始，对手是 {pk.Username}";
@@ -1258,6 +1344,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _pkBuffer.EndAssistantReply();
         var turns = _pkBuffer.Snapshot();
         _pkBuffer.Clear();
+        _turnManagerV2?.NoteMatchChanged(null);
         CurrentPkOpponent = null;
         _conversation?.SetLivePkOpponent(null);
         PkOpponentChanged?.Invoke(this, null);
@@ -1335,6 +1422,7 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         if (_pkBuffer.IsActive)
             HandlePkEnded();
+        _turnManagerV2?.NoteMatchChanged(null);
         CurrentPkOpponent = null;
         _conversation?.SetLivePkOpponent(null);
         PkOpponentChanged?.Invoke(this, null);
@@ -1545,6 +1633,8 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         _cts.Cancel();
         _turnGate?.Dispose();
+        _turnManagerV2?.Dispose();
+        _turnManagerV2 = null;
         _orchestrator?.Interrupt();
         await DrainBackgroundTasksAsync();
         UnwirePixelAvatar();
