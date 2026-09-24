@@ -8,6 +8,7 @@ using AIVTuber.Core.LiveStream;
 using AIVTuber.Core.Memory;
 using AIVTuber.Core.Obs;
 using AIVTuber.Core.Pipeline;
+using AIVTuber.Core.RealtimeAsr;
 using AIVTuber.Core.Vts;
 
 namespace AIVTuber.Core.Runtime;
@@ -69,6 +70,15 @@ public sealed class BotRuntime : IAsyncDisposable
     private AIVTuber.Core.Audio.VirtualMicMixer? _virtualMic;
     private BilibiliDanmakuClient? _danmaku;
     private DanmakuSelector? _selector;
+    // RT-02 realtime session path: one pump per physical source, each with its own
+    // session/buffer/cancellation. Null (legacy whole-segment path) unless realtime is enabled.
+    private RealtimeAsrPump? _micAsrPump;
+    private RealtimeAsrPump? _loopbackAsrPump;
+    private bool _realtimeAsrActive;
+    /// <summary>Test injection point for realtime session factories (fake transports).</summary>
+    internal Func<IRealtimeAsrSessionFactory>? RealtimeSessionFactoryOverride { get; set; }
+    internal RealtimeAsrPump? MicAsrPumpForTests => _micAsrPump;
+    internal RealtimeAsrPump? LoopbackAsrPumpForTests => _loopbackAsrPump;
     private readonly WakeGate _wakeGate = new();
     private ConversationTurnGate? _turnGate;
     private readonly object _talkInputSync = new();
@@ -164,6 +174,9 @@ public sealed class BotRuntime : IAsyncDisposable
             _micMuted = muted;
             if (!muted) return;
             _vad?.Reset();
+            // Realtime path: the mute gap breaks the capture timeline — tear the session down
+            // and bump the epoch so late packets cannot leak into the next session.
+            _micAsrPump?.NotifyCaptureGap();
             Interlocked.Exchange(ref _micSpeechChannel, null)?.Writer.TryComplete();
         }
     }
@@ -221,9 +234,11 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             _loopbackVad.Reset(); // drop any half-open segment so it can't merge across the gap
             AbandonLoopbackSpeechChannel();
+            _loopbackAsrPump?.NotifyCaptureGap();
             return;
         }
         _loopbackVad.Feed(buf);
+        _loopbackAsrPump?.OnCapturedFrame(buf, _loopbackVad.IsSpeaking);
     }
 
     private static float ComputeRms(byte[] pcm16)
@@ -541,6 +556,11 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         if (asr.Provider.ToLowerInvariant() is "local")
             return new LocalAsrClient(asr.LocalAsrUrl);
+
+        // Realtime-only providers: no legacy whole-segment implementation — fail loudly if the
+        // legacy path is reached instead of silently mis-routing realtime audio.
+        if (asr.Provider.ToLowerInvariant() is "tencent_realtime" or "volcano_realtime")
+            return new RealtimeOnlyAsrClient(asr.Provider);
 
         if (asr.Provider.ToLowerInvariant() is "minimax")
         {
@@ -872,6 +892,13 @@ public sealed class BotRuntime : IAsyncDisposable
             $"峰值={peak:F3} micMuted={_micMuted} streaming={_config.Asr.Streaming}");
         var channel = Interlocked.Exchange(ref _micSpeechChannel, null);
         channel?.Writer.TryComplete();
+        if (_realtimeAsrActive && _micAsrPump is not null)
+        {
+            // Realtime path: transcription is committed by the session pump on provider finals;
+            // the VAD segment is only a local activity-boundary report here.
+            AIVTuber.Core.Diagnostics.DebugLog.Write("[麦克风段] 实时会话模式：VAD 仅报告活动边界，本段不另起 ASR");
+            return;
+        }
         if (_micMuted || peak < MicAsrMinPeak)
         {
             if (peak < MicAsrMinPeak)
@@ -914,6 +941,11 @@ public sealed class BotRuntime : IAsyncDisposable
             $"峰值={peak:F3} loopbackMuted={_loopbackVadMuted} streaming={_config.Asr.Streaming}");
         var channel = Interlocked.Exchange(ref _loopbackSpeechChannel, null);
         channel?.Writer.TryComplete();
+        if (_realtimeAsrActive && _loopbackAsrPump is not null)
+        {
+            AIVTuber.Core.Diagnostics.DebugLog.Write("[内录段] 实时会话模式：VAD 仅报告活动边界，本段不另起 ASR");
+            return;
+        }
         if (peak < LoopbackAsrMinPeak)
         {
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
@@ -1002,20 +1034,142 @@ public sealed class BotRuntime : IAsyncDisposable
         LocalAsrReachableChanged?.Invoke(this, reachable);
     }
 
+    /// <summary>Builds the realtime session factory for the configured provider. Real network
+    /// transports are wired here but remain 未实测 (no real keys); tests inject fakes via
+    /// <see cref="RealtimeSessionFactoryOverride"/>.</summary>
+    private IRealtimeAsrSessionFactory CreateRealtimeSessionFactory()
+    {
+        var asr = _config.Asr;
+        switch (asr.Provider.Trim().ToLowerInvariant())
+        {
+            case "tencent_realtime":
+                asr.ActivateStoredKey();
+                return new TencentRealtimeAsrSessionFactory(
+                    asr.AppId, asr.SecretId, asr.ApiKey,
+                    string.IsNullOrWhiteSpace(asr.Model) ? "16k_zh" : asr.Model,
+                    transportFactory: null,
+                    _config.Realtime.SendPacketMs);
+            case "volcano_realtime":
+                asr.ActivateStoredKey();
+                return new VolcanoRealtimeAsrSessionFactory(
+                    asr.AppId, asr.ApiKey, asr.ResourceId,
+                    string.IsNullOrWhiteSpace(asr.Model) ? "bigmodel" : asr.Model,
+                    transportFactory: null,
+                    _config.Realtime.SendPacketMs);
+            default:
+                throw new InvalidOperationException(
+                    $"realtime.streaming_asr_enabled=true 但 asr.provider={asr.Provider} 不是实时 provider" +
+                    "（支持 tencent_realtime / volcano_realtime），已按配置错误处理");
+        }
+    }
+
+    private static DateTime ToWallClock(long tickCountMs)
+        => DateTime.UtcNow.AddMilliseconds(tickCountMs - Environment.TickCount64);
+
+    /// <summary>Commits a realtime final segment into the conversation, mirroring the legacy
+    /// Observe*SegmentAsync result handling. Client-endpoint snapshots carry their lower
+    /// confidence in the log line — they are never presented as vendor finals.</summary>
+    private void HandleRealtimeFinal(TranscriptUpdate update)
+    {
+        try
+        {
+            var text = update.TextSnapshot?.Trim();
+            if (string.IsNullOrWhiteSpace(text)) return;
+            var snapshotNote = update.FinalKind == TranscriptFinalKind.ClientEndpointSnapshot
+                ? "（客户端断点快照，非厂商 final）"
+                : string.Empty;
+            var startedAt = ToWallClock(update.AudioStartMs);
+
+            if (update.Source == AIVTuber.Core.Audio.AudioSource.Microphone)
+            {
+                AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风识别·实时] 「{text}」{snapshotNote}");
+                _stateTracker.TranscriptReady(Environment.TickCount64);
+                UserTranscript?.Invoke(this, text);
+                ReportTurnStatus("麦克风已识别，记录对话");
+                AcceptTalkLine(new TalkLine(TalkIdentity.Self, SelfDisplayName(), text, SelfUidOrNull(),
+                    StartedAt: startedAt));
+            }
+            else
+            {
+                AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录识别→对面·实时] 「{text}」{snapshotNote}");
+                if (update.OpponentSnapshot is { MatchId: { } snapMatch } && snapMatch == _pkBuffer.MatchId)
+                    _pkBuffer.NoteOpponentSpeech(text, "loopback");
+                LoopbackTranscript?.Invoke(this, text);
+                AcceptTalkLine(new TalkLine(
+                    TalkIdentity.Opponent,
+                    string.IsNullOrWhiteSpace(update.OpponentSnapshot?.Name)
+                        ? OpponentDisplayName()
+                        : update.OpponentSnapshot!.Name,
+                    text,
+                    update.OpponentSnapshot?.Uid,
+                    update.OpponentSnapshot?.MatchId,
+                    startedAt));
+            }
+        }
+        catch (Exception ex)
+        {
+            PipelineError?.Invoke(this, $"[实时ASR] 提交转写失败: {ex.Message}");
+        }
+    }
+
     private void StartAudio()
     {
+        // RT-02: optionally create per-source realtime pumps. Capture callbacks only hand
+        // frames to the pump's bounded channel — no network await on the audio thread.
+        _realtimeAsrActive = false;
+        _micAsrPump = null;
+        _loopbackAsrPump = null;
+        var realtimeOptions = new RealtimeAsrOptions
+        {
+            BufferCapacityMs = _config.Realtime.BufferCapacityMs,
+            PrerollMs = _config.Realtime.PrerollMs,
+            IdleDisconnectMs = _config.Realtime.IdleDisconnectMs,
+        };
+        IRealtimeAsrSessionFactory? realtimeFactory = null;
+        if (_config.Realtime.StreamingAsrEnabled)
+        {
+            try
+            {
+                realtimeFactory = RealtimeSessionFactoryOverride?.Invoke() ?? CreateRealtimeSessionFactory();
+            }
+            catch (Exception ex)
+            {
+                var msg = $"[实时ASR] 配置错误，实时会话未启用（继续 legacy 路径）: {ex.Message}";
+                Console.WriteLine(msg);
+                PipelineError?.Invoke(this, msg);
+            }
+        }
+
         _mic = new MicrophoneCapture(_config.Audio.InputDeviceIndex);
         _vad = new VadDetector(_config.Audio.VadAggressiveness, _config.Audio.PreSpeechPaddingMs, _config.Audio.PostSpeechSilenceMs);
+        if (realtimeFactory is not null)
+        {
+            _micAsrPump = new RealtimeAsrPump(AIVTuber.Core.Audio.AudioSource.Microphone,
+                realtimeFactory, opponentProvider: null, realtimeOptions);
+            _micAsrPump.PartialUpdate += (_, u) =>
+                AIVTuber.Core.Diagnostics.DebugLog.Write(
+                    $"[麦克风识别·实时partial] seg={u.SegmentId} rev={u.Revision} 「{u.TextSnapshot}」");
+            _micAsrPump.FinalCommitted += (_, u) => HandleRealtimeFinal(u);
+            _micAsrPump.StreamBroken += (_, reason) => PipelineError?.Invoke(this, reason);
+            _realtimeAsrActive = true;
+        }
         _mic.AudioFrameAvailable += (_, buf) =>
         {
-            lock (_micInputSync) { if (!_micMuted) _vad.Feed(buf); }
+            lock (_micInputSync)
+            {
+                if (_micMuted) return;
+                _vad.Feed(buf);
+                // Parallel observation of the same frames (realtime session feed). The VAD
+                // verdict for this frame becomes the voiced hint driving session lifecycle.
+                _micAsrPump?.OnCapturedFrame(buf, _vad.IsSpeaking);
+            }
         };
         _mic.LevelUpdated += (_, level) => MicLevelUpdated?.Invoke(this, level);
         _mic.ErrorOccurred += (_, ex) => PipelineError?.Invoke(this, $"[麦克风] {ex.Message}");
 
         _vad.SpeechFrame += (_, frame) =>
         {
-            if (_micMuted) return;
+            if (_micMuted || _realtimeAsrActive) return; // realtime path feeds frames directly
             _continuousVts?.NoteListening();
             if (!_config.Asr.Streaming) return;
             _micSpeechChannel ??= NewSpeechChannel();
@@ -1067,10 +1221,28 @@ public sealed class BotRuntime : IAsyncDisposable
             try
             {
                 _loopbackVad = new VadDetector(_config.Audio.VadAggressiveness, _config.Audio.PreSpeechPaddingMs, _config.Audio.PostSpeechSilenceMs);
+                if (realtimeFactory is not null)
+                {
+                    // Independent socket/session/buffer/cancellation from the mic pump; the
+                    // opponent snapshot is taken at session creation (audio-time), not commit time.
+                    _loopbackAsrPump = new RealtimeAsrPump(AIVTuber.Core.Audio.AudioSource.Loopback,
+                        realtimeFactory,
+                        () =>
+                        {
+                            var captured = CaptureOpponent();
+                            return new OpponentSnapshot(captured.Name, captured.Uid, captured.MatchId);
+                        },
+                        realtimeOptions);
+                    _loopbackAsrPump.PartialUpdate += (_, u) =>
+                        AIVTuber.Core.Diagnostics.DebugLog.Write(
+                            $"[内录识别·实时partial] seg={u.SegmentId} rev={u.Revision} 「{u.TextSnapshot}」");
+                    _loopbackAsrPump.FinalCommitted += (_, u) => HandleRealtimeFinal(u);
+                    _loopbackAsrPump.StreamBroken += (_, reason) => PipelineError?.Invoke(this, reason);
+                }
 
                 _loopbackVad.SpeechFrame += (_, frame) =>
                 {
-                    if (_loopbackVadMuted) return;
+                    if (_loopbackVadMuted || _realtimeAsrActive) return;
                     _capturedOpponent ??= CaptureOpponent();
                     _continuousVts?.NoteListening();
                     if (!_config.Asr.Streaming) return;
@@ -1114,8 +1286,9 @@ public sealed class BotRuntime : IAsyncDisposable
             {
                 Console.WriteLine($"[音频] 内录启动失败: {ex.Message}");
                 _loopback?.Dispose(); _loopback = null;
-                _processLoopback?.Dispose(); _processLoopback = null;
+                _processLoopback?.Stop(); _processLoopback?.Dispose(); _processLoopback = null;
                 _loopbackVad?.Dispose(); _loopbackVad = null;
+                if (_loopbackAsrPump is not null) { _loopbackAsrPump.DisposeAsync().AsTask().GetAwaiter().GetResult(); _loopbackAsrPump = null; }
             }
         }
     }
@@ -1433,6 +1606,9 @@ public sealed class BotRuntime : IAsyncDisposable
 
     private void RestartAudio()
     {
+        if (_micAsrPump is not null) { _micAsrPump.DisposeAsync().AsTask().GetAwaiter().GetResult(); _micAsrPump = null; }
+        if (_loopbackAsrPump is not null) { _loopbackAsrPump.DisposeAsync().AsTask().GetAwaiter().GetResult(); _loopbackAsrPump = null; }
+        _realtimeAsrActive = false;
         _mic?.Stop(); _mic?.Dispose();
         _vad?.Dispose();
         _loopback?.Stop(); _loopback?.Dispose(); _loopback = null;
@@ -1501,6 +1677,8 @@ public sealed class BotRuntime : IAsyncDisposable
             _pixelAvatar = null;
         }
         _mic?.Stop(); _mic?.Dispose();
+        if (_micAsrPump is not null) { await _micAsrPump.DisposeAsync().ConfigureAwait(false); _micAsrPump = null; }
+        if (_loopbackAsrPump is not null) { await _loopbackAsrPump.DisposeAsync().ConfigureAwait(false); _loopbackAsrPump = null; }
         _vad?.Dispose();
         _loopback?.Stop(); _loopback?.Dispose();
         _processLoopback?.Stop(); _processLoopback?.Dispose();

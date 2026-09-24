@@ -20,6 +20,27 @@ public sealed class AppConfig
     public IdentityConfig Identity { get; set; } = new();
     /// <summary>In-process PNG avatar + backend selection (vts / pixel / both).</summary>
     public AvatarRuntimeConfig Avatar { get; set; } = new();
+    /// <summary>RT-02 实时 ASR 会话模式。默认关闭，走 legacy 整段路径。</summary>
+    public RealtimeConfig Realtime { get; set; } = new();
+}
+
+/// <summary>
+/// 实时会话模式（plan §RT-02/§8）。<see cref="StreamingAsrEnabled"/> 默认 false：音频仍走
+/// SpeechDetected 后的 legacy 整段识别；开启后每路音源在首个有声帧建立实时会话并持续送帧。
+/// </summary>
+public sealed class RealtimeConfig
+{
+    /// <summary>是否启用实时 ASR 会话路径（需要 asr.provider 为实时 provider：
+    /// tencent_realtime / volcano_realtime）。</summary>
+    public bool StreamingAsrEnabled { get; set; } = false;
+    /// <summary>捕获→发送通道容量（毫秒音频）。超限停止并重建会话，明确上报断流。</summary>
+    public int BufferCapacityMs { get; set; } = 4000;
+    /// <summary>会话重建时回放的预录缓冲（毫秒），避免省费重连丢开头。</summary>
+    public int PrerollMs { get; set; } = 1000;
+    /// <summary>连续静音多久后结束会话省费（0=不断开）。恢复时回放预录并计入冷启动指标。</summary>
+    public int IdleDisconnectMs { get; set; } = 30000;
+    /// <summary>厂商发包粒度（毫秒），腾讯文档建议约 200ms。</summary>
+    public int SendPacketMs { get; set; } = 200;
 }
 
 public sealed class IdentityConfig
@@ -180,6 +201,14 @@ public sealed class AsrConfig
     /// speaking, instead of waiting for the full VAD segment. Returns incremental results.
     /// Only applies to WebSocket-based providers (DashScope/Qwen). Default true.</summary>
     public bool Streaming { get; set; } = true;
+    /// <summary>腾讯云 SecretId（Provider = "tencent_realtime" 时使用；SecretKey 走 ApiKey）。
+    /// 密钥只进内存与签名计算，不进日志。</summary>
+    public string SecretId { get; set; } = string.Empty;
+    /// <summary>豆包/火山的资源 ID（Provider = "volcano_realtime" 时使用）。</summary>
+    public string ResourceId { get; set; } = string.Empty;
+    /// <summary>热词候选（AI 昵称/别名、当前对手称呼等）。预留配置位——实时 provider 尚未接入
+    /// 厂商热词能力，当前只作为候选登记，不做强制同音替换。</summary>
+    public List<string> Hotwords { get; set; } = [];
 
     internal string VendorId => ProviderSecrets.Slot(Provider, "aliyun");
 
