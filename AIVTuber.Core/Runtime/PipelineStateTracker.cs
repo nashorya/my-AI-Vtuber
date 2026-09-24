@@ -55,6 +55,15 @@ public sealed class PipelineStateTracker
         _state = PipelineState.Thinking;
     });
 
+    /// <summary>Turn dispatch for voice input: start the LLM timer but keep the ASR latency
+    /// recorded by <see cref="TranscriptReady"/> — only pure-text turns clear it.</summary>
+    public void VoiceTurnDispatched(long nowMs) => Transition(() =>
+    {
+        _inputStartMs = null;
+        _transcriptMs = nowMs;
+        _state = PipelineState.Thinking;
+    });
+
     /// <summary>First sentence sent to TTS; record LLM latency, start the TTS timer.</summary>
     public void LlmFirstSentenceReady(long nowMs) => Transition(() =>
     {
@@ -62,10 +71,12 @@ public sealed class PipelineStateTracker
         _llmFirstSentenceMs = nowMs;
     });
 
-    /// <summary>AI audio playback started; record TTS latency.</summary>
+    /// <summary>AI audio playback started; record TTS latency. When no first-sentence
+    /// timestamp exists for this turn (event-order race), keep the last known value
+    /// instead of erasing it.</summary>
     public void SpeakingStarted(long nowMs) => Transition(() =>
     {
-        _lastTts = _llmFirstSentenceMs is { } t ? nowMs - t : null;
+        if (_llmFirstSentenceMs is { } t) _lastTts = nowMs - t;
         _llmFirstSentenceMs = null;
         _transcriptMs = null;
         _state = PipelineState.Speaking;

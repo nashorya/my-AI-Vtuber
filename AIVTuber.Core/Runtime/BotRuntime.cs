@@ -869,7 +869,10 @@ public sealed class BotRuntime : IAsyncDisposable
                     turnMatchId == _pkBuffer.MatchId && lines.All(IsCurrentMatch);
             }
             lock (_talkInputSync) _pendingV2Generation = context.GenerationId;
-            _stateTracker.TextInputStarted(Environment.TickCount64);
+            if (lines.Any(l => l.Identity is TalkIdentity.Self or TalkIdentity.Opponent))
+                _stateTracker.VoiceTurnDispatched(Environment.TickCount64);
+            else
+                _stateTracker.TextInputStarted(Environment.TickCount64);
             UserTranscript?.Invoke(this, formatted);
             await orchestrator.ProcessTextAsync(formatted, history, bypassWake: true, canCommit: CanCommit,
                 requireStructuredReply: true).ConfigureAwait(false);
@@ -977,7 +980,10 @@ public sealed class BotRuntime : IAsyncDisposable
                 return ReferenceEquals(orchestrator, _orchestrator) && ReferenceEquals(gate, _turnGate) && gate.CanCommit(revision) &&
                     turnMatchId == _pkBuffer.MatchId && lines.All(IsCurrentMatch);
             }
-            _stateTracker.TextInputStarted(Environment.TickCount64);
+            if (lines.Any(l => l.Identity is TalkIdentity.Self or TalkIdentity.Opponent))
+                _stateTracker.VoiceTurnDispatched(Environment.TickCount64);
+            else
+                _stateTracker.TextInputStarted(Environment.TickCount64);
             _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TurnCommitReady);
             UserTranscript?.Invoke(this, formatted);
             await orchestrator.ProcessTextAsync(formatted, history, bypassWake: true, canCommit: CanCommit,

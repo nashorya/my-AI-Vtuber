@@ -54,7 +54,7 @@ public class PipelineStateTrackerTests
     }
 
     [Fact]
-    public void SpeakingStarted_WithoutLlmReady_TtsLatencyIsNull()
+    public void SpeakingStarted_WithoutLlmReady_KeepsLastTtsLatency()
     {
         var t = new PipelineStateTracker();
         // Normal turn — establishes LLM latency
@@ -64,8 +64,9 @@ public class PipelineStateTrackerTests
         t.SpeakingStarted(2000);
         Assert.Equal(200, t.LastTtsLatencyMs);
         // Interrupted turn: speaking fires without a preceding LlmFirstSentenceReady
+        // (event-order race) — the last known TTS latency stays visible instead of erasing.
         t.SpeakingStarted(3000);
-        Assert.Null(t.LastTtsLatencyMs);
+        Assert.Equal(200, t.LastTtsLatencyMs);
     }
 
     [Fact]
