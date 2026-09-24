@@ -89,8 +89,18 @@ public sealed class BotRuntime : IAsyncDisposable
         line.MatchId == _pkBuffer.MatchId;
 
     private readonly PipelineStateTracker _stateTracker = new();
+    private readonly AIVTuber.Core.Diagnostics.RealtimeTrace _trace;
 
     public PipelineStateTracker StateTracker => _stateTracker;
+    /// <summary>RT-00 chain tracer (ASR→LLM→TTS→playback). Off unless
+    /// realtime.trace_enabled=true; never records audio/transcript/image/secret payloads.</summary>
+    public AIVTuber.Core.Diagnostics.RealtimeTrace Trace => _trace;
+    /// <summary>True when the local ONNX embedding was skipped because
+    /// realtime.inference_mode=cloud_only — memory retrieval runs without vector search.</summary>
+    public bool MemoryVectorSearchDegraded { get; private set; }
+    /// <summary>True when the last StartLocalAsrServerAsync call was rejected by the
+    /// cloud-only gate (no Python sidecar was spawned).</summary>
+    internal bool CloudOnlySidecarSkipped { get; private set; }
     public event EventHandler? AiStartSpeaking;
     public event EventHandler? AiStopSpeaking;
     /// <summary>Fired when Normal/PK interaction mode changes.</summary>
@@ -251,6 +261,10 @@ public sealed class BotRuntime : IAsyncDisposable
         _candidateConfig = ConfigManager.Clone(_config);
         _baseDir = baseDir;
         _applyChangesOverride = applyChangesOverride;
+        _trace = new AIVTuber.Core.Diagnostics.RealtimeTrace(
+            _config.Realtime.TraceEnabled, AIVTuber.Core.Diagnostics.SystemRealtimeClock.Instance);
+        foreach (var violation in CloudOnlyGate.Validate(_config.Realtime, _config.Asr))
+            PipelineError?.Invoke(this, violation);
         _asrSidecar = new AsrSidecarProcess(baseDir);
         _asrSidecar.Diagnostic += (_, line) =>
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[Local ASR] {line}");
@@ -284,12 +298,22 @@ public sealed class BotRuntime : IAsyncDisposable
     /// <summary>Set idle/special state on the pixel avatar if active.</summary>
     public void SetAvatarIdleState(string state) => _pixelAvatar?.SetIdleState(state);
 
-    private async Task InitMemoryAsync()
+    internal async Task InitMemoryAsync()
     {
         var dbPath = Path.Combine(_baseDir, _config.Memory.DatabasePath);
         _memoryDb = new MemoryDb(dbPath);
         await _memoryDb.InitializeAsync();
         _embedding = null;
+        MemoryVectorSearchDegraded = false;
+        if (!CloudOnlyGate.ShouldLoadLocalEmbedding(_config.Realtime))
+        {
+            // Explicit, visible degradation — the gate must not silently start the ONNX
+            // runtime in cloud-only mode. Existing databases and memories are untouched.
+            MemoryVectorSearchDegraded = true;
+            Console.WriteLine("[记忆] cloud_only 模式：本地向量模型(bge-small-zh ONNX)已禁用，降级为非向量检索");
+            AIVTuber.Core.Diagnostics.DebugLog.Write("[记忆] cloud_only gate: local embedding skipped (non-vector search)");
+        }
+        else
         try
         {
             var modelDir = Path.Combine(_baseDir, _config.Memory.EmbeddingModelPath);
@@ -609,6 +633,7 @@ public sealed class BotRuntime : IAsyncDisposable
             _asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts,
             ttsEmotionMap: _config.Avatar.EmotionMap);
         _orchestrator.Cortico = _cortico;
+        _orchestrator.Trace = _trace;
         if (_config.Avatar.UsesVts && _config.Vts.ContinuousControl.Enabled && _continuousVts is not null)
             _orchestrator.ConfigureContinuousControl(_continuousVts);
         _orchestrator.ShouldSpeak = probe => _wakeGate.ShouldSpeak(
@@ -741,6 +766,7 @@ public sealed class BotRuntime : IAsyncDisposable
             var message = _conversation.ObserveUserMessage(IdentityPrompt.FormatTurn([line]));
             if (!stop)
             {
+                _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TurnCandidate);
                 _queuedInputs.Add(message);
                 _turnGate.AddLine(line with { HistoryMessage = message });
             }
@@ -799,6 +825,7 @@ public sealed class BotRuntime : IAsyncDisposable
                     turnMatchId == _pkBuffer.MatchId && lines.All(IsCurrentMatch);
             }
             _stateTracker.TextInputStarted(Environment.TickCount64);
+            _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TurnCommitReady);
             UserTranscript?.Invoke(this, formatted);
             await orchestrator.ProcessTextAsync(formatted, history, bypassWake: true, canCommit: CanCommit,
                 requireStructuredReply: true).ConfigureAwait(false);
@@ -878,10 +905,17 @@ public sealed class BotRuntime : IAsyncDisposable
                 AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风段] 能量过低(<{MicAsrMinPeak})，跳过ASR");
             return;
         }
+        _trace.BeginTurn();
+        // VAD closed the segment here: this is the local end-of-speech boundary on the capture
+        // timeline (plan RT-00 input_last_voiced), not the ASR request time.
+        _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.InputLastVoiced);
         _stateTracker.InputStarted(Environment.TickCount64);
         AsrResult result;
         if (_config.Asr.Streaming)
         {
+            // Consumer of the buffered frames starts only now (after SpeechDetected) — see
+            // docs/realtime/baseline.md; RT-02 moves it to first voiced frame.
+            _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.AsrFirstAudioSent);
             var stream = channel is null
                 ? System.Linq.AsyncEnumerable.Empty<byte[]>()
                 : channel.Reader.ReadAllAsync();
@@ -889,8 +923,10 @@ public sealed class BotRuntime : IAsyncDisposable
         }
         else
         {
+            _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.AsrFirstAudioSent);
             result = await _orchestrator.TranscribeAsync(seg.AudioData, _cts.Token).ConfigureAwait(false);
         }
+        _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.AsrSegmentFinal);
 
         if (!string.IsNullOrWhiteSpace(result.Text))
         {
@@ -919,9 +955,12 @@ public sealed class BotRuntime : IAsyncDisposable
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
             return;
         }
+        _trace.BeginTurn();
+        _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.InputLastVoiced);
         AsrResult result;
         if (_config.Asr.Streaming)
         {
+            _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.AsrFirstAudioSent);
             var stream = channel is null
                 ? System.Linq.AsyncEnumerable.Empty<byte[]>()
                 : channel.Reader.ReadAllAsync();
@@ -929,8 +968,10 @@ public sealed class BotRuntime : IAsyncDisposable
         }
         else
         {
+            _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.AsrFirstAudioSent);
             result = await _orchestrator.TranscribeAsync(seg.AudioData, _cts.Token).ConfigureAwait(false);
         }
+        _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.AsrSegmentFinal);
 
         if (!string.IsNullOrWhiteSpace(result.Text))
         {
@@ -972,7 +1013,18 @@ public sealed class BotRuntime : IAsyncDisposable
     /// </summary>
     public async Task StartLocalAsrServerAsync()
     {
+        CloudOnlySidecarSkipped = false;
         if (_asr is not LocalAsrClient localAsr) return;
+        if (!CloudOnlyGate.ShouldStartAsrSidecar(_config.Realtime, _config.Asr.Provider))
+        {
+            // RT-00 cloud-only gate: never spawn the Python ASR sidecar in this mode.
+            CloudOnlySidecarSkipped = true;
+            SetLocalAsrReachable(false);
+            const string message = "[Local ASR] cloud_only 模式：已阻止本地 ASR sidecar 启动（请改用云端 ASR provider）";
+            AIVTuber.Core.Diagnostics.DebugLog.Write(message);
+            PipelineError?.Invoke(this, message);
+            return;
+        }
         SetLocalAsrReachable(false);
         try
         {
@@ -1417,6 +1469,9 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             if (_asr is LocalAsrClient)
             {
+                if (CloudOnlySidecarSkipped || !CloudOnlyGate.ShouldStartAsrSidecar(_config.Realtime, _config.Asr.Provider))
+                    throw new InvalidOperationException(
+                        "cloud_only 模式禁止启动本地 ASR sidecar：请将 asr.provider 切换为云端 provider");
                 await StartLocalAsrServerAsync();
                 if (!LocalAsrReachable)
                     throw new InvalidOperationException("Local ASR sidecar failed to become ready.");

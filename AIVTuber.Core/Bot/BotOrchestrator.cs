@@ -97,6 +97,10 @@ public sealed class BotOrchestrator : IDisposable
     /// </summary>
     public Func<string, bool>? ShouldSpeak { get; set; }
 
+    /// <summary>RT-00 chain tracer, set by BotRuntime. Null/disabled → all marks are no-ops;
+    /// wiring these marks does not change pipeline behaviour.</summary>
+    public AIVTuber.Core.Diagnostics.RealtimeTrace? Trace { get; set; }
+
     public ICorticoPerformance? Cortico { get; set; }
 
     public BotOrchestrator(
@@ -584,14 +588,19 @@ public sealed class BotOrchestrator : IDisposable
     /// <summary>Interrupt any ongoing processing and stop playback immediately.</summary>
     public void Interrupt()
     {
+        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.CancelRequested);
         _motion?.Cancel(Interlocked.Read(ref _activeAvatarGeneration));
         _motion?.OnRms(0);
         _coordinator.SetHold(false);
         _coordinator.CancelCurrentAsync().GetAwaiter().GetResult();
+        // Legacy path has no vendor-side ack; this marks the local generation being fully
+        // superseded. RT-06's bidi TTS must replace it with a real cancel acknowledgement.
+        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.CancelAcked);
         _currentEmotion = null;
         _deferLlmEvents = false;
         ClearDeferredControls();
         _stopPlayback();
+        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.PlaybackStopped);
     }
 
     public bool IsProcessing => _coordinator.IsBusy;
@@ -638,13 +647,21 @@ public sealed class BotOrchestrator : IDisposable
             _eventContext.Value = context;
             _deferLlmEvents = true;
             ClearDeferredControls();
+            bool llmFirstContentMarked = false;
             try
             {
+                Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmRequest);
                 await foreach (var token in _llm.StreamAsync(history, userInput, ct))
                 {
                     if (!IsCurrent(envelope, ct)) break;
+                    if (!llmFirstContentMarked && token.Length > 0)
+                    {
+                        llmFirstContentMarked = true;
+                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmFirstContent);
+                    }
                     rawAll.Append(token);
                 }
+                Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmDone);
 
                 if (!IsCurrent(envelope, ct)) return;
                 _avatarPlans.TryRemove(context.Generation, out var avatarPlan);
@@ -677,12 +694,15 @@ public sealed class BotOrchestrator : IDisposable
 
         // Stream TTS for the (usually single) utterance. WaveOut stays open for the turn.
         bool ttsStarted = false;
+        bool ttsFirstChunkMarked = false;
+        bool ttsFirstPcmMarked = false;
         async IAsyncEnumerable<byte[]> TtsChunks([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken streamCt = default)
         {
             await foreach (var sentence in sentenceChannel.Reader.ReadAllAsync(streamCt))
             {
                 if (!IsCurrent(envelope, streamCt)) yield break;
                 if (!LlmClient.IsSpeakableText(sentence)) continue;
+                Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TtsRequest);
                 await foreach (var chunk in _tts.StreamAsync(
                                    sentence,
                                    _ttsConfig.VoiceId,
@@ -690,6 +710,12 @@ public sealed class BotOrchestrator : IDisposable
                                    streamCt))
                 {
                     if (!IsCurrent(envelope, streamCt)) yield break;
+                    if (!ttsFirstChunkMarked && chunk.Length > 0)
+                    {
+                        ttsFirstChunkMarked = true;
+                        // First vendor audio for this turn (encoded transport representation).
+                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TtsFirstEncodedAudio);
+                    }
                     if (!ttsStarted)
                     {
                         // Recheck after synthesis too: people may have resumed while
@@ -697,8 +723,20 @@ public sealed class BotOrchestrator : IDisposable
                         if (canCommit is not null && !canCommit()) yield break;
                         ttsStarted = true;
                         CommitClassifiedReply(context, pendingReply!.Value, pendingRaw);
+                        // First complete speakable segment handed to TTS. Note: the existing
+                        // OnFirstSentenceToTts actually fires on first synthesized audio, not
+                        // at request time (plan RT-00 caveat) — hence TtsRequest above.
+                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmFirstSpeechSegment);
                         OnFirstSentenceToTts?.Invoke(this, EventArgs.Empty);
                         OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
+                    }
+                    if (!ttsFirstPcmMarked && chunk.Length > 0)
+                    {
+                        ttsFirstPcmMarked = true;
+                        // Software playback estimate: the chunk is being handed to the player's
+                        // write path; actual soundcard output is not separately measured yet.
+                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TtsFirstPcm);
+                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.PlaybackFirst);
                     }
                     yield return chunk;
                 }
@@ -717,6 +755,7 @@ public sealed class BotOrchestrator : IDisposable
                 : _playWithStart is not null ? _playWithStart(TtsChunks(ct), ct, FirstPcmRead)
                 : _playChunksAsync(TtsChunks(ct), ct);
             await Task.WhenAll(playbackTask, producerTask).ConfigureAwait(false);
+            Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.PlaybackEnd);
             await AwaitCommandsAsync(envelope.Generation).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }

@@ -20,6 +20,48 @@ public sealed class AppConfig
     public IdentityConfig Identity { get; set; } = new();
     /// <summary>In-process PNG avatar + backend selection (vts / pixel / both).</summary>
     public AvatarRuntimeConfig Avatar { get; set; } = new();
+    /// <summary>Realtime pipeline overhaul switches (RT-00+). Defaults are all legacy/off:
+    /// existing behaviour is unchanged until a flag is explicitly enabled.</summary>
+    public RealtimeConfig Realtime { get; set; } = new();
+}
+
+/// <summary>
+/// Versioned realtime-pipeline configuration (docs: AGENT_PLAN_ASR_LLM_TTS_VISION.md §8).
+/// All feature flags default to legacy/off so existing deployments keep their exact
+/// semantics after upgrade. <see cref="SchemaVersion"/> lets future migrations run in order;
+/// configs from a newer schema version load but must not be silently overwritten.
+/// </summary>
+public sealed class RealtimeConfig
+{
+    /// <summary>Current realtime config schema version understood by this build.</summary>
+    public const int CurrentSchemaVersion = 1;
+
+    /// <summary>Version of the realtime section; migrated stepwise by ConfigManager.</summary>
+    public int SchemaVersion { get; set; } = CurrentSchemaVersion;
+
+    /// <summary>"legacy" (default) keeps local-sidecar / current behaviour;
+    /// "cloud_only" enables vendor-API-only inference gating (no Python ASR sidecar,
+    /// no local ONNX embedding, no local model downloads).</summary>
+    public string InferenceMode { get; set; } = "legacy";
+
+    /// <summary>Reserved for RT-02+: realtime streaming ASR sessions. Off = current path.</summary>
+    public bool StreamingAsrEnabled { get; set; } = false;
+
+    /// <summary>Reserved for RT-05+: "legacy" (full-turn structured reply) | "v2" (NDJSON speech protocol).</summary>
+    public string ReplyProtocol { get; set; } = "legacy";
+
+    /// <summary>Reserved for RT-04+: new turn manager. Off = current ConversationTurnGate.</summary>
+    public bool TurnManagerV2Enabled { get; set; } = false;
+
+    /// <summary>Reserved for RT-04: speculative early generation. Default closed.</summary>
+    public bool SpeculativeGenerationEnabled { get; set; } = false;
+
+    /// <summary>Chain tracing (RT-00). Off by default; when on, only monotonic/wall stamps and
+    /// event names are recorded — never raw audio, transcripts, images or secrets.</summary>
+    public bool TraceEnabled { get; set; } = false;
+
+    public bool IsCloudOnly =>
+        string.Equals(InferenceMode, "cloud_only", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class IdentityConfig
