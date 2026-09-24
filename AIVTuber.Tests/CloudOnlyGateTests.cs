@@ -28,6 +28,25 @@ public sealed class CloudOnlyGateTests
     }
 
     [Fact]
+    public void New_realtime_modules_do_not_bypass_the_cloud_only_gate()
+    {
+        // RT-02/03 realtime ASR providers, RT-01/06 MiniMax transports and VIS-02 Doubao
+        // vision are all vendor-API (network) clients — none of them may pull the gate into
+        // allowing a local inference path. The gate stays closed for every provider.
+        foreach (var provider in new[] { "local", "aliyun", "minimax", "tencent_realtime", "volcano_realtime" })
+        {
+            Assert.False(CloudOnlyGate.ShouldStartAsrSidecar(CloudOnly(), provider),
+                $"sidecar must stay forbidden for provider '{provider}' in cloud_only");
+            Assert.False(CloudOnlyGate.ShouldLoadLocalEmbedding(CloudOnly()));
+        }
+
+        // cloud_only + a realtime provider is a valid (violation-free) configuration: the
+        // realtime path talks to vendor sockets, the legacy local paths are the only thing gated.
+        Assert.Empty(CloudOnlyGate.Validate(CloudOnly(), new AsrConfig { Provider = "tencent_realtime" }));
+        Assert.Empty(CloudOnlyGate.Validate(CloudOnly(), new AsrConfig { Provider = "volcano_realtime" }));
+    }
+
+    [Fact]
     public void Validate_reports_local_asr_violation_in_cloud_only_mode()
     {
         Assert.Empty(CloudOnlyGate.Validate(Legacy(), new AsrConfig { Provider = "local" }));
