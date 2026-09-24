@@ -61,6 +61,7 @@ public sealed class BotRuntime : IAsyncDisposable
     private ITtsClient _tts = null!;   // provider-specific (fish/minimax HTTP or DashScope WebSocket)
     private AudioPlayer _player = null!;
     private BotOrchestrator _orchestrator = null!;
+    private AIVTuber.Core.Vision.VisionObservationWorker? _vision;
     private MicrophoneCapture? _mic;
     private VadDetector? _vad;
     private AIVTuber.Core.Audio.LoopbackCapture? _loopback;
@@ -700,6 +701,34 @@ public sealed class BotRuntime : IAsyncDisposable
             _orchestrator.OnEmotionDetected += _avatarEmotionHandler;
             _orchestrator.OnPoseDetected += _avatarPoseHandler;
         }
+
+        StartVisionIfNeeded();
+    }
+
+    /// <summary>VIS-02 wiring. Kept strictly optional and non-blocking: failures here never
+    /// affect the voice pipeline, and the worker is never awaited by it.</summary>
+    private void StartVisionIfNeeded()
+    {
+        if (_vision is not null) return;
+        if (_config.Vision is not { Enabled: true }) return;
+        try
+        {
+            var captureSource = new AIVTuber.Core.Vision.GdiWindowCaptureSource();
+            var capture = new AIVTuber.Core.Vision.WindowCaptureService(captureSource, _config.Vision);
+            var worker = new AIVTuber.Core.Vision.VisionObservationWorker(
+                _config.Vision, capture,
+                AIVTuber.Core.Vision.VisionClientFactory.Create(_config.Vision));
+            worker.VisionError += msg => PipelineError?.Invoke(this, msg);
+            // The operator still selects the concrete window (with preview + consent) before
+            // any capture happens; without a selected target the service only reports
+            // "no target" and uploads nothing.
+            worker.Start();
+            _vision = worker;
+        }
+        catch (Exception ex)
+        {
+            PipelineError?.Invoke(this, $"[视觉] 未启动（保持关闭）：{ex.Message}");
+        }
     }
 
     /// <summary>Merges VTS + pixel avatar emotion/pose allow-lists into the LLM system prompt.</summary>
@@ -768,6 +797,14 @@ public sealed class BotRuntime : IAsyncDisposable
             foreach (var line in lines)
                 if (line.HistoryMessage is { } message) _queuedInputs.Remove(message);
             history.Add(new Message { Role = MessageRole.System, Content = IdentityPrompt.InvitationPolicy });
+            // VIS-02: synchronous read of the in-memory observation snapshot. Never awaits the
+            // VLM; when no (valid) snapshot exists the turn proceeds exactly as before.
+            if (_vision is { Enabled: true })
+            {
+                var note = _vision.BuildUntrustedSnapshotNote();
+                if (note is not null)
+                    history.Add(new Message { Role = MessageRole.System, Content = note });
+            }
             return history;
         }
     }
@@ -1515,6 +1552,8 @@ public sealed class BotRuntime : IAsyncDisposable
         _turnGate?.Dispose();
         _turnGate = null;
         _orchestrator?.Dispose();
+        _vision?.Dispose();
+        _vision = null;
         (_tts as IDisposable)?.Dispose();
         _llm?.Dispose();
         (_asr as IDisposable)?.Dispose();

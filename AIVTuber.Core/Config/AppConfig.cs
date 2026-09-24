@@ -20,6 +20,8 @@ public sealed class AppConfig
     public IdentityConfig Identity { get; set; } = new();
     /// <summary>In-process PNG avatar + backend selection (vts / pixel / both).</summary>
     public AvatarRuntimeConfig Avatar { get; set; } = new();
+    /// <summary>Window-capture visual observation (VIS-01/VIS-02). Defaults fully OFF.</summary>
+    public AIVTuber.Core.Vision.VisionConfig Vision { get; set; } = new();
 }
 
 public sealed class IdentityConfig

@@ -12,6 +12,29 @@
     "pre_speech_padding_ms": 200,
     "post_speech_silence_ms": 800
   },
+  "vision": {
+    "enabled": false,
+    "provider": "doubao",
+    "model": "",
+    "api_key": "<your-vision-api-key>",
+    "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+    "capture_interval_ms": 500,
+    "roi": null,
+    "masks": [],
+    "max_long_edge": 1280,
+    "jpeg_quality": 80,
+    "max_upload_bytes": 1500000,
+    "save_raw_frames": false,
+    "raw_frame_cache_capacity": 2,
+    "min_request_interval_ms": 3000,
+    "max_inflight": 1,
+    "pending_policy": "latest_only",
+    "snapshot_ttl_ms": 15000,
+    "max_requests_per_hour": 600,
+    "on_demand_timeout_ms": 12000,
+    "hash_throttle": true
+  },
+
   "asr": {
     "provider": "aliyun",
     "api_key": "<your-asr-api-key>",
