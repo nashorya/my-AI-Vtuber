@@ -565,7 +565,9 @@ public sealed class BotRuntime : IAsyncDisposable
         => tts.Provider.ToLowerInvariant() switch
         {
             "aliyun" or "cosyvoice" or "dashscope" => new DashScopeTtsClient(tts),
-            "minimax" => new MiniMaxWsTtsClient(tts),
+            "minimax" => tts.Transport.Equals("streaming", StringComparison.OrdinalIgnoreCase)
+                ? new MiniMaxHttpStreamingTtsClient(tts) // RT-01: opt-in HTTP streaming
+                : new MiniMaxWsTtsClient(tts),           // legacy: previous per-sentence WS path
             "dots" or "dots-tts" => new DotsTtsClient(tts),
             "mimo" or "xiaomi" or "xiaomimimo" => new MimoTtsClient(tts),
             _ => new TtsClient(tts),

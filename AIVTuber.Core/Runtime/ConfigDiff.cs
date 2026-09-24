@@ -68,6 +68,7 @@ public static class ConfigDiff
             a.Tts.BaseUrl != b.Tts.BaseUrl || a.Tts.Language != b.Tts.Language ||
             a.Tts.Seed != b.Tts.Seed || a.Tts.NumSteps != b.Tts.NumSteps ||
             a.Tts.GuidanceScale != b.Tts.GuidanceScale ||
+            a.Tts.Transport != b.Tts.Transport ||
             !DictEqual(a.Tts.ApiKeys, b.Tts.ApiKeys))
             c |= RuntimeChange.RebuildTts;
         // The player's WaveFormat and the virtual-mic buffer are built from this rate.

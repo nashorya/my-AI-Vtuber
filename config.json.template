@@ -35,6 +35,7 @@
     "api_key": "<your-tts-api-key>",
     "voice_id": "<your-voice-id>",
     "model": "",
+    "transport": "legacy",
     "group_id": "",
     "speed": 1
   },
