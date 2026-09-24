@@ -323,11 +323,29 @@ public sealed class TtsConfig
     public int NumSteps { get; set; } = 10;
     /// <summary>dots.tts only: classifier-free guidance scale.</summary>
     public double GuidanceScale { get; set; } = 1.2;
-    /// <summary>MiniMax only: HTTP transport selection (RT-01).
+    /// <summary>MiniMax only: HTTP transport selection (RT-01/RT-06).
     /// "legacy" (default) keeps the previous routing/behavior unchanged;
-    /// "streaming" uses the t2a_v2 HTTP streaming response (stream=true, SSE audio chunks).
+    /// "streaming" uses the t2a_v2 HTTP streaming response (stream=true, SSE audio chunks);
+    /// "bidi" uses the /ws/v1/t2a_v2_bidi bidirectional session (requires tts.bidi_host —
+    /// fails loudly with fallback guidance when unset; never silently switches transport).
+    /// bidi is UNVERIFIED against the real endpoint (no key/account validation performed).
     /// The non-streaming stream=false implementation remains in TtsClient as an explicit code-level fallback.</summary>
     public string Transport { get; set; } = "legacy";
+
+    /// <summary>RT-06 bidi: account-region official WSS host — intentionally EMPTY by default;
+    /// the plan does not guess CN/intl hosts.</summary>
+    public string BidiHost { get; set; } = string.Empty;
+    /// <summary>RT-06 bidi: how long the cancel barrier waits for the vendor task_cancel ack
+    /// before dropping the old socket and rebuilding the connection epoch.</summary>
+    public int BidiCancelAckTimeoutMs { get; set; } = 2000;
+    /// <summary>RT-06 bidi: pause submitting text once the estimated pending playback exceeds
+    /// this many seconds; control messages still bypass the backlog.</summary>
+    public double BidiMaxBacklogSeconds { get; set; } = 30;
+    /// <summary>RT-06 bidi: estimated speech seconds per character (backlog estimation).</summary>
+    public double BidiSecondsPerCharEstimate { get; set; } = 0.075;
+    /// <summary>RT-06 bidi: idle keep-alive interval in ms; 0 = off (keepalive message semantics
+    /// NOT verified against the real service — leave off until verified).</summary>
+    public int BidiKeepAliveIntervalMs { get; set; } = 0;
 
     internal string VendorId => ProviderSecrets.Slot(Provider, "fish-audio");
 

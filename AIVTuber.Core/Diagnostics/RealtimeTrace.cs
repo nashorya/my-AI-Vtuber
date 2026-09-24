@@ -74,12 +74,18 @@ public sealed class RealtimeTrace
         public const string TtsRequest = "tts_request";
         public const string TtsFirstEncodedAudio = "tts_first_encoded_audio";
         public const string TtsFirstPcm = "tts_first_pcm";
+        /// <summary>RT-06 bidi: flush ack = audio delivered for the turn (not played).</summary>
+        public const string TtsFlushAcked = "tts_flush_acked";
         // Playback (device consumption; distinguish from enqueue)
         public const string PlaybackFirst = "playback_first";
         public const string PlaybackEnd = "playback_end";
         // Cancellation
         public const string CancelRequested = "cancel_requested";
+        /// <summary>Vendor confirmed the cancel (RT-06 bidi: task_cancel ack).</summary>
         public const string CancelAcked = "cancel_acked";
+        /// <summary>RT-06 bidi: cancel ack timed out; old socket dropped, connection epoch rebuilt,
+        /// all packets from the old connection are void.</summary>
+        public const string CancelEpochRebuild = "cancel_epoch_rebuild";
         public const string PlaybackStopped = "playback_stopped";
         // Vision
         public const string VisionCapture = "vision_capture";

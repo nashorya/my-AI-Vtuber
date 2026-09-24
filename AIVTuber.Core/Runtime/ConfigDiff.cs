@@ -78,6 +78,11 @@ public static class ConfigDiff
             a.Tts.Seed != b.Tts.Seed || a.Tts.NumSteps != b.Tts.NumSteps ||
             a.Tts.GuidanceScale != b.Tts.GuidanceScale ||
             a.Tts.Transport != b.Tts.Transport ||
+            a.Tts.BidiHost != b.Tts.BidiHost ||
+            a.Tts.BidiCancelAckTimeoutMs != b.Tts.BidiCancelAckTimeoutMs ||
+            a.Tts.BidiMaxBacklogSeconds != b.Tts.BidiMaxBacklogSeconds ||
+            a.Tts.BidiSecondsPerCharEstimate != b.Tts.BidiSecondsPerCharEstimate ||
+            a.Tts.BidiKeepAliveIntervalMs != b.Tts.BidiKeepAliveIntervalMs ||
             !DictEqual(a.Tts.ApiKeys, b.Tts.ApiKeys))
             c |= RuntimeChange.RebuildTts;
         // The player's WaveFormat and the virtual-mic buffer are built from this rate.
