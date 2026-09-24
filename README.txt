@@ -96,6 +96,12 @@ sidecar/          - 本地 ASR 托管运行时、服务脚本和完整性 manife
 models/bge-small-zh/ - 向量模型目录（可选）
 memory.db         - 记忆数据库（自动生成）
 
+许可
+----
+本项目整体采用 GNU Affero General Public License v3.0 或更高版本（AGPL-3.0-or-later），全文见 LICENSE。
+sidecar/cortico 引入的上游代码来自 cortico-world-vtuber，同为 AGPL-3.0-or-later；
+其许可文本与第三方声明见 sidecar/cortico/upstream/LICENSE 和 sidecar/cortico/upstream/THIRD_PARTY_NOTICES.md。
+
 技术支持
 --------
 详见 AIVTuber_Implementation_Plan.md
