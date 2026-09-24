@@ -899,3 +899,11 @@
 - VTube Studio Plugin API：https://github.com/DenchiSoft/VTubeStudio#api-details
 - ZerolanLiveRobot Live2D 实现：https://github.com/AkagawaTsurunaki/ZerolanLiveRobot/tree/main/services/live2d
 - Cubism SDK License：https://www.live2d.com/en/sdk/license/
+
+## Cortico original-engine experiment (2026-09-20)
+
+- Experimental branch `codex/cortico-live2d`: opt-in Node sidecar hosting pinned, unmodified Cortico L2-L4 source and performance assets.
+- Related tasks: AVATAR-03/04/06/07/08/09/10/11/12. Their main acceptance checkboxes remain open.
+- Entry and limits: `sidecar/cortico/README.md`; restart-only `cortico.json`, setup script, action-only preview.
+- Desktop keeps ASR/LLM/PK logic and TTS provider; the sidecar owns playback and VTS in this mode. Non-streaming synthesis / no forced alignment in the adapter.
+- Automated checks cover IPC, cancellation, speech isolation and fake VTS frames; Windows audio and actual-model appearance are pending.

@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "nodePath": "node",
+  "sidecarPath": "sidecar/cortico",
+  "live2dDir": "",
+  "modelProfile": "auto",
+  "packDir": "",
+  "audioDevice": ""
+}
