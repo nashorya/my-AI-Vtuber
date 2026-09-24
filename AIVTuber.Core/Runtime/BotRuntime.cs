@@ -48,6 +48,8 @@ public sealed class BotRuntime : IAsyncDisposable
     private VtsClient? _vts;
     private CorticoProcess? _cortico;
     private CorticoOptions? _corticoOptions;
+    private VtsContinuousSession? _continuousVts;
+    public VtsContinuousSession? ContinuousVts => _continuousVts;
     private PixelAvatarDriver? _pixelAvatar;
     private AvatarConfigWatcher? _avatarConfigWatcher;
     private EventHandler<float>? _avatarRmsHandler;
@@ -68,8 +70,9 @@ public sealed class BotRuntime : IAsyncDisposable
     private BilibiliDanmakuClient? _danmaku;
     private DanmakuSelector? _selector;
     private readonly WakeGate _wakeGate = new();
-    private DualPartyTurnGate? _turnGate;
-    private string? _pendingTurnText;
+    private ConversationTurnGate? _turnGate;
+    private readonly object _talkInputSync = new();
+    private readonly HashSet<Message> _queuedInputs = [];
     private IReadOnlyList<TalkLine> _pendingTurnLines = [];
     private sealed record CapturedOpponent(string Name, string? Uid, string? MatchId);
     private CapturedOpponent? _capturedOpponent;
@@ -94,6 +97,13 @@ public sealed class BotRuntime : IAsyncDisposable
     public event EventHandler? InteractionModeChanged;
     /// <summary>Fired when any pipeline stage (ASR/LLM/TTS) encounters a non-cancellation error.</summary>
     public event EventHandler<string>? PipelineError;
+    public event EventHandler<string>? TurnStatusChanged;
+
+    private void ReportTurnStatus(string status)
+    {
+        AIVTuber.Core.Diagnostics.DebugLog.Write($"[回合状态] {status}");
+        TurnStatusChanged?.Invoke(this, status);
+    }
     /// <summary>Fired per mic frame with RMS in [0,1] for a level indicator.</summary>
     public event EventHandler<float>? MicLevelUpdated;
     /// <summary>Fired per loopback frame with RMS in [0,1] for a level indicator.</summary>
@@ -145,14 +155,28 @@ public sealed class BotRuntime : IAsyncDisposable
     public Task ForceExtractMemoryAsync() => _memoryExtractor.ExtractFactsAsync();
 
     private volatile bool _micMuted;
+    private readonly object _micInputSync = new();
     public bool MicMuted => _micMuted;
-    public void SetMicMuted(bool muted) => _micMuted = muted;
+    public void SetMicMuted(bool muted)
+    {
+        lock (_micInputSync)
+        {
+            _micMuted = muted;
+            if (!muted) return;
+            _vad?.Reset();
+            Interlocked.Exchange(ref _micSpeechChannel, null)?.Writer.TryComplete();
+        }
+    }
 
     /// <summary>Immediately stops any in-progress AI generation/speech: cancels the pipeline,
     /// halts playback, and closes the VTS mouth. Safe to call when idle (no-op).</summary>
     public void StopSpeaking()
     {
-        _turnGate?.SetAiSpeaking(false);
+        lock (_talkInputSync)
+        {
+            _turnGate?.Clear();
+            _queuedInputs.Clear();
+        }
         _orchestrator?.SetHold(false);
         _orchestrator?.Interrupt();
     }
@@ -302,6 +326,10 @@ public sealed class BotRuntime : IAsyncDisposable
         _pkCurator = new PkMemoryCurator(_pkCuratorLlm, _pkTurnRepo);
     }
 
+    public Task ConnectContinuousVtsAsync() => _continuousVts is not null
+        ? _continuousVts.ConnectAsync(_cts.Token)
+        : Task.FromException(new InvalidOperationException("请在 config.json 将 avatar.backend 设为 vts 或 both，再重启应用"));
+
     private async Task InitVtsAsync()
     {
         _corticoOptions ??= CorticoOptions.Load(_baseDir);
@@ -312,20 +340,18 @@ public sealed class BotRuntime : IAsyncDisposable
                 message => AIVTuber.Core.Diagnostics.DebugLog.Write($"[Cortico] {message}"), _cts.Token);
             return;
         }
+        _vts = new VtsClient(_config.Vts);
+        _vts.OnError += (_, msg) => PipelineError?.Invoke(this, $"[VTS] {msg}");
+        _continuousVts = new VtsContinuousSession(_vts, _config.Vts.ContinuousControl);
         try
         {
-            _vts = new VtsClient(_config.Vts);
-            _vts.OnError += (_, msg) => PipelineError?.Invoke(this, $"[VTS] {msg}");
-            _vts.OnDisconnected += (_, reason) => PipelineError?.Invoke(this, $"[VTS] 已断开: {reason}");
-            await _vts.ConnectAsync(_cts.Token);
-            Console.WriteLine("[VTS] 已连接 VTube Studio");
+            if (_config.Vts.ContinuousControl.Enabled) await _continuousVts.ConnectAsync(_cts.Token);
+            else await _vts.ConnectAsync(_cts.Token);
         }
         catch (Exception ex)
         {
-            var msg = $"[VTS] 连接失败: {ex.Message}";
-            Console.WriteLine(msg);
-            PipelineError?.Invoke(this, msg);
-            _vts = null;
+            PipelineError?.Invoke(this, $"[VTS] 连接失败: {ex.Message}");
+            // Keep the session so the settings panel can retry without restarting the app.
         }
     }
 
@@ -516,6 +542,12 @@ public sealed class BotRuntime : IAsyncDisposable
         if (asr.Provider.ToLowerInvariant() is "local")
             return new LocalAsrClient(asr.LocalAsrUrl);
 
+        if (asr.Provider.ToLowerInvariant() is "minimax")
+        {
+            asr.ActivateStoredKey();
+            return new MiniMaxAsrClient(asr.ApiKey, asr.Model);
+        }
+
         if (asr.Provider.ToLowerInvariant() is "aliyun" or "dashscope")
         {
             // Qwen-ASR uses a different WebSocket protocol (OpenAI Realtime-style) at /realtime
@@ -553,7 +585,11 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             _llm?.Dispose();
             _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model,
-                BuildLlmSystemPrompt());
+                BuildLlmSystemPrompt(),
+                _config.Avatar.UsesVts && _config.Vts.ContinuousControl.Enabled
+                    ? () => _continuousVts is { } vts && vts.DeclaredChannels.Length > 0
+                        ? vts.DeclaredChannels
+                        : [] : null);
         }
         if (_tts is null || rebuild.HasFlag(RuntimeChange.RebuildTts))
         {
@@ -573,6 +609,8 @@ public sealed class BotRuntime : IAsyncDisposable
             _asr, _llm, _tts, _player, _config.Tts, _vts, _config.Vts,
             ttsEmotionMap: _config.Avatar.EmotionMap);
         _orchestrator.Cortico = _cortico;
+        if (_config.Avatar.UsesVts && _config.Vts.ContinuousControl.Enabled && _continuousVts is not null)
+            _orchestrator.ConfigureContinuousControl(_continuousVts);
         _orchestrator.ShouldSpeak = probe => _wakeGate.ShouldSpeak(
             _config.Interaction.IsPkMode,
             _config.Interaction.WakeKeywords,
@@ -622,7 +660,6 @@ public sealed class BotRuntime : IAsyncDisposable
             _loopbackVad?.Reset();
             Interlocked.Exchange(ref _capturedOpponent, null);
             AbandonLoopbackSpeechChannel();
-            _turnGate?.SetLoopbackSpeaking(false);
         };
         _orchestrator.OnAiStopSpeaking += (_, _) =>
         {
@@ -688,8 +725,51 @@ public sealed class BotRuntime : IAsyncDisposable
     private void EnsureTurnGate()
     {
         if (_turnGate is not null) return;
-        _turnGate = new DualPartyTurnGate(TimeSpan.FromMilliseconds(80));
+        _turnGate = new ConversationTurnGate();
+        _turnGate.StatusChanged += status => TurnStatusChanged?.Invoke(this, status);
         _turnGate.TurnReady += lines => SuperviseBackgroundTask(HandleTurnReadyAsync(lines));
+    }
+
+    internal void AcceptTalkLine(TalkLine line)
+    {
+        if (_cts.IsCancellationRequested || string.IsNullOrWhiteSpace(line.Text) || !IsCurrentMatch(line)) return;
+        var stop = line.Identity == TalkIdentity.Self &&
+            IdentityPrompt.IsStopRequest(line.Text, _config.Interaction.WakeKeywords);
+        lock (_talkInputSync)
+        {
+            if (_turnGate is null || _conversation is null) return;
+            var message = _conversation.ObserveUserMessage(IdentityPrompt.FormatTurn([line]));
+            if (!stop)
+            {
+                _queuedInputs.Add(message);
+                _turnGate.AddLine(line with { HistoryMessage = message });
+            }
+        }
+        if (stop)
+        {
+            ReportTurnStatus("收到停止请求，回到旁听");
+            StopSpeaking();
+        }
+    }
+
+    internal List<Message> BuildTurnHistory(IReadOnlyList<TalkLine> lines, string formatted)
+    {
+        lock (_talkInputSync)
+        {
+            var subjects = lines.Select(l => l.SubjectUid)
+                .Where(uid => !string.IsNullOrEmpty(uid)).Cast<string>()
+                .Distinct(StringComparer.Ordinal).ToList();
+            var viewerUid = lines.LastOrDefault(l => l.Identity == TalkIdentity.Danmaku).SubjectUid
+                ?? lines.LastOrDefault(l => l.Identity == TalkIdentity.Self).SubjectUid;
+            var history = _conversation.BuildMessages(viewerUid, formatted, subjects);
+            // Current input is supplied separately. Inputs arriving during this turn
+            // are already retained, but belong to the next decision, not this snapshot.
+            history.RemoveAll(_queuedInputs.Contains);
+            foreach (var line in lines)
+                if (line.HistoryMessage is { } message) _queuedInputs.Remove(message);
+            history.Add(new Message { Role = MessageRole.System, Content = IdentityPrompt.InvitationPolicy });
+            return history;
+        }
     }
 
     private async Task HandleTurnReadyAsync(IReadOnlyList<TalkLine> lines)
@@ -698,33 +778,30 @@ public sealed class BotRuntime : IAsyncDisposable
         if (gate is null) return;
         var revision = gate.ActiveTurnRevision;
         var turnMatchId = _pkBuffer.MatchId;
-        var superseded = false;
+        var orchestrator = _orchestrator;
         try
         {
-            if (_orchestrator is null) return;
+            if (orchestrator is null) return;
+            lock (_talkInputSync)
+                foreach (var stale in lines.Where(l => !IsCurrentMatch(l)))
+                    if (stale.HistoryMessage is { } message) _queuedInputs.Remove(message);
             lines = lines.Where(IsCurrentMatch).ToArray();
             if (lines.Count == 0) return;
             var formatted = IdentityPrompt.FormatTurn(lines);
             if (string.IsNullOrWhiteSpace(formatted)) return;
 
-            _pendingTurnText = formatted;
             _pendingTurnLines = lines;
-            var subjects = lines.Select(l => l.SubjectUid)
-                .Where(uid => !string.IsNullOrEmpty(uid)).Cast<string>()
-                .Distinct(StringComparer.Ordinal).ToList();
-            var viewerUid = lines.LastOrDefault(l => l.Identity == TalkIdentity.Danmaku).SubjectUid
-                ?? lines.LastOrDefault(l => l.Identity == TalkIdentity.Self).SubjectUid;
-            var history = _conversation.BuildMessages(viewerUid, formatted, subjects);
+            var history = BuildTurnHistory(lines, formatted);
 
             bool CanCommit()
             {
-                var valid = gate.CanCommit(revision) && turnMatchId == _pkBuffer.MatchId && lines.All(IsCurrentMatch);
-                superseded |= !valid;
-                return valid;
+                return ReferenceEquals(orchestrator, _orchestrator) && ReferenceEquals(gate, _turnGate) && gate.CanCommit(revision) &&
+                    turnMatchId == _pkBuffer.MatchId && lines.All(IsCurrentMatch);
             }
             _stateTracker.TextInputStarted(Environment.TickCount64);
             UserTranscript?.Invoke(this, formatted);
-            await _orchestrator.ProcessTextAsync(formatted, history, bypassWake: true, canCommit: CanCommit).ConfigureAwait(false);
+            await orchestrator.ProcessTextAsync(formatted, history, bypassWake: true, canCommit: CanCommit,
+                requireStructuredReply: true).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -732,26 +809,25 @@ public sealed class BotRuntime : IAsyncDisposable
         }
         finally
         {
-            if (superseded) gate.Requeue(lines.Where(IsCurrentMatch));
-            _pendingTurnText = null;
+            lock (_talkInputSync)
+                foreach (var line in lines)
+                    if (line.HistoryMessage is { } message) _queuedInputs.Remove(message);
             _pendingTurnLines = [];
             _stateTracker.SpeakingStopped();
-            gate.SetAiSpeaking(false);
+            gate.CompleteTurn(revision);
         }
     }
 
     private void CommitReply(ClassifiedReply reply)
     {
-        var userText = _pendingTurnText;
-        _pendingTurnText = null;
         var lines = _pendingTurnLines;
         _pendingTurnLines = [];
 
         switch (reply.Kind)
         {
             case ReplyKind.Speak:
-                if (!string.IsNullOrWhiteSpace(userText))
-                    _conversation.AddUserMessage(userText);
+                ReportTurnStatus("回答已生成，开始播放");
+                _conversation.MarkInputsPersistable(lines.Select(l => l.HistoryMessage).OfType<Message>());
                 _conversation.AddAssistantMessage(reply.Spoken);
                 // PK curation also reads assistant text; it must not provide a
                 // second persistence route for a paraphrased PASS observation.
@@ -760,14 +836,11 @@ public sealed class BotRuntime : IAsyncDisposable
                 SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
                 break;
             case ReplyKind.InnerThought:
-                if (!string.IsNullOrWhiteSpace(userText))
-                    _conversation.AddUserMessage(userText);
-                _conversation.AddAssistantMessage($"（{reply.Thought}）");
+                ReportTurnStatus("模型选择心里话，本轮不播放语音");
                 SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
                 break;
             case ReplyKind.Pass:
-                if (!string.IsNullOrWhiteSpace(userText))
-                    _conversation.AddUserMessage(userText, persistEligible: false);
+                ReportTurnStatus("继续旁听，对话已保留");
                 break;
             default:
                 break;
@@ -793,8 +866,6 @@ public sealed class BotRuntime : IAsyncDisposable
 
     private async Task ObserveMicSegmentAsync(SpeechSegment seg)
     {
-        var gate = _turnGate;
-        using var recognition = gate?.BeginRecognition(loopback: false);
         var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
         AIVTuber.Core.Diagnostics.DebugLog.Write(
             $"[麦克风段] 时长={(seg.EndTime - seg.StartTime).TotalMilliseconds:F0}ms " +
@@ -807,7 +878,6 @@ public sealed class BotRuntime : IAsyncDisposable
                 AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风段] 能量过低(<{MicAsrMinPeak})，跳过ASR");
             return;
         }
-
         _stateTracker.InputStarted(Environment.TickCount64);
         AsrResult result;
         if (_config.Asr.Streaming)
@@ -830,14 +900,13 @@ public sealed class BotRuntime : IAsyncDisposable
             if (result.Emotion is not null)
                 UserEmotionDetected?.Invoke(this, result.Emotion);
             UserTranscript?.Invoke(this, result.Text);
-            gate?.AddLine(new TalkLine(TalkIdentity.Self, SelfDisplayName(), text, SelfUidOrNull(), StartedAt: seg.StartTime));
+            ReportTurnStatus("麦克风已识别，记录对话");
+            AcceptTalkLine(new TalkLine(TalkIdentity.Self, SelfDisplayName(), text, SelfUidOrNull(), StartedAt: seg.StartTime));
         }
     }
 
     private async Task ObserveLoopbackSegmentAsync(SpeechSegment seg)
     {
-        var gate = _turnGate;
-        using var recognition = gate?.BeginRecognition(loopback: true);
         var opponent = Interlocked.Exchange(ref _capturedOpponent, null) ?? CaptureOpponent();
         var peak = AIVTuber.Core.Diagnostics.DebugLog.PeakRms(seg.AudioData);
         AIVTuber.Core.Diagnostics.DebugLog.Write(
@@ -850,7 +919,6 @@ public sealed class BotRuntime : IAsyncDisposable
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
             return;
         }
-
         AsrResult result;
         if (_config.Asr.Streaming)
         {
@@ -868,7 +936,7 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录识别→对面] 「{result.Text}」");
             LoopbackTranscript?.Invoke(this, result.Text);
-            gate?.AddLine(new TalkLine(
+            AcceptTalkLine(new TalkLine(
                 TalkIdentity.Opponent,
                 opponent.Name,
                 result.Text,
@@ -938,14 +1006,17 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         _mic = new MicrophoneCapture(_config.Audio.InputDeviceIndex);
         _vad = new VadDetector(_config.Audio.VadAggressiveness, _config.Audio.PreSpeechPaddingMs, _config.Audio.PostSpeechSilenceMs);
-        _mic.AudioFrameAvailable += (_, buf) => { if (!_micMuted) _vad.Feed(buf); };
+        _mic.AudioFrameAvailable += (_, buf) =>
+        {
+            lock (_micInputSync) { if (!_micMuted) _vad.Feed(buf); }
+        };
         _mic.LevelUpdated += (_, level) => MicLevelUpdated?.Invoke(this, level);
         _mic.ErrorOccurred += (_, ex) => PipelineError?.Invoke(this, $"[麦克风] {ex.Message}");
 
         _vad.SpeechFrame += (_, frame) =>
         {
             if (_micMuted) return;
-            _turnGate?.SetMicSpeaking(true);
+            _continuousVts?.NoteListening();
             if (!_config.Asr.Streaming) return;
             _micSpeechChannel ??= NewSpeechChannel();
             _micSpeechChannel.Writer.TryWrite(frame);
@@ -1001,7 +1072,7 @@ public sealed class BotRuntime : IAsyncDisposable
                 {
                     if (_loopbackVadMuted) return;
                     _capturedOpponent ??= CaptureOpponent();
-                    _turnGate?.SetLoopbackSpeaking(true);
+                    _continuousVts?.NoteListening();
                     if (!_config.Asr.Streaming) return;
                     _loopbackSpeechChannel ??= NewSpeechChannel();
                     _loopbackSpeechChannel.Writer.TryWrite(frame);
@@ -1104,7 +1175,7 @@ public sealed class BotRuntime : IAsyncDisposable
         if (pk.FollowerCount > 0) summary += $"，粉丝 {pk.FollowerCount}";
         if (pk.RoomId != 0) summary += $"，房间 {pk.RoomId}";
         if (!string.IsNullOrEmpty(pk.Uid)) summary += $"，UID {pk.Uid}";
-        _turnGate?.AddLine(new TalkLine(TalkIdentity.System, "系统", summary, pk.Uid, matchId));
+        AcceptTalkLine(new TalkLine(TalkIdentity.System, "系统", summary, pk.Uid, matchId));
     }
 
     private async Task StartPkMatchAsync(PkOpponent pk, string matchId)
@@ -1216,7 +1287,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _conversation?.SetLivePkOpponent(null);
         PkOpponentChanged?.Invoke(this, null);
         AIVTuber.Core.Diagnostics.DebugLog.Write("[PK] 手动标记新一场 PK");
-        _turnGate?.AddLine(new TalkLine(TalkIdentity.System, "系统", "新的一场 PK 开始了，还不知道对手是谁", null));
+        AcceptTalkLine(new TalkLine(TalkIdentity.System, "系统", "新的一场 PK 开始了，还不知道对手是谁", null));
     }
 
     /// <summary>Creates a DanmakuSelector with its selection handler wired. Speaking state is
@@ -1230,7 +1301,7 @@ public sealed class BotRuntime : IAsyncDisposable
             _stateTracker.TextInputStarted(Environment.TickCount64);
             await _viewerRepo.RecordInteractionAsync(d.Uid, d.Platform, d.Username);
             var label = IdentityPrompt.ResolveDanmakuLabel(_config.Identity.DanmakuLabel);
-            _turnGate?.AddLine(new TalkLine(
+            AcceptTalkLine(new TalkLine(
                 TalkIdentity.Danmaku,
                 string.IsNullOrWhiteSpace(d.Username) ? label : d.Username,
                 d.Content,
@@ -1320,6 +1391,15 @@ public sealed class BotRuntime : IAsyncDisposable
         if (change.HasFlag(RuntimeChange.RestartDanmaku)) await RestartDanmakuAsync();
         else if (change.HasFlag(RuntimeChange.RebuildDanmakuSelector)) RebuildSelector(); // light: in-memory only
 
+        if (change.HasFlag(RuntimeChange.UpdateVtsParams) && _continuousVts is not null)
+        {
+            _orchestrator?.Dispose();
+            // Subscribe/discover on first enable. Applying profiles must not create a second writer.
+            if (_config.Vts.ContinuousControl.Enabled && _continuousVts.Model is null)
+                await _continuousVts.ConnectAsync(_cts.Token);
+            await _continuousVts.ApplyAsync(_config.Vts.ContinuousControl, _cts.Token);
+        }
+
         // Light: memory extraction cadence updated in place.
         if (change.HasFlag(RuntimeChange.UpdateMemoryParams)) BuildMemoryExtractor();
 
@@ -1369,6 +1449,7 @@ public sealed class BotRuntime : IAsyncDisposable
             await _cortico.DisposeAsync();
             _cortico = null;
         }
+        if (_continuousVts is not null) { await _continuousVts.DisposeAsync(); _continuousVts = null; }
         if (!_config.Avatar.UsesVts)
         {
             if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); _vts = null; }
@@ -1408,6 +1489,8 @@ public sealed class BotRuntime : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();
+        _turnGate?.Dispose();
+        _orchestrator?.Interrupt();
         await DrainBackgroundTasksAsync();
         UnwirePixelAvatar();
         _avatarConfigWatcher?.Dispose();
@@ -1424,6 +1507,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _loopbackVad?.Dispose();
         _virtualMic?.Stop(); _virtualMic?.Dispose(); _virtualMic = null;
         if (_danmaku is not null) { await _danmaku.StopAsync(); _danmaku.Dispose(); }
+        if (_continuousVts is not null) { await _continuousVts.DisposeAsync(); _continuousVts = null; }
         if (_vts is not null) { await _vts.DisconnectAsync(); _vts.Dispose(); }
         if (_obs is not null) { await _obs.DisconnectAsync(); _obs.Dispose(); }
         if (_cortico is not null) { await _cortico.DisposeAsync(); _cortico = null; }

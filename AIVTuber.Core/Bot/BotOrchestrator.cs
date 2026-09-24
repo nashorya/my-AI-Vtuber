@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using AIVTuber.Core.Cortico;
+using AIVTuber.Core.Avatar;
 using System.Threading.Channels;
 using AIVTuber.Core.Audio;
 using AIVTuber.Core.Config;
@@ -20,6 +21,32 @@ public sealed class BotOrchestrator : IDisposable
     private readonly ILlmClient _llm;
     private readonly ITtsClient _tts;
     private readonly AudioPlayer _player;
+    private IAvatarMotionSink? _motion;
+    private readonly ConcurrentDictionary<RequestGeneration, AvatarReplyPlan> _avatarPlans = new();
+    private EventHandler<AvatarReplyPlan>? _avatarPlanHandler;
+    private Func<IAsyncEnumerable<byte[]>, CancellationToken, Action, Task>? _playWithStart;
+    private static long _avatarSequence;
+    private long _activeAvatarGeneration;
+
+    public void ConfigureContinuousControl(IAvatarMotionSink motion,
+        Func<IAsyncEnumerable<byte[]>, CancellationToken, Action, Task>? playWithStart = null)
+    {
+        _motion = motion;
+        _playWithStart = playWithStart ?? ((chunks, ct, start) => _player.PlayChunksAsync(chunks, ct, start));
+        if (_llm is IAvatarReplySource source && _avatarPlanHandler is null)
+        {
+            _avatarPlanHandler = (_, plan) =>
+            {
+                var context = CurrentEventContext();
+                if (context is null) return;
+                _avatarPlans[context.Generation] = plan;
+                if (plan.Diagnostic is not null)
+                    AIVTuber.Core.Diagnostics.DebugLog.Write($"[Avatar/VTS] {plan.Diagnostic}");
+            };
+            source.OnAvatarPlanReady += _avatarPlanHandler;
+        }
+    }
+
     private readonly TtsConfig _ttsConfig;
     private readonly VtsClient? _vts;
     private readonly VtsConfig _vtsConfig;
@@ -158,11 +185,11 @@ public sealed class BotOrchestrator : IDisposable
         {
             _rmsUpdatedHandler = (_, rms) =>
             {
-                if (!_disposed) HandleRmsAsync(rms);
+                if (!_disposed) HandleRms(rms);
             };
             _playbackFinishedHandler = (_, _) =>
             {
-                if (!_disposed) TryCloseMouthAsync();
+                if (!_disposed) TryCloseMouth();
             };
             _player.RmsUpdated += _rmsUpdatedHandler;
             _player.PlaybackFinished += _playbackFinishedHandler;
@@ -267,7 +294,7 @@ public sealed class BotOrchestrator : IDisposable
         string name,
         string kind)
     {
-        if (_triggerHotkeyAsync is null) return;
+        if (_motion is not null || _triggerHotkeyAsync is null) return;
         if (!TryGetHotkeyId(map, name, out var hotkeyId))
         {
             ReportCurrentError(context.Generation, $"[VTS] unknown {kind}: {name}");
@@ -351,35 +378,9 @@ public sealed class BotOrchestrator : IDisposable
         return false;
     }
 
-    private bool _rmsErrorLogged;
+    private void HandleRms(float rms) => _motion?.OnRms(rms * _vtsConfig.MouthScale);
 
-    private async void HandleRmsAsync(float rms)
-    {
-        if (_vts is null) return;
-        try
-        {
-            await _vts.SetMouthAsync(rms);
-            _rmsErrorLogged = false;
-        }
-        catch (Exception ex)
-        {
-            // Log only the first failure per outage to avoid spamming the ~30ms RMS loop.
-            if (!_rmsErrorLogged)
-            {
-                _rmsErrorLogged = true;
-                var msg = $"[VTS] 口型注入失败: {ex.Message}";
-                Console.Error.WriteLine(msg);
-                OnError?.Invoke(this, msg);
-            }
-        }
-    }
-
-    private async void TryCloseMouthAsync()
-    {
-        if (_vts is null) return;
-        try { await _vts.CloseMouthAsync(); }
-        catch { /* ignore */ }
-    }
+    private void TryCloseMouth() => _motion?.OnRms(0);
 
     /// <summary>Process a speech segment from VAD. Interrupts any ongoing processing.</summary>
     public Task ProcessSpeechAsync(SpeechSegment speech, List<Message> history, string micTemplate) =>
@@ -546,7 +547,8 @@ public sealed class BotOrchestrator : IDisposable
         List<Message> history,
         string? wakeProbe = null,
         bool bypassWake = false,
-        Func<bool>? canCommit = null)
+        Func<bool>? canCommit = null,
+        bool requireStructuredReply = false)
     {
         if (string.IsNullOrWhiteSpace(text)) return Task.CompletedTask;
         return _coordinator.EnqueueAsync(InputSource.Danmaku, async (envelope, ct) =>
@@ -557,7 +559,7 @@ public sealed class BotOrchestrator : IDisposable
             {
                 if (!bypassWake && !AllowSpeak(wakeProbe ?? text)) return;
                 pipelineStarted = true;
-                await RunStreamingPipelineAsync(history, text, envelope, ct, canCommit).ConfigureAwait(false);
+                await RunStreamingPipelineAsync(history, text, envelope, ct, canCommit, requireStructuredReply).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             catch (Exception ex)
@@ -582,23 +584,14 @@ public sealed class BotOrchestrator : IDisposable
     /// <summary>Interrupt any ongoing processing and stop playback immediately.</summary>
     public void Interrupt()
     {
+        _motion?.Cancel(Interlocked.Read(ref _activeAvatarGeneration));
+        _motion?.OnRms(0);
         _coordinator.SetHold(false);
         _coordinator.CancelCurrentAsync().GetAwaiter().GetResult();
         _currentEmotion = null;
         _deferLlmEvents = false;
         ClearDeferredControls();
         _stopPlayback();
-        if (_vts is not null)
-        {
-            try { _vts.CloseMouthAsync().GetAwaiter().GetResult(); }
-            catch (Exception ex)
-            {
-                // Stop/disposal must remain safe when VTS is already disconnected.
-                var message = $"[VTS] 关闭口型失败: {ex.Message}";
-                AIVTuber.Core.Diagnostics.DebugLog.Write(message);
-                if (!_disposed) OnError?.Invoke(this, message);
-            }
-        }
     }
 
     public bool IsProcessing => _coordinator.IsBusy;
@@ -618,7 +611,8 @@ public sealed class BotOrchestrator : IDisposable
         string userInput,
         InputEnvelope envelope,
         CancellationToken ct,
-        Func<bool>? canCommit = null)
+        Func<bool>? canCommit = null,
+        bool requireStructuredReply = false)
     {
         if (Cortico is not null)
         {
@@ -629,6 +623,11 @@ public sealed class BotOrchestrator : IDisposable
         _coordinator.SetHold(true);
         var sentenceChannel = Channel.CreateBounded<string>(3);
         var context = new RequestContext(envelope.Generation, ct);
+        var avatarGeneration = Interlocked.Increment(ref _avatarSequence);
+        var previousAvatar = Interlocked.Exchange(ref _activeAvatarGeneration, avatarGeneration);
+        _motion?.Cancel(previousAvatar);
+        _motion?.BeginTurn(avatarGeneration);
+        using var cancelAvatar = ct.Register(() => _motion?.Cancel(avatarGeneration));
         ClassifiedReply? pendingReply = null;
         string pendingRaw = "";
 
@@ -648,7 +647,11 @@ public sealed class BotOrchestrator : IDisposable
                 }
 
                 if (!IsCurrent(envelope, ct)) return;
-                var classified = ReplyClassifier.Classify(rawAll.ToString());
+                _avatarPlans.TryRemove(context.Generation, out var avatarPlan);
+                var classified = ReplyClassifier.ClassifyTurn(rawAll.ToString(), avatarPlan, requireStructuredReply);
+                if (classified.Kind == ReplyKind.Speak && classified.AvatarIntent is null &&
+                    AvatarReplyProtocol.InferRequestedMotion(userInput) is { } inferred)
+                    classified = classified with { AvatarIntent = inferred };
                 _deferLlmEvents = false;
                 if (canCommit is not null && !canCommit()) return;
                 if (classified.Kind == ReplyKind.Speak)
@@ -657,7 +660,12 @@ public sealed class BotOrchestrator : IDisposable
                     pendingRaw = rawAll.ToString();
                     await sentenceChannel.Writer.WriteAsync(classified.Spoken, ct);
                 }
-                else CommitClassifiedReply(context, classified, rawAll.ToString());
+                else
+                {
+                    CommitClassifiedReply(context, classified, rawAll.ToString());
+                    if (classified.Kind == ReplyKind.InnerThought && classified.AvatarIntent is { } intent && IsCurrent(envelope, ct))
+                        _motion?.Submit(avatarGeneration, intent);
+                }
             }
             finally
             {
@@ -678,7 +686,7 @@ public sealed class BotOrchestrator : IDisposable
                 await foreach (var chunk in _tts.StreamAsync(
                                    sentence,
                                    _ttsConfig.VoiceId,
-                                   ResolveTtsEmotion(_currentEmotion),
+                                   ResolveTtsEmotion(PeekPendingEmotion(pendingReply)),
                                    streamCt))
                 {
                     if (!IsCurrent(envelope, streamCt)) yield break;
@@ -700,9 +708,14 @@ public sealed class BotOrchestrator : IDisposable
         Exception? pipelineEx = null;
         try
         {
-            var playbackTask = IsCurrent(envelope, ct)
-                ? _playChunksAsync(TtsChunks(ct), ct)
-                : Task.CompletedTask;
+            void FirstPcmRead()
+            {
+                if (IsCurrent(envelope, ct) && pendingReply?.AvatarIntent is { } intent)
+                    _motion?.Submit(avatarGeneration, intent);
+            }
+            var playbackTask = !IsCurrent(envelope, ct) ? Task.CompletedTask
+                : _playWithStart is not null ? _playWithStart(TtsChunks(ct), ct, FirstPcmRead)
+                : _playChunksAsync(TtsChunks(ct), ct);
             await Task.WhenAll(playbackTask, producerTask).ConfigureAwait(false);
             await AwaitCommandsAsync(envelope.Generation).ConfigureAwait(false);
         }
@@ -715,6 +728,12 @@ public sealed class BotOrchestrator : IDisposable
         finally
         {
             _coordinator.SetHold(false);
+            _avatarPlans.TryRemove(context.Generation, out _);
+            if (ttsStarted || ct.IsCancellationRequested || pipelineEx is not null)
+            {
+                _motion?.Cancel(avatarGeneration);
+                _motion?.OnRms(0);
+            }
             if (ttsStarted && IsCurrent(envelope, ct, allowCancellation: true))
                 OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
         }
@@ -811,6 +830,15 @@ public sealed class BotOrchestrator : IDisposable
                 return;
         }
     }
+    private string? PeekPendingEmotion(ClassifiedReply? reply)
+    {
+        // Synthesis needs the emotion before public commit. Reading the staged value
+        // must not fire the pixel avatar, hotkeys or subtitles while TTS is pending.
+        var tag = reply?.StagedControls.LastOrDefault(t => t.StartsWith("[emotion:", StringComparison.OrdinalIgnoreCase));
+        if (tag is not null) return tag[9..^1].Trim();
+        lock (_deferredEmotions) return _deferredEmotions.LastOrDefault() ?? _currentEmotion;
+    }
+
     private string? ResolveTtsEmotion(string? emotion)
     {
         if (string.IsNullOrWhiteSpace(emotion)) return null;
@@ -837,6 +865,8 @@ public sealed class BotOrchestrator : IDisposable
         if (_disposed) return;
         _disposed = true;
 
+        if (_llm is IAvatarReplySource avatarSource && _avatarPlanHandler is not null)
+            avatarSource.OnAvatarPlanReady -= _avatarPlanHandler;
         _llm.OnSentenceReady -= _sentenceReadyHandler;
         _llm.OnEmotionDetected -= _emotionDetectedHandler;
         _llm.OnActionDetected -= _actionDetectedHandler;

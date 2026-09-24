@@ -28,6 +28,7 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
         // (one window). If the VM ever becomes shorter-lived than the runtime, make this
         // IDisposable and detach these handlers.
         _runtime.StateTracker.Changed += (_, _) => _dispatch(OnStateChanged);
+        _runtime.TurnStatusChanged += (_, status) => _dispatch(() => AddOperationalEvent("回合", status));
         _runtime.UserTranscript += (_, t) => _dispatch(() =>
         {
             UserText = t;
