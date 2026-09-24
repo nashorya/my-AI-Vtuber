@@ -12,7 +12,7 @@ namespace AIVTuber.Core.Pipeline;
 /// LLM client compatible with OpenAI Chat Completions API format.
 /// Supports streaming output with sentence boundary detection and emotion tag parsing.
 /// </summary>
-public sealed class LlmClient : ILlmClient, IDisposable, IAvatarReplySource
+public sealed class LlmClient : ILlmClient, IReplyProtocolStream, IDisposable, IAvatarReplySource
 {
     private readonly HttpClient _httpClient;
     private readonly string _baseUrl;
@@ -21,6 +21,9 @@ public sealed class LlmClient : ILlmClient, IDisposable, IAvatarReplySource
     private readonly string _systemPrompt;
     private readonly Func<string[]>? _avatarChannels;
     public event EventHandler<AvatarReplyPlan>? OnAvatarPlanReady;
+
+    /// <summary>Configured reply protocol: "legacy" (single structured JSON) or "v2" (NDJSON events).</summary>
+    public string ReplyProtocol { get; }
 
     private static readonly Regex SentenceBoundaryRegex = new(@"[。！？；，,.!?;\n]", RegexOptions.Compiled);
     private static readonly Regex EmotionTagRegex = new(@"\[emotion:([^\]\r\n]+)\]", RegexOptions.Compiled);
@@ -38,24 +41,33 @@ public sealed class LlmClient : ILlmClient, IDisposable, IAvatarReplySource
     public event EventHandler<string>? OnActionDetected;
     public event EventHandler<string>? OnPoseDetected;
 
-    public LlmClient(string baseUrl, string apiKey, string model, string systemPrompt, Func<string[]>? avatarChannels = null)
+    public LlmClient(string baseUrl, string apiKey, string model, string systemPrompt,
+        Func<string[]>? avatarChannels = null, string? replyProtocol = null)
     {
         _baseUrl = baseUrl.TrimEnd('/');
         _apiKey = apiKey;
         _model = model.Trim();
         _systemPrompt = systemPrompt;
         _avatarChannels = avatarChannels;
+        ReplyProtocol = NormalizeProtocol(replyProtocol);
         _httpClient = new HttpClient(LlmTransport.CreateHandler(baseUrl))
         {
             Timeout = TimeSpan.FromMinutes(5),
         };
     }
 
-    internal LlmClient(string systemPrompt, Func<string[]>? avatarChannels, HttpMessageHandler handler)
-        : this("https://example.test/v1", "test", "test", systemPrompt, avatarChannels)
+    internal LlmClient(string systemPrompt, Func<string[]>? avatarChannels, HttpMessageHandler handler,
+        string? replyProtocol = null)
+        : this("https://example.test/v1", "test", "test", systemPrompt, avatarChannels, replyProtocol)
     {
         _httpClient.Dispose();
         _httpClient = new HttpClient(handler);
+    }
+
+    internal static string NormalizeProtocol(string? replyProtocol)
+    {
+        var value = (replyProtocol ?? "legacy").Trim();
+        return value.Equals("v2", StringComparison.OrdinalIgnoreCase) ? "v2" : "legacy";
     }
 
     public async IAsyncEnumerable<string> StreamAsync(
@@ -63,6 +75,9 @@ public sealed class LlmClient : ILlmClient, IDisposable, IAvatarReplySource
         string userInput,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        if (ReplyProtocol == "v2")
+            throw new InvalidOperationException(
+                "reply_protocol=v2 已启用：请使用 StreamEventsAsync；legacy 与 v2 两套解析器不得同时产生副作用。");
         var allowedChannels = _avatarChannels?.Invoke();
         var messages = BuildMessages(history, userInput);
         if (allowedChannels is not null)
@@ -176,8 +191,111 @@ public sealed class LlmClient : ILlmClient, IDisposable, IAvatarReplySource
             OnSentenceReady?.Invoke(this, remaining);
     }
 
-    private List<object> BuildMessages(List<Message> history, string userInput)
+    /// <summary>
+    /// Protocol v2 streaming: parses the model's NDJSON reply line-by-line and yields
+    /// validated events as soon as each line completes — the first speech segment leaves
+    /// this method long before the model's EOF. No whole-reply buffering: the raw text is
+    /// only mirrored into a bounded diagnostic buffer. finish_reason=length and missing
+    /// end fail closed via a terminal ProtocolError event.
+    /// </summary>
+    public async IAsyncEnumerable<ReplyStreamEvent> StreamEventsAsync(
+        List<Message> history,
+        string userInput,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        if (ReplyProtocol != "v2")
+            throw new InvalidOperationException("StreamEventsAsync 仅在 reply_protocol=v2 时可用。");
+
+        var allowedChannels = _avatarChannels?.Invoke();
+        var messages = BuildMessages(history, userInput);
+        messages.Insert(1, new { role = "system", content = ReplyProtocolV2.Prompt(allowedChannels ?? []) });
+
+        // Safety cap only — brevity comes from the prompt. Must leave room for the protocol
+        // envelope (decision + end lines) so a normal reply finishes with its end event
+        // instead of being truncated into a fail-closed protocol error.
+        object requestBody = LlmTransport.IncludeThinkingDisabled(_baseUrl)
+            ? new
+            {
+                model = _model,
+                messages,
+                stream = true,
+                max_tokens = 512,
+                thinking = new { type = "disabled" },
+            }
+            : new
+            {
+                model = _model,
+                messages,
+                stream = true,
+                max_tokens = 512,
+            };
+
+        var json = JsonSerializer.Serialize(requestBody, JsonOptions);
+        var request = new HttpRequestMessage(HttpMethod.Post, LlmTransport.ResolveChatCompletionsUrl(_baseUrl))
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+
+        using var response = await _httpClient.SendAsync(
+            request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new StreamReader(stream);
+
+        var parser = new ReplyProtocolV2Parser(allowedChannels);
+        var diagnostic = new StringBuilder();
+        string? finishReason = null;
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            string? line;
+            var transportBroken = false;
+            try { line = await reader.ReadLineAsync(cancellationToken); }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+            {
+                // HTTP stream torn down mid-reply: no end event can arrive → fail closed
+                // (missing end / mid-line truncation; already-emitted events stand).
+                transportBroken = true;
+                line = null;
+            }
+            if (transportBroken)
+            {
+                foreach (var ev in parser.Complete(null)) yield return ev;
+                yield break;
+            }
+            if (line is null) break;
+            if (line.Length == 0 || !line.StartsWith("data: ")) continue;
+
+            var data = line[6..];
+            if (data == "[DONE]") break;
+
+            SseChunk? chunk;
+            try { chunk = JsonSerializer.Deserialize<SseChunk>(data, JsonOptions); }
+            catch (JsonException) { continue; }
+
+            if (chunk?.Choices is null || chunk.Choices.Count == 0) continue;
+            if (chunk.Choices[0].FinishReason is { } reason) finishReason = reason;
+
+            var delta = chunk.Choices[0].Delta;
+            if (delta?.Content is null) continue;
+
+            if (diagnostic.Length < 4000)
+                diagnostic.Append(delta.Content.Length > 4000 ? delta.Content[..(4000 - diagnostic.Length)] : delta.Content);
+
+            foreach (var ev in parser.Feed(delta.Content))
+                yield return ev;
+            if (parser.Failed) yield break;
+        }
+
+        // Hook point for first_content/first_speech_segment timing (RT-00 instrumentation).
+        AIVTuber.Core.Diagnostics.DebugLog.Write($"[LLM原始/v2] {diagnostic}");
+        foreach (var ev in parser.Complete(finishReason))
+            yield return ev;
+    }
+
+    private List<object> BuildMessages(List<Message> history, string userInput)    {
         var messages = new List<object>();
 
         // System prompt
