@@ -380,10 +380,21 @@ public sealed class BotRuntime : IAsyncDisposable
         _corticoOptions ??= CorticoOptions.Load(_baseDir);
         if (_corticoOptions.Enabled)
         {
-            _cortico = await CorticoProcess.StartAsync(_corticoOptions, _baseDir, _config.Vts,
-                () => _tts, () => _config.Tts,
-                message => AIVTuber.Core.Diagnostics.DebugLog.Write($"[Cortico] {message}"), _cts.Token);
-            return;
+            try
+            {
+                _cortico = await CorticoProcess.StartAsync(_corticoOptions, _baseDir, _config.Vts,
+                    () => _tts, () => _config.Tts,
+                    message => AIVTuber.Core.Diagnostics.DebugLog.Write($"[Cortico] {message}"), _cts.Token);
+                return;
+            }
+            catch (Exception ex)
+            {
+                // A sidecar/VTS failure must not kill the voice pipeline (mirrors the
+                // fail-soft legacy VTS path below) — degrade to plain VTS and continue.
+                var msg = $"[Cortico] 启动失败，降级为普通 VTS 路径: {ex.Message}";
+                Console.WriteLine(msg);
+                PipelineError?.Invoke(this, msg);
+            }
         }
         _vts = new VtsClient(_config.Vts);
         _vts.OnError += (_, msg) => PipelineError?.Invoke(this, $"[VTS] {msg}");
