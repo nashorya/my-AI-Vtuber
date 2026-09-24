@@ -611,13 +611,15 @@ public sealed class BotRuntime : IAsyncDisposable
             asr.Model);
     }
 
-    private static ITtsClient CreateTtsClient(TtsConfig tts)
+    private static ITtsClient CreateTtsClient(TtsConfig tts, AIVTuber.Core.Diagnostics.RealtimeTrace? trace = null)
         => tts.Provider.ToLowerInvariant() switch
         {
             "aliyun" or "cosyvoice" or "dashscope" => new DashScopeTtsClient(tts),
-            "minimax" => tts.Transport.Equals("streaming", StringComparison.OrdinalIgnoreCase)
-                ? new MiniMaxHttpStreamingTtsClient(tts) // RT-01: opt-in HTTP streaming
-                : new MiniMaxWsTtsClient(tts),           // legacy: previous per-sentence WS path
+            "minimax" => tts.Transport.Equals("bidi", StringComparison.OrdinalIgnoreCase)
+                ? new AIVTuber.Core.RealtimeTts.MiniMaxBidiTtsClient(tts, trace) // RT-06: bidirectional WS session (opt-in, host must be configured)
+                : tts.Transport.Equals("streaming", StringComparison.OrdinalIgnoreCase)
+                    ? new MiniMaxHttpStreamingTtsClient(tts) // RT-01: opt-in HTTP streaming
+                    : new MiniMaxWsTtsClient(tts),           // legacy: previous per-sentence WS path
             "dots" or "dots-tts" => new DotsTtsClient(tts),
             "mimo" or "xiaomi" or "xiaomimimo" => new MimoTtsClient(tts),
             _ => new TtsClient(tts),
@@ -647,7 +649,7 @@ public sealed class BotRuntime : IAsyncDisposable
         if (_tts is null || rebuild.HasFlag(RuntimeChange.RebuildTts))
         {
             (_tts as IDisposable)?.Dispose();
-            _tts = CreateTtsClient(_config.Tts);
+            _tts = CreateTtsClient(_config.Tts, _trace);
         }
         if (_player is null)
         {

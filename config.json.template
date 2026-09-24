@@ -60,6 +60,10 @@
     "voice_id": "<your-voice-id>",
     "model": "",
     "transport": "legacy",
+    "bidi_host": "",
+    "bidi_cancel_ack_timeout_ms": 2000,
+    "bidi_max_backlog_seconds": 30,
+    "bidi_keep_alive_interval_ms": 0,
     "group_id": "",
     "speed": 1
   },

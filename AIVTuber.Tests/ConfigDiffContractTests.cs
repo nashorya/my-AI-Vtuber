@@ -11,6 +11,8 @@ public class ConfigDiffContractTests
         "Asr.PersistConnection", "Asr.Streaming", "Asr.SecretId", "Asr.ResourceId", "Asr.Hotwords",
         "Tts.Provider", "Tts.ApiKey", "Tts.ApiKeys", "Tts.VoiceId", "Tts.Model", "Tts.GroupId", "Tts.Speed",
         "Tts.BaseUrl", "Tts.Language", "Tts.Seed", "Tts.NumSteps", "Tts.GuidanceScale", "Tts.SampleRate", "Tts.Transport",
+        "Tts.BidiHost", "Tts.BidiCancelAckTimeoutMs", "Tts.BidiMaxBacklogSeconds", "Tts.BidiSecondsPerCharEstimate",
+        "Tts.BidiKeepAliveIntervalMs",
     ];
 
     public static TheoryData<string, Action<AppConfig>, RuntimeChange> AsrAndTtsRuntimeFields => new()
@@ -41,6 +43,11 @@ public class ConfigDiffContractTests
         { "Tts.GuidanceScale", c => c.Tts.GuidanceScale = 2.0, RuntimeChange.RebuildTts },
         { "Tts.SampleRate", c => c.Tts.SampleRate = 48000, RuntimeChange.RebuildTts | RuntimeChange.RestartAudio },
         { "Tts.Transport", c => c.Tts.Transport = "streaming", RuntimeChange.RebuildTts },
+        { "Tts.BidiHost", c => c.Tts.BidiHost = "api.minimaxi.example", RuntimeChange.RebuildTts },
+        { "Tts.BidiCancelAckTimeoutMs", c => c.Tts.BidiCancelAckTimeoutMs = 3000, RuntimeChange.RebuildTts },
+        { "Tts.BidiMaxBacklogSeconds", c => c.Tts.BidiMaxBacklogSeconds = 45, RuntimeChange.RebuildTts },
+        { "Tts.BidiSecondsPerCharEstimate", c => c.Tts.BidiSecondsPerCharEstimate = 0.08, RuntimeChange.RebuildTts },
+        { "Tts.BidiKeepAliveIntervalMs", c => c.Tts.BidiKeepAliveIntervalMs = 5000, RuntimeChange.RebuildTts },
     };
 
     [Theory]

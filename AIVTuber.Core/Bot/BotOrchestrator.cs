@@ -593,9 +593,22 @@ public sealed class BotOrchestrator : IDisposable
         _motion?.OnRms(0);
         _coordinator.SetHold(false);
         _coordinator.CancelCurrentAsync().GetAwaiter().GetResult();
-        // Legacy path has no vendor-side ack; this marks the local generation being fully
-        // superseded. RT-06's bidi TTS must replace it with a real cancel acknowledgement.
-        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.CancelAcked);
+        // RT-06: bidirectional TTS has a real vendor-side cancel barrier — wait for the
+        // task_cancel acknowledgement (or an epoch rebuild when the ack is lost) before any
+        // next turn's text can be submitted. Legacy/streaming paths keep the local-generation
+        // mark because there is no vendor ack to observe.
+        if (_tts is AIVTuber.Core.RealtimeTts.IBidiTtsController bidi)
+        {
+            var outcome = bidi.CancelPendingAsync().GetAwaiter().GetResult();
+            if (outcome == AIVTuber.Core.RealtimeTts.TtsCancelOutcome.ServerConfirmed)
+                Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.CancelAcked);
+            else if (outcome == AIVTuber.Core.RealtimeTts.TtsCancelOutcome.EpochRebuilt)
+                Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.CancelEpochRebuild);
+        }
+        else
+        {
+            Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.CancelAcked);
+        }
         _currentEmotion = null;
         _deferLlmEvents = false;
         ClearDeferredControls();
@@ -750,6 +763,11 @@ public sealed class BotOrchestrator : IDisposable
         }
 
         Exception? pipelineEx = null;
+        // RT-06: mark the turn on the bidi TTS session so audio attribution and the cancel
+        // barrier are turn-scoped. Non-bidi clients skip this entirely.
+        var bidiTts = _tts as AIVTuber.Core.RealtimeTts.IBidiTtsController;
+        if (bidiTts is not null && IsCurrent(envelope, ct))
+            await bidiTts.BeginTurnAsync(ct).ConfigureAwait(false);
         try
         {
             void FirstPcmRead()
@@ -987,6 +1005,11 @@ public sealed class BotOrchestrator : IDisposable
         }
 
         Exception? pipelineEx = null;
+        // RT-06: mark the turn on the bidi TTS session so audio attribution and the cancel
+        // barrier are turn-scoped. Non-bidi clients skip this entirely.
+        var bidiTts = _tts as AIVTuber.Core.RealtimeTts.IBidiTtsController;
+        if (bidiTts is not null && IsCurrent(envelope, ct))
+            await bidiTts.BeginTurnAsync(ct).ConfigureAwait(false);
         try
         {
             void FirstPcmRead()
@@ -1018,6 +1041,7 @@ public sealed class BotOrchestrator : IDisposable
         }
         finally
         {
+            bidiTts?.EndTurn();
             _coordinator.SetHold(false);
             if (turn.Segments.Any(s => s.State == ReplySegmentState.Generated) &&
                 turn.Segments.Any(s => s.State == ReplySegmentState.Played))
