@@ -305,6 +305,11 @@ public sealed class TtsConfig
     public int NumSteps { get; set; } = 10;
     /// <summary>dots.tts only: classifier-free guidance scale.</summary>
     public double GuidanceScale { get; set; } = 1.2;
+    /// <summary>MiniMax only: HTTP transport selection (RT-01).
+    /// "legacy" (default) keeps the previous routing/behavior unchanged;
+    /// "streaming" uses the t2a_v2 HTTP streaming response (stream=true, SSE audio chunks).
+    /// The non-streaming stream=false implementation remains in TtsClient as an explicit code-level fallback.</summary>
+    public string Transport { get; set; } = "legacy";
 
     internal string VendorId => ProviderSecrets.Slot(Provider, "fish-audio");
 

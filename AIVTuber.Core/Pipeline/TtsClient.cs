@@ -38,8 +38,19 @@ public sealed class TtsClient : ITtsClient, IDisposable
         switch (_provider)
         {
             case "minimax":
-                var audio = await MiniMaxSynthesizeAsync(text, voiceId, emotion, cancellationToken);
-                if (audio.Length > 0) yield return audio;
+                if (string.Equals(_config.Transport, "streaming", StringComparison.OrdinalIgnoreCase))
+                {
+                    // RT-01: HTTP streaming (stream=true, SSE audio events, incremental decode).
+                    using var streaming = new MiniMaxHttpStreamingTtsClient(_config);
+                    await foreach (var chunk in streaming.StreamAsync(text, voiceId, emotion, cancellationToken))
+                        yield return chunk;
+                }
+                else
+                {
+                    // Explicit non-streaming fallback (stream=false, whole-JSON response).
+                    var audio = await MiniMaxSynthesizeAsync(text, voiceId, emotion, cancellationToken);
+                    if (audio.Length > 0) yield return audio;
+                }
                 break;
 
             case "fish-audio":
