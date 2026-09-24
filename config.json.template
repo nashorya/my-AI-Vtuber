@@ -17,6 +17,7 @@
     "provider": "doubao",
     "model": "",
     "api_key": "<your-vision-api-key>",
+    "api_keys": {},
     "base_url": "https://ark.cn-beijing.volces.com/api/v3",
     "capture_interval_ms": 500,
     "roi": null,
@@ -38,18 +39,24 @@
   "asr": {
     "provider": "aliyun",
     "api_key": "<your-asr-api-key>",
+    "api_keys": {},
     "app_id": "<your-asr-app-id>",
     "model": "",
     "local_asr_url": "http://localhost:8765",
     "python_path": "sidecar/python/python.exe",
     "persist_connection": true,
-    "streaming": true
+    "streaming": true,
+    "secret_id": "",
+    "resource_id": "",
+    "hotwords": []
   },
   "llm": {
     "provider": "deepseek",
     "base_url": "https://api.deepseek.com",
     "api_key": "<your-llm-api-key>",
+    "api_keys": {},
     "model": "deepseek-chat",
+    "models": {},
     "system_prompt": "你是一个VTuber...",
     "max_history_tokens": 4096,
     "reply_protocol": "legacy"
@@ -57,12 +64,14 @@
   "tts": {
     "provider": "fish-audio",
     "api_key": "<your-tts-api-key>",
+    "api_keys": {},
     "voice_id": "<your-voice-id>",
     "model": "",
     "transport": "legacy",
     "bidi_host": "",
     "bidi_cancel_ack_timeout_ms": 2000,
     "bidi_max_backlog_seconds": 30,
+    "bidi_seconds_per_char_estimate": 0.075,
     "bidi_keep_alive_interval_ms": 0,
     "group_id": "",
     "speed": 1
@@ -150,6 +159,10 @@
     "schema_version": 1,
     "inference_mode": "legacy",
     "streaming_asr_enabled": false,
+    "buffer_capacity_ms": 4000,
+    "preroll_ms": 1000,
+    "idle_disconnect_ms": 30000,
+    "send_packet_ms": 200,
     "turn_manager_v2_enabled": false,
     "speculative_generation_enabled": false,
     "trace_enabled": false
