@@ -15,7 +15,6 @@ public sealed class RealtimeConfigTests
         Assert.Equal("legacy", rt.InferenceMode);
         Assert.False(rt.IsCloudOnly);
         Assert.False(rt.StreamingAsrEnabled);
-        Assert.Equal("legacy", rt.ReplyProtocol);
         Assert.False(rt.TurnManagerV2Enabled);
         Assert.False(rt.SpeculativeGenerationEnabled);
         Assert.False(rt.TraceEnabled);

@@ -122,7 +122,6 @@
     "schema_version": 1,
     "inference_mode": "legacy",
     "streaming_asr_enabled": false,
-    "reply_protocol": "legacy",
     "turn_manager_v2_enabled": false,
     "speculative_generation_enabled": false,
     "trace_enabled": false

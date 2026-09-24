@@ -47,9 +47,6 @@ public sealed class RealtimeConfig
     /// <summary>Reserved for RT-02+: realtime streaming ASR sessions. Off = current path.</summary>
     public bool StreamingAsrEnabled { get; set; } = false;
 
-    /// <summary>Reserved for RT-05+: "legacy" (full-turn structured reply) | "v2" (NDJSON speech protocol).</summary>
-    public string ReplyProtocol { get; set; } = "legacy";
-
     /// <summary>Reserved for RT-04+: new turn manager. Off = current ConversationTurnGate.</summary>
     public bool TurnManagerV2Enabled { get; set; } = false;
 
