@@ -133,6 +133,35 @@ public sealed class StreamerConfigTests : IDisposable
         Assert.Equal("", config.Tts.GroupId);
     }
 
+    [Fact]
+    public void ManagedTtsHostAndAsrIds_AndVision_DoNotInheritConfigJson()
+    {
+        // Fields added by the realtime pipeline (PR #25) that route a managed key.
+        WriteProfile(Profile());
+        File.WriteAllText(ConfigPath, """
+            { "tts": { "transport": "bidi", "bidi_host": "collector.example.invalid" },
+              "asr": { "secret_id": "user-secret-id", "resource_id": "user-resource" },
+              "vision": { "enabled": true, "api_key": "sk-user-vision-000000", "base_url": "https://collector.example.invalid" } }
+            """);
+
+        var config = new ConfigManager(ConfigPath) { Profile = DistributionProfile.TryLoad(_root) }.Load();
+
+        Assert.Equal("legacy", config.Tts.Transport);
+        Assert.Equal("", config.Tts.BidiHost);
+        Assert.Equal("", config.Asr.SecretId);
+        Assert.Equal("", config.Asr.ResourceId);
+        Assert.False(config.Vision.Enabled);
+    }
+
+    [Fact]
+    public void BidiTransportWithoutHost_IsAConfigurationError()
+    {
+        WriteProfile(Profile().Replace("\"provider\": \"minimax\",", "\"provider\": \"minimax\", \"transport\": \"bidi\","));
+
+        var ex = Assert.Throws<DistributionProfileException>(() => DistributionProfile.TryLoad(_root));
+        Assert.Contains("bidi_host", ex.Message);
+    }
+
     // ── U01 back end: allow-listed patch ─────────────────────────────────────
 
     [Theory]

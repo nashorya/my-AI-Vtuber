@@ -97,6 +97,10 @@ public sealed class BotOrchestrator : IDisposable
     /// </summary>
     public Func<string, bool>? ShouldSpeak { get; set; }
 
+    /// <summary>RT-00 chain tracer, set by BotRuntime. Null/disabled → all marks are no-ops;
+    /// wiring these marks does not change pipeline behaviour.</summary>
+    public AIVTuber.Core.Diagnostics.RealtimeTrace? Trace { get; set; }
+
     public ICorticoPerformance? Cortico { get; set; }
 
     public BotOrchestrator(
@@ -588,6 +592,7 @@ public sealed class BotOrchestrator : IDisposable
     /// unwind. Playback never waits for a provider to acknowledge cancellation (AUTH-04).</summary>
     public Task BeginInterrupt()
     {
+        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.CancelRequested);
         _motion?.Cancel(Interlocked.Read(ref _activeAvatarGeneration));
         _motion?.OnRms(0);
         _coordinator.SetHold(false);
@@ -596,7 +601,30 @@ public sealed class BotOrchestrator : IDisposable
         _deferLlmEvents = false;
         ClearDeferredControls();
         _stopPlayback();
-        return unwind;
+        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.PlaybackStopped);
+        return CompleteInterruptAsync(unwind);
+    }
+
+    /// <summary>The part of an interrupt that may wait on providers: the in-flight request
+    /// unwinding and, for bidirectional TTS, the vendor cancel barrier (RT-06) — its
+    /// task_cancel acknowledgement or an epoch rebuild when the ack is lost — before a next
+    /// turn's text can be submitted. Local output is already silent when this starts.</summary>
+    private async Task CompleteInterruptAsync(Task unwind)
+    {
+        await unwind.ConfigureAwait(false);
+        if (_tts is AIVTuber.Core.RealtimeTts.IBidiTtsController bidi)
+        {
+            var outcome = await bidi.CancelPendingAsync().ConfigureAwait(false);
+            if (outcome == AIVTuber.Core.RealtimeTts.TtsCancelOutcome.ServerConfirmed)
+                Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.CancelAcked);
+            else if (outcome == AIVTuber.Core.RealtimeTts.TtsCancelOutcome.EpochRebuilt)
+                Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.CancelEpochRebuild);
+        }
+        else
+        {
+            // Legacy/streaming paths have no vendor ack to observe.
+            Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.CancelAcked);
+        }
     }
 
     public bool IsProcessing => _coordinator.IsBusy;
@@ -624,6 +652,12 @@ public sealed class BotOrchestrator : IDisposable
             await RunCorticoAsync(history, userInput, envelope, ct, canCommit).ConfigureAwait(false);
             return;
         }
+        if (_llm is IReplyProtocolStream { ReplyProtocol: "v2" } protocolStream)
+        {
+            await RunStreamingPipelineV2Async(
+                protocolStream, history, userInput, envelope, ct, canCommit).ConfigureAwait(false);
+            return;
+        }
         AIVTuber.Core.Diagnostics.DebugLog.Write($"[LLM输入] {userInput}");
         _coordinator.SetHold(true);
         var sentenceChannel = Channel.CreateBounded<string>(3);
@@ -643,13 +677,21 @@ public sealed class BotOrchestrator : IDisposable
             _eventContext.Value = context;
             _deferLlmEvents = true;
             ClearDeferredControls();
+            bool llmFirstContentMarked = false;
             try
             {
+                Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmRequest);
                 await foreach (var token in _llm.StreamAsync(history, userInput, ct))
                 {
                     if (!IsCurrent(envelope, ct)) break;
+                    if (!llmFirstContentMarked && token.Length > 0)
+                    {
+                        llmFirstContentMarked = true;
+                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmFirstContent);
+                    }
                     rawAll.Append(token);
                 }
+                Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmDone);
 
                 if (!IsCurrent(envelope, ct)) return;
                 _avatarPlans.TryRemove(context.Generation, out var avatarPlan);
@@ -682,12 +724,15 @@ public sealed class BotOrchestrator : IDisposable
 
         // Stream TTS for the (usually single) utterance. WaveOut stays open for the turn.
         bool ttsStarted = false;
+        bool ttsFirstChunkMarked = false;
+        bool ttsFirstPcmMarked = false;
         async IAsyncEnumerable<byte[]> TtsChunks([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken streamCt = default)
         {
             await foreach (var sentence in sentenceChannel.Reader.ReadAllAsync(streamCt))
             {
                 if (!IsCurrent(envelope, streamCt)) yield break;
                 if (!LlmClient.IsSpeakableText(sentence)) continue;
+                Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TtsRequest);
                 await foreach (var chunk in _tts.StreamAsync(
                                    sentence,
                                    _ttsConfig.VoiceId,
@@ -695,6 +740,12 @@ public sealed class BotOrchestrator : IDisposable
                                    streamCt))
                 {
                     if (!IsCurrent(envelope, streamCt)) yield break;
+                    if (!ttsFirstChunkMarked && chunk.Length > 0)
+                    {
+                        ttsFirstChunkMarked = true;
+                        // First vendor audio for this turn (encoded transport representation).
+                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TtsFirstEncodedAudio);
+                    }
                     if (!ttsStarted)
                     {
                         // Recheck after synthesis too: people may have resumed while
@@ -702,8 +753,20 @@ public sealed class BotOrchestrator : IDisposable
                         if (canCommit is not null && !canCommit()) yield break;
                         ttsStarted = true;
                         CommitClassifiedReply(context, pendingReply!.Value, pendingRaw);
+                        // First complete speakable segment handed to TTS. Note: the existing
+                        // OnFirstSentenceToTts actually fires on first synthesized audio, not
+                        // at request time (plan RT-00 caveat) — hence TtsRequest above.
+                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmFirstSpeechSegment);
                         OnFirstSentenceToTts?.Invoke(this, EventArgs.Empty);
                         OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
+                    }
+                    if (!ttsFirstPcmMarked && chunk.Length > 0)
+                    {
+                        ttsFirstPcmMarked = true;
+                        // Software playback estimate: the chunk is being handed to the player's
+                        // write path; actual soundcard output is not separately measured yet.
+                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TtsFirstPcm);
+                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.PlaybackFirst);
                     }
                     yield return chunk;
                 }
@@ -711,6 +774,11 @@ public sealed class BotOrchestrator : IDisposable
         }
 
         Exception? pipelineEx = null;
+        // RT-06: mark the turn on the bidi TTS session so audio attribution and the cancel
+        // barrier are turn-scoped. Non-bidi clients skip this entirely.
+        var bidiTts = _tts as AIVTuber.Core.RealtimeTts.IBidiTtsController;
+        if (bidiTts is not null && IsCurrent(envelope, ct))
+            await bidiTts.BeginTurnAsync(ct).ConfigureAwait(false);
         try
         {
             void FirstPcmRead()
@@ -722,6 +790,7 @@ public sealed class BotOrchestrator : IDisposable
                 : _playWithStart is not null ? _playWithStart(TtsChunks(ct), ct, FirstPcmRead)
                 : _playChunksAsync(TtsChunks(ct), ct);
             await Task.WhenAll(playbackTask, producerTask).ConfigureAwait(false);
+            Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.PlaybackEnd);
             await AwaitCommandsAsync(envelope.Generation).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
@@ -744,6 +813,285 @@ public sealed class BotOrchestrator : IDisposable
         }
 
         if (pipelineEx is not null) throw pipelineEx;
+    }
+
+    private enum ReplySegmentState { Generated, SubmittedToTts, Played }
+
+    /// <summary>Per-turn state for one approved speech segment (state ledger, plan 4.3).</summary>
+    private sealed class ReplySegment(int seq, string text)
+    {
+        public int Seq { get; } = seq;
+        public string Text { get; } = text;
+        public ReplySegmentState State { get; set; } = ReplySegmentState.Generated;
+        public int EmotionCursor { get; set; } // emotions noted before this segment was generated
+    }
+
+    /// <summary>
+    /// Per-turn staging and ledger for protocol v2. Deliberately NOT the shared
+    /// _deferLlmEvents/_deferred* fields: every async request owns its own instance, so
+    /// one turn's deferred controls can never leak into another request.
+    /// </summary>
+    private sealed class ReplyTurnV2
+    {
+        public ReplyDecisionMode Decision;
+        public string Thought = "";
+        public string? ProtocolError;
+        public bool Interrupted;
+        public bool PlaybackStarted;
+        public readonly List<ReplySegment> Segments = [];
+        private readonly List<string> _emotions = []; // ordered: control events + segment [emotion:x] tags
+        private readonly List<string> _otherControls = [];
+        private int _appliedEmotions;
+        public AvatarIntent? StagedMotion;
+        public bool MotionFlushed;
+
+        public ReplySegment AddSegment(string text)
+        {
+            var segment = new ReplySegment(Segments.Count, text) { EmotionCursor = _emotions.Count };
+            Segments.Add(segment);
+            return segment;
+        }
+
+        public void NoteEmotion(string emotion) { lock (_emotions) _emotions.Add(emotion); }
+        public void NoteControl(string tag) { lock (_otherControls) _otherControls.Add(tag); }
+        public string? PeekEmotion(ReplySegment segment)
+        {
+            lock (_emotions)
+                return _emotions.Take(segment.EmotionCursor).LastOrDefault();
+        }
+        /// <summary>Emotions not yet applied to VTS; consumed when a segment starts playing,
+        /// so expression changes ride with the voice they belong to.</summary>
+        public IReadOnlyList<string> DrainUnappliedEmotions()
+        {
+            lock (_emotions)
+            {
+                var copy = _emotions.Skip(_appliedEmotions).ToArray();
+                _appliedEmotions = _emotions.Count;
+                return copy;
+            }
+        }
+        public IReadOnlyList<string> DrainControls()
+        {
+            lock (_otherControls)
+            {
+                var copy = _otherControls.ToArray();
+                _otherControls.Clear();
+                return copy;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Protocol v2 pipeline (RT-05): consumes validated NDJSON events and releases each
+    /// approved speech segment to TTS as soon as it arrives — the first segment is spoken
+    /// while the LLM may still be generating the rest. No rawAll whole-reply buffering;
+    /// classification happens per segment, before any public side effect.
+    /// </summary>
+    private async Task RunStreamingPipelineV2Async(
+        IReplyProtocolStream protocolStream,
+        List<Message> history,
+        string userInput,
+        InputEnvelope envelope,
+        CancellationToken ct,
+        Func<bool>? canCommit)
+    {
+        AIVTuber.Core.Diagnostics.DebugLog.Write($"[LLM输入] {userInput}");
+        _coordinator.SetHold(true);
+        var sentenceChannel = Channel.CreateBounded<ReplySegment>(3);
+        var context = new RequestContext(envelope.Generation, ct);
+        var avatarGeneration = Interlocked.Increment(ref _avatarSequence);
+        var previousAvatar = Interlocked.Exchange(ref _activeAvatarGeneration, avatarGeneration);
+        _motion?.Cancel(previousAvatar);
+        _motion?.BeginTurn(avatarGeneration);
+        using var cancelAvatar = ct.Register(() => _motion?.Cancel(avatarGeneration));
+        var turn = new ReplyTurnV2();
+
+        var producerTask = Task.Run(async () =>
+        {
+            var previousContext = _eventContext.Value;
+            _eventContext.Value = context;
+            try
+            {
+                await foreach (var ev in protocolStream.StreamEventsAsync(history, userInput, ct))
+                {
+                    if (!IsCurrent(envelope, ct)) { turn.Interrupted = true; return; }
+                    switch (ev.Kind)
+                    {
+                        case ReplyStreamEventKind.ProtocolError:
+                            // Fail closed: already-submitted segments keep playing (played audio
+                            // cannot be recalled) but nothing further is released.
+                            turn.ProtocolError = ev.Error ?? "未知协议错误";
+                            return;
+                        case ReplyStreamEventKind.Decision:
+                            turn.Decision = ev.Decision;
+                            turn.Thought = ev.Text;
+                            break;
+                        case ReplyStreamEventKind.Control:
+                            if (ev.ControlKind == "emotion")
+                            {
+                                turn.NoteEmotion(ev.Text);
+                            }
+                            else if (ev.Motion is { } intent)
+                            {
+                                bool started;
+                                lock (turn) started = turn.PlaybackStarted;
+                                // Exactly-once: staged before playback, direct submit after.
+                                if (started) _motion?.Submit(avatarGeneration, intent);
+                                else turn.StagedMotion ??= intent;
+                            }
+                            break;
+                        case ReplyStreamEventKind.Speech:
+                            var classified = ReplyClassifier.Classify(ev.Text);
+                            if (classified.Kind == ReplyKind.Invalid)
+                            {
+                                turn.ProtocolError = "speech 段未通过内容隔离校验（括号/标记不完整）";
+                                return;
+                            }
+                            if (classified.Kind != ReplyKind.Speak) break; // thought/pass-only segment: no TTS, no caption
+                            if (canCommit is not null && !canCommit()) { turn.Interrupted = true; return; }
+                            foreach (var tag in classified.StagedControls)
+                            {
+                                if (tag.StartsWith("[emotion:", StringComparison.OrdinalIgnoreCase))
+                                    turn.NoteEmotion(tag[9..^1].Trim());
+                                else turn.NoteControl(tag);
+                            }
+                            var segment = turn.AddSegment(classified.Spoken);
+                            await sentenceChannel.Writer.WriteAsync(segment, ct);
+                            break;
+                        case ReplyStreamEventKind.End:
+                            if (turn.Decision == ReplyDecisionMode.Speak && turn.StagedMotion is null &&
+                                AvatarReplyProtocol.InferRequestedMotion(userInput) is { } inferred)
+                                turn.StagedMotion = inferred;
+                            break;
+                    }
+                }
+            }
+            finally
+            {
+                _eventContext.Value = previousContext;
+                sentenceChannel.Writer.TryComplete();
+            }
+        }, ct);
+
+        // Stream TTS per approved segment; each segment is committed to history/captions
+        // only when its own audio actually starts, so an interrupted turn never records
+        // segments that were generated but never played.
+        bool ttsStarted = false;
+        async IAsyncEnumerable<byte[]> TtsChunks([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken streamCt = default)
+        {
+            await foreach (var segment in sentenceChannel.Reader.ReadAllAsync(streamCt))
+            {
+                if (!IsCurrent(envelope, streamCt)) { turn.Interrupted = true; yield break; }
+                if (!LlmClient.IsSpeakableText(segment.Text)) continue;
+                segment.State = ReplySegmentState.SubmittedToTts;
+                await foreach (var chunk in _tts.StreamAsync(
+                                   segment.Text,
+                                   _ttsConfig.VoiceId,
+                                   ResolveTtsEmotion(turn.PeekEmotion(segment)),
+                                   streamCt))
+                {
+                    if (!IsCurrent(envelope, streamCt)) { turn.Interrupted = true; yield break; }
+                        if (segment.State != ReplySegmentState.Played)
+                        {
+                            // Recheck after synthesis: people may have resumed while the LLM or
+                            // TTS was waiting on the network. No public effects yet for this segment.
+                            if (canCommit is not null && !canCommit()) { turn.Interrupted = true; yield break; }
+                            segment.State = ReplySegmentState.Played;
+                            foreach (var emotion in turn.DrainUnappliedEmotions())
+                                ApplyEmotion(context, emotion);
+                            if (!ttsStarted)
+                        {
+                            ttsStarted = true;
+                            lock (turn) turn.PlaybackStarted = true;
+                            FlushTurnControls(context, turn);
+                            OnFirstSentenceToTts?.Invoke(this, EventArgs.Empty);
+                            OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
+                        }
+                        OnReplyCommitted?.Invoke(this, new ClassifiedReply(ReplyKind.Speak, segment.Text, "", []));
+                        PublishSpokenSentence(context, segment.Text);
+                    }
+                    yield return chunk;
+                }
+            }
+        }
+
+        Exception? pipelineEx = null;
+        // RT-06: mark the turn on the bidi TTS session so audio attribution and the cancel
+        // barrier are turn-scoped. Non-bidi clients skip this entirely.
+        var bidiTts = _tts as AIVTuber.Core.RealtimeTts.IBidiTtsController;
+        if (bidiTts is not null && IsCurrent(envelope, ct))
+            await bidiTts.BeginTurnAsync(ct).ConfigureAwait(false);
+        try
+        {
+            void FirstPcmRead()
+            {
+                // Motion follows voice, not network: the staged intent fires with the first
+                // real audio and is cancelled with the same avatar generation as the voice.
+                // Exactly-once via MotionFlushed (this callback runs per audio start).
+                if (IsCurrent(envelope, ct))
+                    lock (turn)
+                    {
+                        if (turn.StagedMotion is { } intent && !turn.MotionFlushed)
+                        {
+                            turn.MotionFlushed = true;
+                            _motion?.Submit(avatarGeneration, intent);
+                        }
+                    }
+            }
+            var playbackTask = !IsCurrent(envelope, ct) ? Task.CompletedTask
+                : _playWithStart is not null ? _playWithStart(TtsChunks(ct), ct, FirstPcmRead)
+                : _playChunksAsync(TtsChunks(ct), ct);
+            await Task.WhenAll(playbackTask, producerTask).ConfigureAwait(false);
+            await AwaitCommandsAsync(envelope.Generation).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            pipelineEx = ex;
+            ReportCurrentError(envelope.Generation, $"[LLM/TTS] {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            bidiTts?.EndTurn();
+            _coordinator.SetHold(false);
+            if (turn.Segments.Any(s => s.State == ReplySegmentState.Generated) &&
+                turn.Segments.Any(s => s.State == ReplySegmentState.Played))
+                AIVTuber.Core.Diagnostics.DebugLog.Write("[v2] 后续段落未播放即被中断（interrupted），不写入已说历史");
+            if (ttsStarted || ct.IsCancellationRequested || pipelineEx is not null)
+            {
+                _motion?.Cancel(avatarGeneration);
+                _motion?.OnRms(0);
+            }
+            if (ttsStarted && IsCurrent(envelope, ct, allowCancellation: true))
+                OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
+        }
+
+        if (turn.ProtocolError is { } violation)
+        {
+            if (IsCurrent(envelope, ct, allowCancellation: true))
+                ReportCurrentError(envelope.Generation, $"[LLM] 回复协议v2已终止（fail closed）：{violation}");
+            return;
+        }
+        if (turn.Interrupted || pipelineEx is not null || !IsCurrent(envelope, ct) ||
+            (canCommit is not null && !canCommit())) return;
+        if (turn.Decision == ReplyDecisionMode.Pass)
+            CommitClassifiedReply(context, new ClassifiedReply(ReplyKind.Pass, "", "", []), "");
+        else if (turn.Decision == ReplyDecisionMode.Thought)
+            CommitClassifiedReply(context, new ClassifiedReply(ReplyKind.InnerThought, "", turn.Thought, []), "");
+    }
+
+    private void FlushTurnControls(RequestContext context, ReplyTurnV2 turn)
+    {
+        foreach (var tag in turn.DrainControls())
+        {
+            var body = tag.Trim('[', ']');
+            var colon = body.IndexOf(':');
+            if (colon <= 0 || colon >= body.Length - 1) continue;
+            var kind = body[..colon];
+            var value = body[(colon + 1)..].Trim();
+            if (kind.Equals("action", StringComparison.OrdinalIgnoreCase)) ApplyAction(context, value);
+            else if (kind.Equals("pose", StringComparison.OrdinalIgnoreCase)) OnPoseDetected?.Invoke(this, value);
+        }
     }
 
     private async Task RunCorticoAsync(List<Message> history, string userInput,

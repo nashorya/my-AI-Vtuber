@@ -18,8 +18,59 @@ public sealed class AppConfig
     public InteractionConfig Interaction { get; set; } = new();
     /// <summary>Display names for 使用者 / 对方主播 / 直播间弹幕.</summary>
     public IdentityConfig Identity { get; set; } = new();
+    /// <summary>Realtime pipeline overhaul switches (RT-00+). Defaults are all legacy/off:
+    /// existing behaviour is unchanged until a flag is explicitly enabled.</summary>
+    public RealtimeConfig Realtime { get; set; } = new();
     /// <summary>In-process PNG avatar + backend selection (vts / pixel / both).</summary>
     public AvatarRuntimeConfig Avatar { get; set; } = new();
+    /// <summary>Window-capture visual observation (VIS-01/VIS-02). Defaults fully OFF.</summary>
+    public AIVTuber.Core.Vision.VisionConfig Vision { get; set; } = new();
+}
+
+
+/// <summary>
+/// Versioned realtime-pipeline configuration (docs: AGENT_PLAN_ASR_LLM_TTS_VISION.md §8).
+/// All feature flags default to legacy/off so existing deployments keep their exact
+/// semantics after upgrade. <see cref="SchemaVersion"/> lets future migrations run in order;
+/// configs from a newer schema version load but must not be silently overwritten.
+/// </summary>
+public sealed class RealtimeConfig
+{
+    /// <summary>Current realtime config schema version understood by this build.</summary>
+    public const int CurrentSchemaVersion = 1;
+
+    /// <summary>Version of the realtime section; migrated stepwise by ConfigManager.</summary>
+    public int SchemaVersion { get; set; } = CurrentSchemaVersion;
+
+    /// <summary>"legacy" (default) keeps local-sidecar / current behaviour;
+    /// "cloud_only" enables vendor-API-only inference gating (no Python ASR sidecar,
+    /// no local ONNX embedding, no local model downloads).</summary>
+    public string InferenceMode { get; set; } = "legacy";
+
+    /// <summary>Reserved for RT-02+: realtime streaming ASR sessions. Off = current path.</summary>
+    public bool StreamingAsrEnabled { get; set; } = false;
+
+    /// <summary>捕获→发送通道容量（毫秒音频）。超限停止并重建会话，明确上报断流。</summary>
+    public int BufferCapacityMs { get; set; } = 4000;
+    /// <summary>会话重建时回放的预录缓冲（毫秒），避免省费重连丢开头。</summary>
+    public int PrerollMs { get; set; } = 1000;
+    /// <summary>连续静音多久后结束会话省费（0=不断开）。恢复时回放预录并计入冷启动指标。</summary>
+    public int IdleDisconnectMs { get; set; } = 30000;
+    /// <summary>厂商发包粒度（毫秒），腾讯文档建议约 200ms。</summary>
+    public int SendPacketMs { get; set; } = 200;
+
+    /// <summary>Reserved for RT-04+: new turn manager. Off = current ConversationTurnGate.</summary>
+    public bool TurnManagerV2Enabled { get; set; } = false;
+
+    /// <summary>Reserved for RT-04: speculative early generation. Default closed.</summary>
+    public bool SpeculativeGenerationEnabled { get; set; } = false;
+
+    /// <summary>Chain tracing (RT-00). Off by default; when on, only monotonic/wall stamps and
+    /// event names are recorded — never raw audio, transcripts, images or secrets.</summary>
+    public bool TraceEnabled { get; set; } = false;
+
+    public bool IsCloudOnly =>
+        string.Equals(InferenceMode, "cloud_only", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class IdentityConfig
@@ -180,6 +231,14 @@ public sealed class AsrConfig
     /// speaking, instead of waiting for the full VAD segment. Returns incremental results.
     /// Only applies to WebSocket-based providers (DashScope/Qwen). Default true.</summary>
     public bool Streaming { get; set; } = true;
+    /// <summary>腾讯云 SecretId（Provider = "tencent_realtime" 时使用；SecretKey 走 ApiKey）。
+    /// 密钥只进内存与签名计算，不进日志。</summary>
+    public string SecretId { get; set; } = string.Empty;
+    /// <summary>豆包/火山的资源 ID（Provider = "volcano_realtime" 时使用）。</summary>
+    public string ResourceId { get; set; } = string.Empty;
+    /// <summary>热词候选（AI 昵称/别名、当前对手称呼等）。预留配置位——实时 provider 尚未接入
+    /// 厂商热词能力，当前只作为候选登记，不做强制同音替换。</summary>
+    public List<string> Hotwords { get; set; } = [];
 
     internal string VendorId => ProviderSecrets.Slot(Provider, "aliyun");
 
@@ -212,6 +271,11 @@ public sealed class LlmConfig
     public string SystemPrompt { get; set; } =
         "你是直播中的 AI VTuber。口语短句回答，正文不超过80字（控制标记不计入），一句顶十句，别啰嗦、别列点。";
     public int MaxHistoryTokens { get; set; } = 4096;
+    /// <summary>Reply protocol for the main dialogue LLM: "legacy" = one structured JSON
+    /// object per turn (whole-reply buffering, kept as rollback path); "v2" = streamed
+    /// NDJSON events (decision/speech/control/end) so the first approved segment reaches
+    /// TTS before the model finishes. Default legacy — migration safety switch.</summary>
+    public string ReplyProtocol { get; set; } = "legacy";
 
     internal string VendorId => ProviderSecrets.InferLlmVendor(Provider, BaseUrl);
 
@@ -261,6 +325,29 @@ public sealed class TtsConfig
     public int NumSteps { get; set; } = 10;
     /// <summary>dots.tts only: classifier-free guidance scale.</summary>
     public double GuidanceScale { get; set; } = 1.2;
+    /// <summary>MiniMax only: HTTP transport selection (RT-01/RT-06).
+    /// "legacy" (default) keeps the previous routing/behavior unchanged;
+    /// "streaming" uses the t2a_v2 HTTP streaming response (stream=true, SSE audio chunks);
+    /// "bidi" uses the /ws/v1/t2a_v2_bidi bidirectional session (requires tts.bidi_host —
+    /// fails loudly with fallback guidance when unset; never silently switches transport).
+    /// bidi is UNVERIFIED against the real endpoint (no key/account validation performed).
+    /// The non-streaming stream=false implementation remains in TtsClient as an explicit code-level fallback.</summary>
+    public string Transport { get; set; } = "legacy";
+
+    /// <summary>RT-06 bidi: account-region official WSS host — intentionally EMPTY by default;
+    /// the plan does not guess CN/intl hosts.</summary>
+    public string BidiHost { get; set; } = string.Empty;
+    /// <summary>RT-06 bidi: how long the cancel barrier waits for the vendor task_cancel ack
+    /// before dropping the old socket and rebuilding the connection epoch.</summary>
+    public int BidiCancelAckTimeoutMs { get; set; } = 2000;
+    /// <summary>RT-06 bidi: pause submitting text once the estimated pending playback exceeds
+    /// this many seconds; control messages still bypass the backlog.</summary>
+    public double BidiMaxBacklogSeconds { get; set; } = 30;
+    /// <summary>RT-06 bidi: estimated speech seconds per character (backlog estimation).</summary>
+    public double BidiSecondsPerCharEstimate { get; set; } = 0.075;
+    /// <summary>RT-06 bidi: idle keep-alive interval in ms; 0 = off (keepalive message semantics
+    /// NOT verified against the real service — leave off until verified).</summary>
+    public int BidiKeepAliveIntervalMs { get; set; } = 0;
 
     internal string VendorId => ProviderSecrets.Slot(Provider, "fish-audio");
 

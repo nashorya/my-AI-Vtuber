@@ -63,3 +63,18 @@
 - 旧档案里的 `voice_id` 自动变成默认音色；没有 `voices` 目录时，主播只能用默认音色（与原行为一致，只是不再覆盖一个目录里存在的选择）。
 - 省略 `base_url` 的 `custom` 厂商档案现在会被拒绝，需要运营补上地址；`deepseek` / `gemini` 不受影响。
 - 回滚：`git revert` 本批 4 个提交即可；`config.json` 新增的只是主播选择的音色值，旧版本会忽略目录并按档案强写。
+
+## 与 main 合并（包含 PR #25 实时化链路）
+
+合并 `origin/main@7f321c4`，冲突两处，处理方式：
+
+- `BotOrchestrator.BeginInterrupt`：保留 PR #26 的顺序（先本地停声、清队列，再等在途请求收尾），把 main 的 RT-06 双向 TTS 取消屏障（等 task_cancel 确认或 epoch 重建）移到返回的收尾任务里。同步的 `Interrupt()` 仍然等全部完成，和 main 行为一致；吊销路径只在后台等，不拖慢本地停声。
+- `BotRuntime`：分发版跳过本地向量模型 / ASR sidecar 与 main 的 cloud_only 开关并存（任一成立都跳过）；麦克风/内录识别保留 A2 的暂停、许可代次检查和健康状态，同时保留 main 的 trace 打点（input_last_voiced / asr_first_audio_sent / asr_segment_final）。
+
+合并时额外补的（main 新字段带来的 U03 同类问题）：
+
+- `tts.bidi_host`、`tts.transport`、`asr.secret_id`、`asr.resource_id` 改为由私有档案固定，不再沿用 `config.json`；档案写 `transport: bidi` 必须同时写 `bidi_host`，且不能指向本机。
+- `vision` 在档案里没有托管配置，分发版一律关闭。
+- 试听遇到 MiniMax `bidi` 传输时改用逐句 WebSocket 客户端，不和陪播争用同一个双向会话。
+
+合并后测试：`dotnet test AIVTuber.Tests` → 通过 918、失败 1、跳过 14，共 933；失败的仍是 `DashScopeConnectionPoolTests.GetOrCreateAsync_InvalidEndpoint_*`。第一次全量跑时 `RealtimeAsrPumpTests.BufferOverflow_StopsRebuildsAndReportsBreak_NotSilentDropOldest` 失败过一次；在纯 main 上单独跑 3 次也失败 1 次，是 main 自带的时序不稳定用例，不是合并引入的。WPF 编译 0 错误 0 警告。新增测试 `ManagedTtsHostAndAsrIds_AndVision_DoNotInheritConfigJson`、`BidiTransportWithoutHost_IsAConfigurationError`。

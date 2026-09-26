@@ -76,6 +76,7 @@ public sealed class ConfigManager
         var json = File.ReadAllText(_configPath);
         var config = JsonSerializer.Deserialize<AppConfig>(json, JsonOptions) ?? new AppConfig();
         ApplyLegacyCompatibility(json, config);
+        MigrateRealtimeSection(json, config);
         HydrateProviderKeys(config);
         if (config.Interaction.IsPkMode && config.Bilibili.Enable)
             config.Bilibili.PkNotice = true;
@@ -132,6 +133,34 @@ public sealed class ConfigManager
         {
             config.Audio.EnableLoopbackListen = legacyUseLoopback.GetBoolean();
         }
+    }
+
+    /// <summary>
+    /// Versioned migration for the "realtime" config section (RT-00). Missing section or
+    /// schema_version 0 → fill safe legacy defaults. A version newer than
+    /// <see cref="RealtimeConfig.CurrentSchemaVersion"/> is preserved as-is (load-only;
+    /// saving will still round-trip the values rather than guess a downgrade).
+    /// Idempotent: re-running on an already-migrated config changes nothing.
+    /// </summary>
+    internal static void MigrateRealtimeSection(string json, AppConfig config)
+    {
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty("realtime", out var realtime) ||
+            realtime.ValueKind != JsonValueKind.Object)
+        {
+            config.Realtime = new RealtimeConfig();
+            return;
+        }
+
+        if (realtime.TryGetProperty("schema_version", out var version) &&
+            version.ValueKind == JsonValueKind.Number)
+        {
+            config.Realtime.SchemaVersion = version.GetInt32();
+        }
+        // v0 (pre-versioning) configs that already carry feature flags keep them; only
+        // the version marker is normalized so future migrations can order themselves.
+        if (config.Realtime.SchemaVersion < 1)
+            config.Realtime.SchemaVersion = RealtimeConfig.CurrentSchemaVersion;
     }
 
     internal static void HydrateProviderKeys(AppConfig config)

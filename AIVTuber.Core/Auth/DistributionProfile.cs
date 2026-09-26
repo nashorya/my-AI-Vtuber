@@ -54,6 +54,14 @@ public sealed class DistributionProfile
         public string? AppId { get; init; }
         public string? VoiceId { get; init; }
         public string? GroupId { get; init; }
+        /// <summary>ASR only: Tencent SecretId (tencent_realtime).</summary>
+        public string? SecretId { get; init; }
+        /// <summary>ASR only: Volcano resource id (volcano_realtime).</summary>
+        public string? ResourceId { get; init; }
+        /// <summary>TTS only (MiniMax): legacy / streaming / bidi. Omitted = legacy.</summary>
+        public string? Transport { get; init; }
+        /// <summary>TTS only (MiniMax bidi): the account-region WSS host the managed key is sent to.</summary>
+        public string? BidiHost { get; init; }
         /// <summary>TTS only: the voices this streamer may pick from. <see cref="VoiceId"/>
         /// is the operator default and is always selectable.</summary>
         public List<VoiceChoice> Voices { get; init; } = [];
@@ -125,6 +133,13 @@ public sealed class DistributionProfile
             throw new DistributionProfileException("分发版不允许自托管 TTS（dots）。");
         if (IsLocalEndpoint(Providers.Llm.BaseUrl))
             throw new DistributionProfileException("分发版不允许本地 LLM（base_url 指向本机）。");
+        if (string.Equals(Providers.Tts.Transport, "bidi", StringComparison.OrdinalIgnoreCase) &&
+            string.IsNullOrWhiteSpace(Providers.Tts.BidiHost))
+            throw new DistributionProfileException("专属配置 providers.tts.transport=bidi 时必须写 bidi_host，不能沿用本机配置。");
+        if (IsLocalEndpoint(Providers.Tts.BidiHost) ||
+            Providers.Tts.BidiHost is { } host &&
+            (host.Contains("localhost", StringComparison.OrdinalIgnoreCase) || host.StartsWith("127.", StringComparison.Ordinal)))
+            throw new DistributionProfileException("分发版不允许把语音服务指向本机（bidi_host）。");
 
         // The managed route must resolve on its own: an omitted endpoint or model may only come
         // from a built-in vendor preset, never from whatever config.json happens to hold (U03).
@@ -219,6 +234,8 @@ public sealed class DistributionProfile
         config.Asr.Provider = asr.Provider;
         config.Asr.Model = asr.Model ?? "";
         config.Asr.AppId = asr.AppId ?? "";
+        config.Asr.SecretId = asr.SecretId ?? "";
+        config.Asr.ResourceId = asr.ResourceId ?? "";
         config.Asr.ApiKeys.Clear();
         config.Asr.StoreKey(asr.ApiKey);
 
@@ -226,9 +243,15 @@ public sealed class DistributionProfile
         config.Tts.Provider = tts.Provider;
         config.Tts.Model = tts.Model ?? "";
         config.Tts.GroupId = tts.GroupId ?? "";
+        config.Tts.Transport = string.IsNullOrWhiteSpace(tts.Transport) ? "legacy" : tts.Transport;
+        config.Tts.BidiHost = tts.BidiHost ?? "";
         config.Tts.VoiceId = ResolveVoice(config.Tts.VoiceId, out var voiceNotice);
         config.Tts.ApiKeys.Clear();
         config.Tts.StoreKey(tts.ApiKey);
+
+        // Vision has no operator-managed route in the profile; a key and host typed into
+        // config.json must not run inside a distribution package.
+        config.Vision.Enabled = false;
         return voiceNotice;
     }
 

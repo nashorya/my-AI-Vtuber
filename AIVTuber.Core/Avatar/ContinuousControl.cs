@@ -97,24 +97,42 @@ public static class AvatarReplyProtocol
         }
         if (!root.TryGetProperty("avatar", out var avatar) || avatar.ValueKind == JsonValueKind.Null)
             return new(text, null);
+        var intent = TryParseAvatarPayload(avatar, allowed, out var avatarError);
+        return intent is null
+            ? new(text, null, "动作已丢弃：" + avatarError)
+            : new(text, intent);
+        }
+    }
+
+    /// <summary>Validates an avatar control payload ("targets" object plus optional
+    /// transitionMs/holdMs) against the channel whitelist and value ranges. Shared by the
+    /// legacy JSON protocol and the v2 NDJSON control events so both enforce exactly the
+    /// same motion contract.</summary>
+    internal static AvatarIntent? TryParseAvatarPayload(JsonElement avatar, ISet<string> allowed, out string error)
+    {
         try
         {
-            var targets = new Dictionary<string, float>();
-            foreach (var property in avatar.GetProperty("targets").EnumerateObject())
+            if (!avatar.TryGetProperty("targets", out var targets) || targets.ValueKind != JsonValueKind.Object)
+                throw new FormatException("缺少 targets 对象");
+            var values = new Dictionary<string, float>();
+            foreach (var property in targets.EnumerateObject())
             {
                 var channel = AvatarChannels.All.FirstOrDefault(c => c.Name == property.Name && c.AiControlled);
                 if (channel is null || !allowed.Contains(channel.Name)) throw new FormatException("通道不可用或不允许 AI 控制");
                 var value = property.Value.GetSingle();
                 if (!float.IsFinite(value) || value < (channel.Unipolar ? 0 : -1) || value > 1)
                     throw new FormatException("目标值超出通道范围");
-                if (!targets.TryAdd(property.Name, value)) throw new FormatException("目标通道重复");
+                if (!values.TryAdd(property.Name, value)) throw new FormatException("目标通道重复");
             }
-            var transition = avatar.TryGetProperty("transitionMs", out var tr) ? tr.GetInt32() : 400;
-            var hold = avatar.TryGetProperty("holdMs", out var h) ? h.GetInt32() : 1500;
-            return new(text, new(new ReadOnlyDictionary<string, float>(targets), Math.Clamp(transition, 100, 2000), Math.Clamp(hold, 0, 5000)));
+            var transition = avatar.TryGetProperty("transitionMs", out var tr) && tr.ValueKind == JsonValueKind.Number ? tr.GetInt32() : 400;
+            var hold = avatar.TryGetProperty("holdMs", out var h) && h.ValueKind == JsonValueKind.Number ? h.GetInt32() : 1500;
+            error = "";
+            return new AvatarIntent(new ReadOnlyDictionary<string, float>(values), Math.Clamp(transition, 100, 2000), Math.Clamp(hold, 0, 5000));
         }
         catch (Exception e) when (e is InvalidOperationException or KeyNotFoundException or FormatException or OverflowException)
-        { return new(text, null, "动作已丢弃：" + e.Message); }
+        {
+            error = e.Message;
+            return null;
         }
     }
 

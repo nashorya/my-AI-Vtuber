@@ -907,3 +907,30 @@
 - Entry and limits: `sidecar/cortico/README.md`; restart-only `cortico.json`, setup script, action-only preview.
 - Desktop keeps ASR/LLM/PK logic and TTS provider; the sidecar owns playback and VTS in this mode. Non-streaming synthesis / no forced alignment in the adapter.
 - Automated checks cover IPC, cancellation, speech isolation and fake VTS frames; Windows audio and actual-model appearance are pending.
+
+## 实时化改造 RT-00~RT-07（feat/realtime-cloud-pipeline，2026-09-24）
+
+按 `AGENT_PLAN_ASR_LLM_TTS_VISION.md` 完成，文档在 `docs/realtime/`（baseline / asr-rt02-03 /
+turn-manager / reply-protocol-v2 / tts-rt01 / tts-rt06 / vision / provider-contracts /
+architecture / rollout / benchmark-report）。所有新开关默认 legacy/off，逐项独立可回滚。
+
+- [x] RT-00 基线打点 + cloud_only 门禁（`CloudOnlyGate`，禁 Python sidecar / 本地 ONNX embedding）。
+- [x] RT-01 MiniMax HTTP 流式 TTS（`tts.transport="streaming"`，fake transport 契约锁定）。
+- [x] RT-02/03 实时 ASR 契约与腾讯/火山适配器（`realtime.streaming_asr_enabled`，
+  `RealtimeAsrPump` 有界缓冲/预录/epoch；TranscriptUpdate replace 语义）。
+- [x] RT-04 TurnManagerV2（`realtime.turn_manager_v2_enabled`，听见/被邀请/可出声分离）。
+- [x] RT-05 回复协议 v2（`llm.reply_protocol="v2"`，NDJSON 分段流式，fail-closed）。
+- [x] RT-06 MiniMax 双向 TTS + 取消屏障（`tts.transport="bidi"`，`bidi_host` 默认空不猜域名）。
+- [x] VIS-01/02 窗口捕获 + 豆包视觉旁路观察（`vision.enabled`，默认全关，预算/时效/注入防护）。
+- [x] RT-07 集成与发行门禁：结构性门禁 7 条 fake 证据汇总（benchmark-report.md）、
+  开关矩阵集成测试（`RealtimeGateIntegrationTests`）、config.json.template 与 AppConfig 对齐
+  + 迁移/模板契约测试、cloud_only 复核（新模块不绕过门禁）。
+
+遗留（不阻塞合入，阻塞"宣布可用"）：
+
+- [ ] 真实厂商对拍：腾讯/火山 ASR 同语料选型、MiniMax streaming/bidi 真实端点与字段核对
+  （清单见 docs/realtime/provider-contracts.md §2）、豆包视觉真实调用。全部未实测（无 Key）。
+- [ ] 窗口选择 UI：VIS-01 目前无产品级窗口选择/预览/遮罩编辑界面，需要 WPF 交互面。
+- [ ] WGC 升级：当前 GDI 捕获，Windows Graphics Capture（HWND 捕获项）待实机验证后切换。
+- [ ] 实机长跑：30–60 分钟授权模拟直播（双路/插话/切对手/热拔插/网络抖动/长静默）、
+  真实时延 P50/P95（目标见计划 §6.2）、打断尾音实测、内存/socket/订阅泄漏检查。
