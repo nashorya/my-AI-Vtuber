@@ -56,11 +56,20 @@ public static class ConfigDiff
             a.Asr.AppId != b.Asr.AppId || a.Asr.Model != b.Asr.Model ||
             a.Asr.LocalAsrUrl != b.Asr.LocalAsrUrl || a.Asr.PythonPath != b.Asr.PythonPath ||
             a.Asr.PersistConnection != b.Asr.PersistConnection ||
+            a.Asr.SecretId != b.Asr.SecretId || a.Asr.ResourceId != b.Asr.ResourceId ||
+            !ListEqual(a.Asr.Hotwords, b.Asr.Hotwords) ||
             !DictEqual(a.Asr.ApiKeys, b.Asr.ApiKeys))
             c |= RuntimeChange.RebuildAsr;
         // Streaming toggles VAD→channel wiring inside StartAudio; ASR client rebuild alone is not enough.
         if (a.Asr.Streaming != b.Asr.Streaming)
             c |= RuntimeChange.RebuildAsr | RuntimeChange.RestartAudio;
+        // Realtime session mode lives inside StartAudio's capture wiring (pump creation).
+        if (a.Realtime.StreamingAsrEnabled != b.Realtime.StreamingAsrEnabled ||
+            a.Realtime.BufferCapacityMs != b.Realtime.BufferCapacityMs ||
+            a.Realtime.PrerollMs != b.Realtime.PrerollMs ||
+            a.Realtime.IdleDisconnectMs != b.Realtime.IdleDisconnectMs ||
+            a.Realtime.SendPacketMs != b.Realtime.SendPacketMs)
+            c |= RuntimeChange.RestartAudio;
 
         if (a.Tts.Provider != b.Tts.Provider || a.Tts.ApiKey != b.Tts.ApiKey ||
             a.Tts.VoiceId != b.Tts.VoiceId || a.Tts.Model != b.Tts.Model ||
@@ -68,6 +77,12 @@ public static class ConfigDiff
             a.Tts.BaseUrl != b.Tts.BaseUrl || a.Tts.Language != b.Tts.Language ||
             a.Tts.Seed != b.Tts.Seed || a.Tts.NumSteps != b.Tts.NumSteps ||
             a.Tts.GuidanceScale != b.Tts.GuidanceScale ||
+            a.Tts.Transport != b.Tts.Transport ||
+            a.Tts.BidiHost != b.Tts.BidiHost ||
+            a.Tts.BidiCancelAckTimeoutMs != b.Tts.BidiCancelAckTimeoutMs ||
+            a.Tts.BidiMaxBacklogSeconds != b.Tts.BidiMaxBacklogSeconds ||
+            a.Tts.BidiSecondsPerCharEstimate != b.Tts.BidiSecondsPerCharEstimate ||
+            a.Tts.BidiKeepAliveIntervalMs != b.Tts.BidiKeepAliveIntervalMs ||
             !DictEqual(a.Tts.ApiKeys, b.Tts.ApiKeys))
             c |= RuntimeChange.RebuildTts;
         // The player's WaveFormat and the virtual-mic buffer are built from this rate.
