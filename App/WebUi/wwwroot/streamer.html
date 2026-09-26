@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AIVTuber 陪播</title>
+  <link rel="stylesheet" href="streamer.css" />
+</head>
+<body>
+  <!-- Streamer console (distribution builds). No vendor, key, endpoint or model fields exist here:
+       the operator configures those in the private package. -->
+  <div class="shell">
+    <nav class="tabs" aria-label="主导航" role="tablist">
+      <button type="button" role="tab" class="active" data-page="home" aria-selected="true">陪播台</button>
+      <button type="button" role="tab" data-page="ai" aria-selected="false">我的 AI</button>
+      <button type="button" role="tab" data-page="live" aria-selected="false">直播设置</button>
+      <button type="button" role="tab" data-page="help" aria-selected="false">账号与帮助</button>
+    </nav>
+
+    <main>
+      <!-- 陪播台 -->
+      <section class="page active" id="page-home" aria-labelledby="homeTitle">
+        <div class="hero">
+          <div class="hero-status">
+            <span class="dot" id="activityDot"></span>
+            <h1 id="homeTitle"><span id="activity">空闲</span></h1>
+            <p class="sub" id="activitySub"></p>
+          </div>
+          <div class="hero-actions">
+            <button type="button" class="btn primary" id="btnCompanion">暂停陪播</button>
+            <button type="button" class="btn danger" id="btnStop" disabled>停止当前发言</button>
+            <button type="button" class="btn" id="btnSignIn" hidden>登录</button>
+          </div>
+        </div>
+
+        <div id="issues" class="issues" aria-live="polite"></div>
+
+        <div class="grid">
+          <div class="card">
+            <h2>正在听</h2>
+            <div class="listen-row">
+              <div class="listen-name"><b>麦克风</b><span id="micName"></span></div>
+              <div class="meter"><i id="micBar"></i></div>
+              <button type="button" class="btn sm" id="btnMic">关闭麦克风监听</button>
+            </div>
+            <div class="listen-row">
+              <div class="listen-name"><b>对面 / 电脑声音</b><span id="loopState"></span></div>
+              <div class="meter"><i id="loopBar" class="alt"></i></div>
+              <button type="button" class="btn sm ghost" data-goto="live">设置</button>
+            </div>
+            <div class="chips">
+              <span class="chip" id="chipSpeech">语音识别：—</span>
+              <span class="chip" id="chipMode">正常模式</span>
+              <span class="chip" id="chipDanmaku">弹幕：未启用</span>
+              <span class="chip" id="chipObs">OBS 字幕：未启用</span>
+              <span class="chip" id="chipAvatar">形象连接：未启用</span>
+            </div>
+            <div class="pk-actions">
+              <button type="button" class="btn sm ghost" id="btnPk">切换 PK 模式</button>
+              <button type="button" class="btn sm ghost" id="btnNewPk">新一场 PK</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>我的 AI</h2>
+            <p class="kv"><span>当前音色</span><b id="homeVoice">—</b></p>
+            <div class="row">
+              <button type="button" class="btn" data-goto="ai" data-focus="persona">编辑人设</button>
+              <button type="button" class="btn" data-goto="ai" data-focus="voiceSelect">更换音色</button>
+            </div>
+            <p class="kv"><span>账号</span><b id="homeAccount">—</b></p>
+          </div>
+
+          <div class="card wide">
+            <h2>最近对话</h2>
+            <ol id="conversation" class="conversation"><li class="empty">开始说话后，这里会显示 AI 听到和说出的内容。</li></ol>
+          </div>
+        </div>
+      </section>
+
+      <!-- 我的 AI -->
+      <section class="page" id="page-ai" aria-label="我的 AI">
+        <div class="card">
+          <div class="card-head">
+            <h2><label for="persona">人设</label></h2>
+            <span class="save-state" id="personaState">未修改</span>
+          </div>
+          <p class="hint">用自己的话描述 AI 是谁、怎么说话、有什么习惯。不需要写任何格式或指令，程序会自动补上。</p>
+          <textarea id="persona" rows="14" spellcheck="false"></textarea>
+          <div class="row">
+            <button type="button" class="btn primary" id="btnSavePersona">保存人设</button>
+            <button type="button" class="btn ghost" id="btnUndoPersona">撤销修改</button>
+            <button type="button" class="btn ghost" id="btnExample">插入示例</button>
+            <button type="button" class="btn ghost" id="btnDefaultPersona">恢复默认</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2><label for="voiceSelect">音色</label></h2>
+            <span class="save-state" id="voiceState"></span>
+          </div>
+          <p class="kv"><span>正在使用</span><b id="effectiveVoice">—</b></p>
+          <div class="row">
+            <select id="voiceSelect"></select>
+            <button type="button" class="btn" id="btnPreview">试听</button>
+            <button type="button" class="btn primary" id="btnApplyVoice">应用这个音色</button>
+            <button type="button" class="btn ghost sm" id="btnRefreshVoices">刷新列表</button>
+          </div>
+          <p class="voice-desc" id="voiceDesc"></p>
+          <p class="notice" id="voiceNotice" hidden></p>
+          <p class="status" id="previewStatus" aria-live="polite"></p>
+          <div class="field">
+            <label for="speed">语速 <b id="speedValue">1.0</b></label>
+            <input id="speed" type="range" min="0.5" max="2" step="0.1" />
+          </div>
+          <p class="hint">试听会从本机扬声器或耳机播放，不会写入虚拟麦克风，也不会进入字幕和记忆。
+            但如果直播软件采集了这个设备的桌面音频，观众仍可能听到——建议开播前试听。
+            试听不会改变正在使用的音色，点「应用这个音色」后，下一句开始换声。</p>
+        </div>
+      </section>
+
+      <!-- 直播设置 -->
+      <section class="page" id="page-live" aria-label="直播设置">
+        <div class="card">
+          <h2>声音设备</h2>
+          <div class="field"><label for="inputDevice">麦克风</label><select id="inputDevice" data-key="audio.inputDeviceIndex" data-type="int"></select></div>
+          <label class="switch"><input type="checkbox" id="loopEnable" data-key="audio.enableLoopbackListen" /> 同时听对面 / 电脑里的声音</label>
+          <div class="field"><label for="loopSource">听哪个程序的声音</label><select id="loopSource" data-key="audio.loopbackProcessName"></select></div>
+          <label class="switch"><input type="checkbox" id="vmicEnable" data-key="audio.enableVirtualMic" /> 把 AI 的声音送到虚拟麦克风（给直播软件用）</label>
+          <div class="field"><label for="vmicDevice">虚拟麦克风设备</label><select id="vmicDevice" data-key="audio.virtualMicDeviceName"></select></div>
+          <button type="button" class="btn ghost sm" id="btnRefreshDevices">刷新设备列表</button>
+        </div>
+
+        <div class="card">
+          <h2>称呼与 PK</h2>
+          <div class="field"><label for="selfName">AI 怎么称呼你</label><input id="selfName" type="text" data-key="live.selfName" placeholder="例如：主播、小鱼" /></div>
+          <label class="switch"><input type="checkbox" data-key="live.isPkMode" /> PK 模式（安静旁听，听到唤醒词才开口）</label>
+          <div class="field"><label for="wakeWords">唤醒词（逗号分隔）</label><input id="wakeWords" type="text" data-key="live.wakeKeywords" /></div>
+          <div class="field"><label for="opponentName">对面主播的称呼</label><input id="opponentName" type="text" data-key="live.opponentName" /></div>
+        </div>
+
+        <div class="card">
+          <h2>直播间弹幕</h2>
+          <label class="switch"><input type="checkbox" data-key="live.bilibiliEnable" /> 读取 B 站直播间弹幕</label>
+          <div class="field"><label for="roomId">直播间号</label><input id="roomId" type="number" data-key="live.roomId" data-type="int" /></div>
+          <label class="switch"><input type="checkbox" data-key="live.pkNotice" /> PK 开始时提醒 AI 对手是谁</label>
+          <div class="row">
+            <button type="button" class="btn" id="btnBiliQr">扫码绑定 B 站账号</button>
+            <button type="button" class="btn ghost" id="btnBiliQrCancel" hidden>取消</button>
+            <span class="status" id="biliQrStatus"></span>
+          </div>
+          <div class="qr" id="biliQrBox" hidden></div>
+        </div>
+
+        <div class="card">
+          <h2>OBS 字幕 <small>（需要时再开）</small></h2>
+          <label class="switch"><input type="checkbox" data-key="obs.enable" /> 把 AI 说的话显示成 OBS 字幕</label>
+          <div class="row2">
+            <div class="field"><label for="obsHost">OBS 地址</label><input id="obsHost" type="text" data-key="obs.host" /></div>
+            <div class="field"><label for="obsPort">端口</label><input id="obsPort" type="number" data-key="obs.port" data-type="int" /></div>
+          </div>
+          <div class="field"><label for="obsPassword">OBS WebSocket 密码</label><input id="obsPassword" type="password" data-key="obs.password" autocomplete="off" placeholder="留空不修改" /></div>
+        </div>
+
+        <div class="card" id="avatarCard" hidden>
+          <h2>形象连接（VTube Studio）</h2>
+          <div class="row2">
+            <div class="field"><label for="vtsHost">地址</label><input id="vtsHost" type="text" data-key="avatar.vtsHost" /></div>
+            <div class="field"><label for="vtsPort">端口</label><input id="vtsPort" type="number" data-key="avatar.vtsPort" data-type="int" /></div>
+          </div>
+        </div>
+
+        <div class="dock">
+          <button type="button" class="btn primary" id="btnSaveLive">保存直播设置</button>
+          <button type="button" class="btn ghost" id="btnDiscardLive">放弃修改</button>
+          <span class="status" id="liveState"></span>
+        </div>
+      </section>
+
+      <!-- 账号与帮助 -->
+      <section class="page" id="page-help" aria-label="账号与帮助">
+        <div class="card">
+          <h2>账号</h2>
+          <p class="kv"><span>账号</span><b id="accName">—</b></p>
+          <p class="kv"><span>有效期</span><b id="accValid">—</b></p>
+          <p class="notice" id="accMessage" hidden></p>
+          <div class="row">
+            <button type="button" class="btn" id="btnSignOut">退出登录</button>
+            <button type="button" class="btn primary" id="btnSignIn2" hidden>登录</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>常见问题</h2>
+          <details><summary>AI 听不到我说话？</summary><p>到「直播设置」确认麦克风选对了，陪播台的麦克风电平会随你说话跳动。如果按了「关闭麦克风监听」，AI 不会听麦克风。</p></details>
+          <details><summary>观众听不到 AI？</summary><p>在「直播设置」打开「把 AI 的声音送到虚拟麦克风」，并在直播软件里添加这个虚拟麦克风作为音频源。</p></details>
+          <details><summary>想让 AI 安静一会？</summary><p>点「暂停陪播」。暂停时不会识别语音，也不会说话；再点一次继续。「停止当前发言」只打断正在说的这一句。</p></details>
+          <details><summary>显示「使用期限已结束」或「暂时无法验证登录状态」？</summary><p>前者请联系发放者续期；后者请检查网络，然后重新登录。</p></details>
+        </div>
+        <div class="card">
+          <h2>服务与隐私</h2>
+          <p>陪播时，你和对面的语音、弹幕文字会发送给安装包里配置的云端 AI 服务（语音识别、对话、语音合成）处理。登录服务只核对账号和有效期，不接收语音和对话内容。</p>
+        </div>
+        <div class="card">
+          <h2>联系支持</h2>
+          <p>遇到问题时，把下面的诊断信息和出错提示里的诊断编号一起发给发放者。诊断信息里不含密钥、密码和 B 站登录凭据。</p>
+          <div class="row">
+            <button type="button" class="btn" id="btnDiagnostics">复制诊断信息</button>
+            <span class="status" id="diagStatus"></span>
+          </div>
+          <p class="version" id="version"></p>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="vendor/qrcode.min.js"></script>
+  <script src="streamer.js"></script>
+</body>
+</html>

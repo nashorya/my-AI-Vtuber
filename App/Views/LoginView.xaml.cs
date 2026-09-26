@@ -33,4 +33,16 @@ public partial class LoginView : UserControl
     }
 
     private void OnDismiss(object sender, RoutedEventArgs e) => Vm?.DismissLogin();
+
+    /// <summary>Puts the caret where the streamer types next: the password when the account
+    /// name is already filled in, otherwise the account name.</summary>
+    public void FocusFirstField()
+    {
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, () =>
+        {
+            if (string.IsNullOrWhiteSpace(UsernameBox.Text)) UsernameBox.Focus();
+            else PasswordInput.Focus();
+            Keyboard.Focus(string.IsNullOrWhiteSpace(UsernameBox.Text) ? UsernameBox : PasswordInput);
+        });
+    }
 }

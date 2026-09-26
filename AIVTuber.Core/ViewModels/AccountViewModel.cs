@@ -17,6 +17,7 @@ public sealed class AccountViewModel : INotifyPropertyChanged
     private bool _isBusy;
     private string _errorText = "";
     private string _validUntilText = "";
+    private LicenseStopReason _stopReason = LicenseStopReason.SignedOut;
 
     public AccountViewModel(CloudLicense license, string profileId, string username, Action<Action> dispatch)
     {
@@ -38,6 +39,8 @@ public sealed class AccountViewModel : INotifyPropertyChanged
     public bool IsBusy { get => _isBusy; private set => Set(ref _isBusy, value); }
     public string ErrorText { get => _errorText; private set => Set(ref _errorText, value); }
     public string ValidUntilText { get => _validUntilText; private set => Set(ref _validUntilText, value); }
+    /// <summary>Why cloud access is closed (account ended vs. verification lost vs. denied).</summary>
+    public LicenseStopReason StopReason { get => _stopReason; private set => Set(ref _stopReason, value); }
 
     public async Task LoginAsync(string password)
     {
@@ -69,6 +72,7 @@ public sealed class AccountViewModel : INotifyPropertyChanged
     private void Apply(LicenseSnapshot snapshot)
     {
         IsSignedIn = snapshot.State == LicenseState.Active;
+        StopReason = snapshot.Reason;
         ValidUntilText = snapshot.AccountValidUntil is { } until
             ? $"有效至 {until.ToLocalTime():yyyy-MM-dd HH:mm}"
             : "";

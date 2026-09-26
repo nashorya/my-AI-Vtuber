@@ -5,11 +5,10 @@
     <Grid Background="{DynamicResource AppSurfaceBrush}">
         <ui:Card Width="420" Padding="24" HorizontalAlignment="Center" VerticalAlignment="Center">
             <StackPanel>
-                <TextBlock Text="登录 AIVTuber" FontSize="{StaticResource FontSizeTitle}" FontWeight="SemiBold"
+                <TextBlock Text="欢迎回来" FontSize="{StaticResource FontSizeTitle}" FontWeight="SemiBold"
                            Foreground="{DynamicResource AppTextPrimaryBrush}" />
-                <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="{DynamicResource AppTextSecondaryBrush}">
-                    <Run Text="专属包 " /><Run Text="{Binding ProfileId, Mode=OneWay}" /><Run Text=" · " /><Run Text="{Binding VersionText, Mode=OneWay}" />
-                </TextBlock>
+                <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="{DynamicResource AppTextSecondaryBrush}"
+                           Text="登录后开始 AI 陪播。" />
 
                 <TextBlock Text="账号" Margin="0,18,0,4" Foreground="{DynamicResource AppTextPrimaryBrush}" />
                 <ui:TextBox x:Name="UsernameBox" Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"
@@ -24,13 +23,13 @@
                 <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
                     <ui:Button x:Name="LoginButton" Content="登录" Appearance="Primary" Click="OnLogin"
                                AutomationProperties.Name="登录" />
-                    <ui:Button Content="先去设置 / 诊断" Appearance="Secondary" Margin="8,0,0,0" Click="OnDismiss"
-                               ToolTip="未登录时可以查看设置和诊断，但不会连接任何云端服务"
-                               AutomationProperties.Name="先去设置或诊断" />
+                    <ui:Button Content="先看看设备和帮助" Appearance="Secondary" Margin="8,0,0,0" Click="OnDismiss"
+                               ToolTip="未登录时可以检查麦克风和查看帮助，但不会连接任何云端服务"
+                               AutomationProperties.Name="先看看设备和帮助" />
                 </StackPanel>
 
                 <TextBlock Margin="0,16,0,0" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}"
-                           Text="登录只验证账号有效期；语音、文字和画面直接发往厂商，不经过鉴权服务。" />
+                           Text="服务与隐私：陪播时的语音和文字会发送给安装包里配置的云端 AI 服务处理；登录服务只核对账号和有效期。" />
             </StackPanel>
         </ui:Card>
     </Grid>

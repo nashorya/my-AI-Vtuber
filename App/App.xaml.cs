@@ -3,6 +3,7 @@ using AIVTuber.App.Views;
 using AIVTuber.Core;
 using AIVTuber.Core.Auth;
 using AIVTuber.Core.Config;
+using AIVTuber.Core.Diagnostics;
 using AIVTuber.Core.Runtime;
 using AIVTuber.Core.Ui;
 using AIVTuber.Core.ViewModels;
@@ -30,16 +31,16 @@ public partial class App : Application
         // Global exception handlers so the process never dies silently.
         DispatcherUnhandledException += (_, args) =>
         {
-            ShowFatalError("UI 线程错误", args.Exception);
+            ShowFatalError("程序遇到了问题", args.Exception);
             args.Handled = true;
         };
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
         {
-            ShowFatalError("未处理异常", args.ExceptionObject as Exception);
+            ShowFatalError("程序遇到了问题", args.ExceptionObject as Exception);
         };
         TaskScheduler.UnobservedTaskException += (_, args) =>
         {
-            ShowFatalError("后台任务错误", args.Exception);
+            ShowFatalError("后台任务没有完成", args.Exception);
             args.SetObserved();
         };
 
@@ -121,7 +122,7 @@ public partial class App : Application
         catch (Exception ex)
         {
             // Keep the window open (the user can fix config in the UI) — don't kill the app.
-            ShowFatalError("启动失败（窗口保留，可在配置页修改后重启）", ex);
+            ShowFatalError("启动没有完全完成（窗口保留，可检查设置后重启）", ex);
         }
         finally
         {
@@ -143,7 +144,7 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            ShowFatalError("形象窗口打开失败", ex);
+            ShowFatalError("形象窗口没有打开", ex);
         }
     }
 
@@ -155,18 +156,39 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
+            // The path and parser detail go to the redacted diagnostic log, not the dialog (U06).
+            var error = UserErrorMapper.Custom("config_unreadable", ErrorArea.Settings,
+                "设置文件无法读取，可能已经损坏。", "把安装目录里的 config.json 改名备份后重新打开程序；仍有问题请联系支持",
+                retryable: false, technicalDetail: $"{configPath}: {ex}");
             MessageBox.Show(
-                $"无法加载配置文件：{ex.Message}\n\n路径：{configPath}",
+                $"{error.UserMessage}\n\n{error.SuggestedAction}。\n诊断编号：{error.DiagnosticId}",
                 "AIVTuber", MessageBoxButton.OK, MessageBoxImage.Error);
             return null;
         }
     }
 
+    private static int _fatalDialogOpen;
+
+    /// <summary>Shows what happened and a diagnostic id; the stack trace goes to the redacted
+    /// diagnostic log (U06). Normal cancellations are not errors. While one dialog is open,
+    /// further errors are logged but do not stack more dialogs.</summary>
     private static void ShowFatalError(string title, Exception? ex)
     {
-        MessageBox.Show(
-            $"{title}\n\n{ex?.ToString() ?? "未知错误"}",
-            "AIVTuber", MessageBoxButton.OK, MessageBoxImage.Error);
+        var error = ex is null
+            ? UserErrorMapper.Custom("unknown", ErrorArea.App, UserErrorMapper.UnknownMessage, "重试", true, title)
+            : UserErrorMapper.FromException(ex, ErrorArea.App);
+        if (error is null) return;
+        if (Interlocked.Exchange(ref _fatalDialogOpen, 1) == 1) return;
+        try
+        {
+            MessageBox.Show(
+                $"{title}\n\n{error.UserMessage}\n诊断编号：{error.DiagnosticId}\n\n可以在「账号与帮助 → 复制诊断信息」里把详细信息发给支持。",
+                "AIVTuber", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _fatalDialogOpen, 0);
+        }
     }
 
     internal void ToggleTheme() => _themeService.Toggle();

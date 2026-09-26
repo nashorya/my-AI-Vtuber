@@ -79,7 +79,12 @@ public sealed partial class ConfigViewModel
         var voices = Profile?.AvailableVoices ?? [];
         return new
         {
-            persona = new { systemPrompt = Working.Llm.SystemPrompt },
+            persona = new
+            {
+                systemPrompt = Working.Llm.SystemPrompt,
+                effectiveSystemPrompt = (ReadEffectiveConfig?.Invoke() ?? _original).Llm.SystemPrompt,
+                defaultSystemPrompt = new LlmConfig().SystemPrompt,
+            },
             voice = new
             {
                 selectedChoiceId = SelectedVoice?.Id ?? "",
