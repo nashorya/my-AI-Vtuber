@@ -13,6 +13,22 @@ using AIVTuber.Core.Vts;
 
 namespace AIVTuber.Core.Runtime;
 
+/// <summary>Speech-recognition health as the streamer should see it (U05). HTTP/WebSocket
+/// vendors work per request, so "not yet checked" is a normal state, not a fault.</summary>
+public enum AsrHealth
+{
+    /// <summary>No recognition attempted yet in this session.</summary>
+    Unknown,
+    /// <summary>The last recognition succeeded (or the local sidecar answered its health check).</summary>
+    Ready,
+    /// <summary>A recognition request is in flight.</summary>
+    Recognizing,
+    /// <summary>The last recognition failed; the next utterance retries.</summary>
+    Unavailable,
+    /// <summary>No recognition will run: companion paused or not signed in.</summary>
+    Paused,
+}
+
 /// <summary>
 /// Owns and wires every pipeline module. UI-agnostic: exposes events and state,
 /// and supports runtime reconfiguration via <see cref="ApplyConfigAsync"/>.
@@ -121,6 +137,97 @@ public sealed class BotRuntime : IAsyncDisposable
         ReportTurnStatus($"云端已停止：{reason}");
         AIVTuber.Core.Diagnostics.DebugLog.Write($"[鉴权] 云端已停止：{reason}");
         CloudAccessRevoked?.Invoke(this, reason);
+        AsrHealthChanged?.Invoke(this, CurrentAsrHealth);
+    }
+
+    // ── Companion pause and speech-recognition health (A2) ────────────────────
+
+    private volatile bool _companionPaused;
+    private AsrHealth _asrHealth = AsrHealth.Unknown;
+    private int _asrInFlight;
+
+    /// <summary>True while the streamer paused the companion: devices keep running (levels stay
+    /// visible) but no audio is sent for recognition, no turn starts and nothing new is said.
+    /// Not the same as signing out and not the same as muting one microphone.</summary>
+    public bool CompanionPaused => _companionPaused;
+    public event EventHandler? CompanionPausedChanged;
+
+    public void SetCompanionPaused(bool paused)
+    {
+        if (_companionPaused == paused) return;
+        _companionPaused = paused;
+        if (paused)
+        {
+            SetMicSpeechAbandoned();
+            AbandonLoopbackSpeechChannel();
+            StopSpeaking();
+            ReportTurnStatus("陪播已暂停");
+        }
+        else
+        {
+            ReportTurnStatus("陪播已继续");
+        }
+        CompanionPausedChanged?.Invoke(this, EventArgs.Empty);
+        AsrHealthChanged?.Invoke(this, CurrentAsrHealth);
+    }
+
+    private void SetMicSpeechAbandoned()
+    {
+        lock (_micInputSync)
+        {
+            _vad?.Reset();
+            Interlocked.Exchange(ref _micSpeechChannel, null)?.Writer.TryComplete();
+        }
+    }
+
+    /// <summary>Cloud work may start: signed in (or public build) and not paused.</summary>
+    private bool CanStartCloudWork => _cloud.IsAllowed && !_companionPaused;
+
+    /// <summary>Speech-recognition health derived from real recognition outcomes (cloud) or the
+    /// sidecar health check (local) — never from the local sidecar flag alone.</summary>
+    public AsrHealth CurrentAsrHealth
+    {
+        get
+        {
+            if (_companionPaused || !_cloud.IsAllowed) return AsrHealth.Paused;
+            if (Volatile.Read(ref _asrInFlight) > 0) return AsrHealth.Recognizing;
+            return _asrHealth;
+        }
+    }
+
+    public event EventHandler<AsrHealth>? AsrHealthChanged;
+
+    private void SetAsrHealth(AsrHealth health)
+    {
+        _asrHealth = health;
+        AsrHealthChanged?.Invoke(this, CurrentAsrHealth);
+    }
+
+    /// <summary>Runs one recognition and records its outcome. A cancellation (stop, pause,
+    /// sign-out) says nothing about the service and leaves the health unchanged.</summary>
+    private async Task<AsrResult> RecognizeTrackedAsync(Func<Task<AsrResult>> recognize)
+    {
+        Interlocked.Increment(ref _asrInFlight);
+        AsrHealthChanged?.Invoke(this, CurrentAsrHealth);
+        try
+        {
+            var result = await recognize().ConfigureAwait(false);
+            Interlocked.Decrement(ref _asrInFlight);
+            SetAsrHealth(AsrHealth.Ready);
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            Interlocked.Decrement(ref _asrInFlight);
+            AsrHealthChanged?.Invoke(this, CurrentAsrHealth);
+            throw;
+        }
+        catch
+        {
+            Interlocked.Decrement(ref _asrInFlight);
+            SetAsrHealth(AsrHealth.Unavailable);
+            throw;
+        }
     }
 
     private CancellationTokenSource LinkCloudToken() =>
@@ -784,7 +891,7 @@ public sealed class BotRuntime : IAsyncDisposable
 
     internal void AcceptTalkLine(TalkLine line)
     {
-        if (_cts.IsCancellationRequested || !_cloud.IsAllowed ||
+        if (_cts.IsCancellationRequested || !CanStartCloudWork ||
             string.IsNullOrWhiteSpace(line.Text) || !IsCurrentMatch(line)) return;
         var stop = line.Identity == TalkIdentity.Self &&
             IdentityPrompt.IsStopRequest(line.Text, _config.Interaction.WakeKeywords);
@@ -836,7 +943,7 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             if (orchestrator is null) return;
             var cloudEpoch = _cloud.Epoch;
-            if (!_cloud.IsAllowed) return;
+            if (!CanStartCloudWork) return;
             lock (_talkInputSync)
                 foreach (var stale in lines.Where(l => !IsCurrentMatch(l)))
                     if (stale.HistoryMessage is { } message) _queuedInputs.Remove(message);
@@ -850,7 +957,7 @@ public sealed class BotRuntime : IAsyncDisposable
 
             bool CanCommit()
             {
-                return _cloud.IsAllowed && _cloud.Epoch == cloudEpoch &&
+                return CanStartCloudWork && _cloud.Epoch == cloudEpoch &&
                     ReferenceEquals(orchestrator, _orchestrator) && ReferenceEquals(gate, _turnGate) && gate.CanCommit(revision) &&
                     turnMatchId == _pkBuffer.MatchId && lines.All(IsCurrentMatch);
             }
@@ -934,25 +1041,11 @@ public sealed class BotRuntime : IAsyncDisposable
                 AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风段] 能量过低(<{MicAsrMinPeak})，跳过ASR");
             return;
         }
-        if (!_cloud.IsAllowed) return;
+        if (!CanStartCloudWork) return;
         _stateTracker.InputStarted(Environment.TickCount64);
-        AsrResult result;
-        using (var cloud = LinkCloudToken())
-        {
-            if (_config.Asr.Streaming)
-            {
-                var stream = channel is null
-                    ? System.Linq.AsyncEnumerable.Empty<byte[]>()
-                    : channel.Reader.ReadAllAsync();
-                result = await _orchestrator.TranscribeStreamAsync(stream, cloud.Token).ConfigureAwait(false);
-            }
-            else
-            {
-                result = await _orchestrator.TranscribeAsync(seg.AudioData, cloud.Token).ConfigureAwait(false);
-            }
-        }
+        var result = await RecognizeSegmentAsync(seg, channel).ConfigureAwait(false);
 
-        if (!string.IsNullOrWhiteSpace(result.Text))
+        if (result is not null && !string.IsNullOrWhiteSpace(result.Text))
         {
             var text = BotOrchestrator.AnnotateWithUserEmotion(result.Text, result.Emotion);
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风识别] 「{result.Text}」");
@@ -979,24 +1072,10 @@ public sealed class BotRuntime : IAsyncDisposable
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
             return;
         }
-        if (!_cloud.IsAllowed) return;
-        AsrResult result;
-        using (var cloud = LinkCloudToken())
-        {
-            if (_config.Asr.Streaming)
-            {
-                var stream = channel is null
-                    ? System.Linq.AsyncEnumerable.Empty<byte[]>()
-                    : channel.Reader.ReadAllAsync();
-                result = await _orchestrator.TranscribeStreamAsync(stream, cloud.Token).ConfigureAwait(false);
-            }
-            else
-            {
-                result = await _orchestrator.TranscribeAsync(seg.AudioData, cloud.Token).ConfigureAwait(false);
-            }
-        }
+        if (!CanStartCloudWork) return;
+        var result = await RecognizeSegmentAsync(seg, channel).ConfigureAwait(false);
 
-        if (!string.IsNullOrWhiteSpace(result.Text))
+        if (result is not null && !string.IsNullOrWhiteSpace(result.Text))
         {
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录识别→对面] 「{result.Text}」");
             LoopbackTranscript?.Invoke(this, result.Text);
@@ -1006,6 +1085,36 @@ public sealed class BotRuntime : IAsyncDisposable
                 result.Text,
                 opponent.Uid, opponent.MatchId, seg.StartTime));
         }
+    }
+
+    /// <summary>Recognises one segment under the current account grant. A result that arrives
+    /// after that grant ended — even if a new login happened meanwhile — or after the companion
+    /// was paused is dropped, because a provider may ignore cancellation.</summary>
+    private async Task<AsrResult?> RecognizeSegmentAsync(SpeechSegment seg, Channel<byte[]>? channel)
+    {
+        var epoch = _cloud.Epoch;
+        AsrResult result;
+        using (var cloud = LinkCloudToken())
+        {
+            var token = cloud.Token;
+            result = await RecognizeTrackedAsync(() =>
+            {
+                if (_config.Asr.Streaming)
+                {
+                    var stream = channel is null
+                        ? System.Linq.AsyncEnumerable.Empty<byte[]>()
+                        : channel.Reader.ReadAllAsync();
+                    return _orchestrator.TranscribeStreamAsync(stream, token);
+                }
+                return _orchestrator.TranscribeAsync(seg.AudioData, token);
+            }).ConfigureAwait(false);
+        }
+        if (!CanStartCloudWork || _cloud.Epoch != epoch)
+        {
+            AIVTuber.Core.Diagnostics.DebugLog.Write("[识别] 许可已变化或陪播已暂停，丢弃迟到的识别结果");
+            return null;
+        }
+        return result;
     }
 
     private IEnumerable<string> ResolvePoseIdsForPrompt()
@@ -1063,6 +1172,7 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         if (_localAsrReachable == reachable) return;
         _localAsrReachable = reachable;
+        if (_asr is LocalAsrClient) SetAsrHealth(reachable ? AsrHealth.Ready : AsrHealth.Unavailable);
         LocalAsrReachableChanged?.Invoke(this, reachable);
     }
 
@@ -1389,7 +1499,8 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(newConfig);
         var candidate = ConfigManager.Clone(newConfig);
-        _profile?.ApplyTo(candidate); // provider settings stay pinned to the private profile
+        // Provider settings stay pinned to the private profile; the voice choice survives when offered.
+        var voiceNotice = _profile?.ApplyTo(candidate);
 
         await _configApplyGate.WaitAsync().ConfigureAwait(false);
         try
@@ -1430,6 +1541,7 @@ public sealed class BotRuntime : IAsyncDisposable
             _activeConfig = ConfigManager.Clone(candidate);
             _config = candidate;
             Interlocked.Exchange(ref _activeRevision, candidateRevision);
+            LastApplyNotice = voiceNotice;
             _wakeGate.Reset();
             InteractionModeChanged?.Invoke(this, EventArgs.Empty);
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[配置] 应用完成 revision={candidateRevision}");
@@ -1439,6 +1551,10 @@ public sealed class BotRuntime : IAsyncDisposable
             _configApplyGate.Release();
         }
     }
+
+    /// <summary>User-facing notice from the last successful apply (e.g. the saved voice was not
+    /// offered by this package and the default was used). Null when there is nothing to say.</summary>
+    public string? LastApplyNotice { get; private set; }
 
     /// <summary>Applies the last successfully replaced snapshot as a new revision.</summary>
     public Task RollbackConfigAsync()

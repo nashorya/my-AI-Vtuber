@@ -51,6 +51,10 @@ public sealed class ConfigManager
     /// and their secrets are stripped on save.</summary>
     public AIVTuber.Core.Auth.DistributionProfile? Profile { get; init; }
 
+    /// <summary>User-facing notice from the last <see cref="Load"/> (e.g. a saved voice this
+    /// package no longer offers). Null when there is nothing to tell the streamer.</summary>
+    public string? LastLoadNotice { get; private set; }
+
     public ConfigManager(string configPath)
     {
         _configPath = configPath;
@@ -65,7 +69,7 @@ public sealed class ConfigManager
         {
             var defaultConfig = new AppConfig();
             Save(defaultConfig);
-            Profile?.ApplyTo(defaultConfig);
+            LastLoadNotice = Profile?.ApplyTo(defaultConfig);
             return defaultConfig;
         }
 
@@ -75,7 +79,7 @@ public sealed class ConfigManager
         HydrateProviderKeys(config);
         if (config.Interaction.IsPkMode && config.Bilibili.Enable)
             config.Bilibili.PkNotice = true;
-        Profile?.ApplyTo(config);
+        LastLoadNotice = Profile?.ApplyTo(config);
         return config;
     }
 

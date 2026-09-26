@@ -11,6 +11,11 @@ public sealed class DistributionProfileException(string message, Exception? inne
 /// private packages: <c>distribution/profile.json</c> under the content root. Its presence puts
 /// the app in distribution mode — account login required, cloud providers only (AUTH-09).
 /// Provider settings in the profile override config.json and are never written back to it.
+/// <para>Two kinds of data are kept apart (A2): the operator-managed service route
+/// (provider, endpoint, model, key) is always taken from the profile or an explicit vendor
+/// preset, never from config.json; the streamer's own choices (persona, selected voice, speed,
+/// devices) live in config.json. The voice is the one overlap: the profile names the default
+/// voice and the catalog the streamer may choose from, config.json holds the choice.</para>
 /// </summary>
 public sealed class DistributionProfile
 {
@@ -49,7 +54,23 @@ public sealed class DistributionProfile
         public string? AppId { get; init; }
         public string? VoiceId { get; init; }
         public string? GroupId { get; init; }
+        /// <summary>TTS only: the voices this streamer may pick from. <see cref="VoiceId"/>
+        /// is the operator default and is always selectable.</summary>
+        public List<VoiceChoice> Voices { get; init; } = [];
     }
+
+    /// <summary>One entry of the operator-maintained voice catalog. <see cref="Id"/> is what the
+    /// UI sees; <see cref="VoiceId"/> is the provider's voice id and stays in the backend.</summary>
+    public sealed class VoiceChoice
+    {
+        public string Id { get; init; } = "";
+        public string Name { get; init; } = "";
+        public string Description { get; init; } = "";
+        public string VoiceId { get; init; } = "";
+    }
+
+    /// <summary>Choice id used for the operator default when it is not itself in the catalog.</summary>
+    public const string DefaultVoiceChoiceId = "default";
 
     [JsonIgnore]
     public Uri AuthServerUri => new(AuthServer.EndsWith('/') ? AuthServer : AuthServer + "/");
@@ -104,33 +125,111 @@ public sealed class DistributionProfile
             throw new DistributionProfileException("分发版不允许自托管 TTS（dots）。");
         if (IsLocalEndpoint(Providers.Llm.BaseUrl))
             throw new DistributionProfileException("分发版不允许本地 LLM（base_url 指向本机）。");
+
+        // The managed route must resolve on its own: an omitted endpoint or model may only come
+        // from a built-in vendor preset, never from whatever config.json happens to hold (U03).
+        _ = ResolveLlmRoute();
+
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var voice in Providers.Tts.Voices)
+        {
+            Require(voice.Id, "providers.tts.voices[].id");
+            Require(voice.Name, "providers.tts.voices[].name");
+            Require(voice.VoiceId, "providers.tts.voices[].voice_id");
+            if (!ids.Add(voice.Id))
+                throw new DistributionProfileException($"专属配置音色 id「{voice.Id}」重复。");
+        }
+        if (Providers.Tts.Voices.Count > 0 && string.IsNullOrWhiteSpace(Providers.Tts.VoiceId))
+            throw new DistributionProfileException("专属配置提供了音色目录时必须同时指定默认音色 providers.tts.voice_id。");
     }
 
-    /// <summary>Overlays the managed provider settings onto <paramref name="config"/>. Called on
-    /// every load and every runtime apply so UI edits cannot swap in other keys.</summary>
-    public void ApplyTo(AppConfig config)
+    /// <summary>The LLM endpoint and model the managed key may be sent to.</summary>
+    public (string BaseUrl, string Model) ResolveLlmRoute()
     {
         var llm = Providers.Llm;
+        var preset = ProviderSecrets.TryPreset(llm.Provider);
+        var baseUrl = !string.IsNullOrWhiteSpace(llm.BaseUrl) ? llm.BaseUrl.Trim() : preset?.BaseUrl;
+        if (string.IsNullOrWhiteSpace(baseUrl))
+            throw new DistributionProfileException(
+                $"专属配置缺少 providers.llm.base_url：厂商「{llm.Provider}」没有内置地址，不能沿用本机配置。");
+        var model = !string.IsNullOrWhiteSpace(llm.Model) ? llm.Model.Trim() : preset?.Model;
+        if (string.IsNullOrWhiteSpace(model))
+            throw new DistributionProfileException(
+                $"专属配置缺少 providers.llm.model：厂商「{llm.Provider}」没有内置默认模型。");
+        return (baseUrl, model);
+    }
+
+    /// <summary>Voices the streamer may choose from: the operator default first (when it is not
+    /// already listed), then the catalog. Empty when the profile does not manage voices.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<VoiceChoice> AvailableVoices
+    {
+        get
+        {
+            var tts = Providers.Tts;
+            var list = new List<VoiceChoice>();
+            if (!string.IsNullOrWhiteSpace(tts.VoiceId) &&
+                !tts.Voices.Any(v => string.Equals(v.VoiceId, tts.VoiceId, StringComparison.Ordinal)))
+                list.Add(new VoiceChoice { Id = DefaultVoiceChoiceId, Name = "默认音色", VoiceId = tts.VoiceId });
+            list.AddRange(tts.Voices);
+            return list;
+        }
+    }
+
+    public VoiceChoice? FindVoiceByChoiceId(string? choiceId) =>
+        AvailableVoices.FirstOrDefault(v => string.Equals(v.Id, choiceId, StringComparison.Ordinal));
+
+    public VoiceChoice? FindVoiceByProviderId(string? voiceId) =>
+        AvailableVoices.FirstOrDefault(v => string.Equals(v.VoiceId, voiceId, StringComparison.Ordinal));
+
+    /// <summary>Keeps the streamer's voice when this profile still offers it; otherwise falls back
+    /// to the operator default — never to "the first item" — and says so.</summary>
+    public string ResolveVoice(string? current, out string? notice)
+    {
+        notice = null;
+        var fallback = Providers.Tts.VoiceId;
+        if (string.IsNullOrWhiteSpace(fallback)) return current ?? ""; // profile does not manage voices
+        if (!string.IsNullOrWhiteSpace(current) && FindVoiceByProviderId(current) is not null) return current;
+        if (!string.IsNullOrWhiteSpace(current))
+        {
+            var name = FindVoiceByProviderId(fallback)?.Name ?? "默认音色";
+            notice = $"之前选择的音色在当前配置中不可用，已改用「{name}」。";
+        }
+        return fallback;
+    }
+
+    /// <summary>Overlays the managed service route onto <paramref name="config"/>. Called on
+    /// every load and every runtime apply so UI edits cannot swap in other keys or endpoints.
+    /// Every managed field is written unconditionally (an omitted optional value becomes the
+    /// provider default), so nothing left in config.json can pair with the managed key.
+    /// The streamer's voice choice is kept when the profile offers it.</summary>
+    /// <returns>A user-facing notice when the saved voice had to be replaced, otherwise null.</returns>
+    public string? ApplyTo(AppConfig config)
+    {
+        var llm = Providers.Llm;
+        var (baseUrl, model) = ResolveLlmRoute();
         config.Llm.Provider = llm.Provider;
-        if (!string.IsNullOrWhiteSpace(llm.BaseUrl)) config.Llm.BaseUrl = llm.BaseUrl;
-        if (!string.IsNullOrWhiteSpace(llm.Model)) config.Llm.Model = llm.Model;
+        config.Llm.BaseUrl = baseUrl;
+        config.Llm.Model = model;
         config.Llm.ApiKeys.Clear();
+        config.Llm.Models.Clear();
         config.Llm.StoreKey(llm.ApiKey);
 
         var asr = Providers.Asr;
         config.Asr.Provider = asr.Provider;
-        if (asr.Model is not null) config.Asr.Model = asr.Model;
-        if (asr.AppId is not null) config.Asr.AppId = asr.AppId;
+        config.Asr.Model = asr.Model ?? "";
+        config.Asr.AppId = asr.AppId ?? "";
         config.Asr.ApiKeys.Clear();
         config.Asr.StoreKey(asr.ApiKey);
 
         var tts = Providers.Tts;
         config.Tts.Provider = tts.Provider;
-        if (tts.Model is not null) config.Tts.Model = tts.Model;
-        if (tts.VoiceId is not null) config.Tts.VoiceId = tts.VoiceId;
-        if (tts.GroupId is not null) config.Tts.GroupId = tts.GroupId;
+        config.Tts.Model = tts.Model ?? "";
+        config.Tts.GroupId = tts.GroupId ?? "";
+        config.Tts.VoiceId = ResolveVoice(config.Tts.VoiceId, out var voiceNotice);
         config.Tts.ApiKeys.Clear();
         config.Tts.StoreKey(tts.ApiKey);
+        return voiceNotice;
     }
 
     /// <summary>Removes managed secrets before config.json is written (DIST-04/05).</summary>

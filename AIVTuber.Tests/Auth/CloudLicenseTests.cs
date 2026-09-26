@@ -47,10 +47,10 @@ public sealed class CloudLicenseTests
 
     [Theory]
     [InlineData(AuthCode.InvalidCredentials, "账号或密码错误")]
-    [InlineData(AuthCode.Expired, "已到期")]
+    [InlineData(AuthCode.Expired, "使用期限已结束")]
     [InlineData(AuthCode.Disabled, "已被停用")]
-    [InlineData(AuthCode.ProfileMismatch, "不属于这个账号")]
-    [InlineData(AuthCode.CredentialRevoked, "凭据版本已作废")]
+    [InlineData(AuthCode.ProfileMismatch, "需要使用对应的安装包")]
+    [InlineData(AuthCode.CredentialRevoked, "已停止使用")]
     public async Task Login_Denied_KeepsCloudClosedWithVisibleReason(AuthCode code, string expectedText)
     {
         var license = NewLicense();
@@ -72,7 +72,7 @@ public sealed class CloudLicenseTests
         var outcome = await license.LoginAsync("alice", "pw");
 
         Assert.False(outcome.Success);
-        Assert.Contains("无法连接鉴权服务", outcome.Message);
+        Assert.Equal(CloudLicense.TransportFailureMessage, outcome.Message);
         Assert.False(license.IsAllowed);
     }
 
@@ -128,7 +128,57 @@ public sealed class CloudLicenseTests
         await license.HeartbeatOnceAsync();
         Assert.False(license.IsAllowed);
         license.EnforceExpiry();
-        Assert.Contains("无法联系鉴权服务", Assert.Single(_revocations));
+        Assert.Equal(CloudLicense.VerificationLostMessage, Assert.Single(_revocations));
+        Assert.Equal(LicenseStopReason.VerificationLost, license.Snapshot.Reason);
+    }
+
+    [Fact]
+    public async Task ExpiringAccount_IsNotNetworkFailure()
+    {
+        // Account ends in 30 s, so the service caps the lease at 30 s; the next heartbeat is
+        // due at 60 s. The network is fine throughout — the account simply ended.
+        var license = NewLicense();
+        _api.Login = (_, _) => Task.FromResult(Ok(leaseSeconds: 30, accountSeconds: 30));
+        await license.LoginAsync("alice", "pw");
+
+        _clock.Advance(TimeSpan.FromSeconds(31));
+        license.EnforceExpiry();
+
+        Assert.False(license.IsAllowed);
+        Assert.Equal(CloudLicense.AccountEndedMessage, Assert.Single(_revocations));
+        Assert.DoesNotContain("网络", license.Snapshot.Message);
+        Assert.Equal(LicenseStopReason.AccountExpired, license.Snapshot.Reason);
+    }
+
+    [Fact]
+    public async Task ExpiringAccount_DetectionUsesMonotonicClockNotWallClock()
+    {
+        var license = NewLicense();
+        _api.Login = (_, _) => Task.FromResult(Ok(leaseSeconds: 180, accountSeconds: 86400));
+        await license.LoginAsync("alice", "pw");
+        _api.Heartbeat = (_, _) => throw new AuthTransportException("timeout");
+
+        // Moving the PC's date past the account end must not turn a network outage into
+        // an "account ended" message, and vice versa.
+        _clock.SetWall(ServerStart.AddDays(5));
+        _clock.AdvanceMonotonicOnly(TimeSpan.FromSeconds(181));
+        license.EnforceExpiry();
+
+        Assert.Equal(LicenseStopReason.VerificationLost, license.Snapshot.Reason);
+    }
+
+    [Fact]
+    public async Task ServerSaysExpiredOnHeartbeat_IsReportedAsAccountEnded()
+    {
+        var license = NewLicense();
+        _api.Login = (_, _) => Task.FromResult(Ok());
+        await license.LoginAsync("alice", "pw");
+        _api.Heartbeat = (_, _) => Task.FromResult(new AuthReply(AuthCode.Expired, ServerTime: ServerStart));
+
+        await license.HeartbeatOnceAsync();
+
+        Assert.Equal(LicenseStopReason.AccountExpired, license.Snapshot.Reason);
+        Assert.Equal(CloudLicense.AccountEndedMessage, license.Snapshot.Message);
     }
 
     [Fact]

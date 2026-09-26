@@ -69,7 +69,7 @@ public sealed class AuthEndToEndTests : IAsyncLifetime
         await using var otherPackage = NewLicense(api, profile: "streamer-018");
 
         Assert.Contains("账号或密码错误", (await license.LoginAsync("alice", "nope")).Message);
-        Assert.Contains("profile 不匹配", (await otherPackage.LoginAsync("alice", "pw-alice-1")).Message);
+        Assert.Contains("需要使用对应的安装包", (await otherPackage.LoginAsync("alice", "pw-alice-1")).Message);
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public sealed class AuthEndToEndTests : IAsyncLifetime
         var outcome = await license.LoginAsync("alice", "pw-alice-1");
 
         Assert.False(outcome.Success);
-        Assert.Contains("无法连接鉴权服务", outcome.Message);
+        Assert.Equal(CloudLicense.TransportFailureMessage, outcome.Message);
     }
 
     [Fact]

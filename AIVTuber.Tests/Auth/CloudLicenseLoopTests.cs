@@ -33,7 +33,7 @@ public sealed class CloudLicenseLoopTests
         // The first failed renewal happens while the lease is still valid and the retry is 10s
         // away, so only the loop's own expiry check can end access within this window.
         var reason = await revoked.Task.WaitAsync(TimeSpan.FromSeconds(6));
-        Assert.Contains("无法联系鉴权服务", reason);
+        Assert.Equal(CloudLicense.VerificationLostMessage, reason);
         Assert.False(license.IsAllowed);
     }
 }

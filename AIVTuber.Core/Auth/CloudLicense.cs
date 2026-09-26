@@ -2,11 +2,25 @@ namespace AIVTuber.Core.Auth;
 
 public enum LicenseState { SignedOut, Active, Denied }
 
+/// <summary>Why cloud access is closed, so the UI can give the right advice (U07).</summary>
+public enum LicenseStopReason
+{
+    None,
+    SignedOut,
+    /// <summary>The account's validity period ended. Renewal, not the network, is the fix.</summary>
+    AccountExpired,
+    /// <summary>The lease ran out because renewals kept failing (network / service).</summary>
+    VerificationLost,
+    /// <summary>The service explicitly refused (disabled, revoked, wrong package, …).</summary>
+    Denied,
+}
+
 public sealed record LicenseSnapshot(
     LicenseState State,
     string Message,
     string? Username,
-    DateTimeOffset? AccountValidUntil);
+    DateTimeOffset? AccountValidUntil,
+    LicenseStopReason Reason = LicenseStopReason.None);
 
 public sealed record LoginOutcome(bool Success, string Message);
 
@@ -34,6 +48,9 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
     private string? _username;
     private DateTimeOffset? _accountValidUntil;
     private long _leaseExpiryTimestamp;
+    // Account end mapped onto the monotonic clock (server's own "time left"), or null if unknown.
+    private long? _accountDeadlineTimestamp;
+    private LicenseStopReason _reason = LicenseStopReason.SignedOut;
     private long _nextHeartbeatTimestamp;
     private TimeSpan _heartbeatInterval = TimeSpan.FromSeconds(60);
     private long _generation;
@@ -71,7 +88,7 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
 
     public LicenseSnapshot Snapshot
     {
-        get { lock (_sync) return new(_state, _message, _username, _accountValidUntil); }
+        get { lock (_sync) return SnapshotLocked(); }
     }
 
     public async Task<LoginOutcome> LoginAsync(string username, string password, CancellationToken ct = default)
@@ -89,7 +106,9 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
         }
         catch (AuthTransportException ex)
         {
-            return Fail(generation, $"无法连接鉴权服务：{ex.Message}");
+            AIVTuber.Core.Diagnostics.DebugLog.Write(
+                $"[鉴权] 登录请求失败: {AIVTuber.Core.Diagnostics.DiagnosticRedactor.Redact(ex.Message)}");
+            return Fail(generation, TransportFailureMessage);
         }
 
         LicenseSnapshot snapshot;
@@ -100,6 +119,7 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
             {
                 _state = LicenseState.SignedOut;
                 _message = Describe(reply.Status);
+                _reason = reply.Status == AuthCode.Expired ? LicenseStopReason.AccountExpired : LicenseStopReason.Denied;
                 snapshot = SnapshotLocked();
             }
             else
@@ -110,6 +130,7 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
                 _epoch++;
                 ApplyLeaseLocked(reply, sentAt);
                 _message = "已登录";
+                _reason = LicenseStopReason.None;
                 snapshot = SnapshotLocked();
             }
         }
@@ -160,17 +181,29 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
 
         lock (_sync)
             if (_generation != generation) return;
-        Revoke(Describe(reply.Status), LicenseState.Denied);
+        Revoke(Describe(reply.Status), LicenseState.Denied,
+            reply.Status == AuthCode.Expired ? LicenseStopReason.AccountExpired : LicenseStopReason.Denied);
     }
 
-    /// <summary>Closes access if the lease has run out without renewal.</summary>
+    public const string AccountEndedMessage = "使用期限已结束，请联系发放者续期。";
+    public const string VerificationLostMessage = "暂时无法验证登录状态，陪播已暂停。请检查网络连接后重新登录。";
+    public const string TransportFailureMessage = "暂时连不上登录服务，请检查网络后重试。";
+
+    /// <summary>Closes access if the lease has run out without renewal. A lease that ends
+    /// because the account itself ended says so, instead of blaming the network (U07).</summary>
     public void EnforceExpiry()
     {
         bool expired;
+        bool accountEnded;
         lock (_sync)
-            expired = _state == LicenseState.Active && _clock.GetTimestamp() >= _leaseExpiryTimestamp;
-        if (expired)
-            Revoke("长时间无法联系鉴权服务，许可已过期，请检查网络后重新登录", LicenseState.Denied);
+        {
+            var now = _clock.GetTimestamp();
+            expired = _state == LicenseState.Active && now >= _leaseExpiryTimestamp;
+            accountEnded = _accountDeadlineTimestamp is { } deadline && now >= deadline;
+        }
+        if (!expired) return;
+        if (accountEnded) Revoke(AccountEndedMessage, LicenseState.Denied, LicenseStopReason.AccountExpired);
+        else Revoke(VerificationLostMessage, LicenseState.Denied, LicenseStopReason.VerificationLost);
     }
 
     /// <summary>Closes cloud access locally first, then tells the service. The server call
@@ -189,6 +222,7 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
             _state = LicenseState.SignedOut;
             _token = null;
             _message = "已退出登录";
+            _reason = LicenseStopReason.SignedOut;
             snapshot = SnapshotLocked();
         }
 
@@ -213,10 +247,10 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
     internal static string Describe(AuthCode code) => code switch
     {
         AuthCode.InvalidCredentials => "账号或密码错误",
-        AuthCode.Expired => "账号已到期，请联系运营续期",
-        AuthCode.Disabled => "账号已被停用，请联系运营",
-        AuthCode.ProfileMismatch => "这个安装包不属于这个账号（profile 不匹配），请使用发给你的专属包",
-        AuthCode.CredentialRevoked => "安装包里的凭据版本已作废，请使用运营发给你的最新专属包",
+        AuthCode.Expired => AccountEndedMessage,
+        AuthCode.Disabled => "账号已被停用，请联系发放者",
+        AuthCode.ProfileMismatch => "这个账号需要使用对应的安装包，请联系发放者",
+        AuthCode.CredentialRevoked => "这个安装包已停止使用，请向发放者索取最新安装包",
         AuthCode.SessionRevoked => "登录已被注销，请重新登录",
         AuthCode.InvalidSession => "登录状态已失效，请重新登录",
         AuthCode.RateLimited => "登录失败次数过多，请稍后再试",
@@ -237,7 +271,7 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
         return new LoginOutcome(false, message);
     }
 
-    private void Revoke(string reason, LicenseState state)
+    private void Revoke(string reason, LicenseState state, LicenseStopReason stopReason)
     {
         LicenseSnapshot snapshot;
         lock (_sync)
@@ -245,6 +279,7 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
             if (_state != LicenseState.Active) return;
             _state = state;
             _message = reason;
+            _reason = stopReason;
             _token = null;
             _generation++;
             _epoch++;
@@ -261,12 +296,15 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
             : TimeSpan.Zero;
         if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
         _leaseExpiryTimestamp = sentAt + (long)(remaining.TotalSeconds * _clock.TimestampFrequency);
+        _accountDeadlineTimestamp = reply.AccountValidUntil is { } accountEnd && reply.ServerTime is { } server
+            ? sentAt + (long)(Math.Max(0, (accountEnd - server).TotalSeconds) * _clock.TimestampFrequency)
+            : null;
         _accountValidUntil = reply.AccountValidUntil;
         if (reply.HeartbeatSeconds > 0) _heartbeatInterval = TimeSpan.FromSeconds(reply.HeartbeatSeconds);
         _nextHeartbeatTimestamp = sentAt + (long)(_heartbeatInterval.TotalSeconds * _clock.TimestampFrequency);
     }
 
-    private LicenseSnapshot SnapshotLocked() => new(_state, _message, _username, _accountValidUntil);
+    private LicenseSnapshot SnapshotLocked() => new(_state, _message, _username, _accountValidUntil, _reason);
 
     private void EnsureLoop()
     {

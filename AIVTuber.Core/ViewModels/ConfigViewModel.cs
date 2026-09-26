@@ -434,12 +434,15 @@ public sealed partial class ConfigViewModel : INotifyPropertyChanged
                 // fire runtime events; those events marshal to the WPF dispatcher. Running apply on
                 // the UI thread with a synchronous Dispatcher.Invoke used to deadlock ("保存卡住").
                 await Task.Run(() => _applyAsync(runtimeCandidate)).ConfigureAwait(true);
+                AdoptEffectiveConfig();
                 Status = $"已保存并应用 · {DateTime.Now:HH:mm}";
                 SaveState = ConfigSaveState.Applied;
             }
             catch (Exception ex)
             {
-                Status = $"已保存，但应用失败: {ex.Message}";
+                // Streamer builds show the mapped message and a diagnostic id; the developer
+                // console keeps the raw text it always showed.
+                Status = Profile is not null ? StreamerApplyFailureText(ex) : $"已保存，但应用失败: {ex.Message}";
                 SaveState = ConfigSaveState.SavedButApplyFailed;
             }
         }

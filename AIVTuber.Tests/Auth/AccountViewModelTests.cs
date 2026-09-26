@@ -53,7 +53,7 @@ public sealed class AccountViewModelTests
         await vm.LoginAsync("pw");
 
         Assert.False(vm.IsSignedIn);
-        Assert.Contains("已到期", vm.ErrorText);
+        Assert.Contains("使用期限已结束", vm.ErrorText);
     }
 
     [Fact]
