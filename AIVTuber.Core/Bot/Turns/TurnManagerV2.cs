@@ -20,6 +20,10 @@ namespace AIVTuber.Core.Bot.Turns;
 /// - a PK match change invalidates in-flight turns and old-match context.
 ///
 /// Single-lock serial decision boundary: all state transitions happen under <c>_sync</c>.
+/// Events are raised only after the lock is released (outbox), so handlers may take their
+/// own locks, call back into the manager or stop audio without deadlocking the state machine.
+/// Every timer is bound to the turn / voice episode / buffer that created it, so a stale
+/// timer never acts on a later turn.
 /// All timers go through the replaceable <see cref="ITurnScheduler"/> so tests are deterministic.
 /// </summary>
 internal sealed class TurnManagerV2 : IDisposable
@@ -31,6 +35,11 @@ internal sealed class TurnManagerV2 : IDisposable
 
     private readonly List<(TalkLine Line, TurnSource Source)> _buffer = [];
     private readonly List<(long DeadlineMs, Action Fire)> _timers = [];
+    private List<Action> _outbox = [];
+
+    // Partial candidates, one per (source, capture epoch, segment). Revisions of the same
+    // segment replace each other; they are one candidate, never extra "invitations".
+    private readonly Dictionary<(TurnSource Source, long Epoch, string Segment), (int Revision, string Text)> _candidates = new();
 
     private TurnState _state = TurnState.Observing;
     private TurnContextV2? _activeContext;
@@ -47,12 +56,16 @@ internal sealed class TurnManagerV2 : IDisposable
     private long _micActiveSince;
     private long _loopbackActiveSince;
     private long _micLastSustainedEndMs;
+    private long _micEpisode;
+    private long _bufferEpoch;
     private long _lastOtherSourceFinalMs;
     private TurnSource? _lastFinalSource;
+    private long _lastOpponentFinalMs = -1;
 
     // Continuity evidence for the classifier.
     private string? _lastAssistantMessage;
     private long _aiSpokeAtMs = -1;
+    private TurnSource[] _lastAiTurnSources = [];
 
     public TurnManagerV2(TurnManagerOptions options, ITurnClock? clock = null, ITurnScheduler? scheduler = null)
     {
@@ -63,6 +76,8 @@ internal sealed class TurnManagerV2 : IDisposable
 
     public TurnState State { get { lock (_sync) return _state; } }
     public long ActiveGenerationId { get { lock (_sync) return _activeContext?.GenerationId ?? 0; } }
+    /// <summary>Open partial candidates (one per source/segment, whatever its revision count).</summary>
+    public int CandidateCount { get { lock (_sync) return _candidates.Count; } }
 
     /// <summary>A turn passed all invitation and playback gates; generation may start.
     /// The handler must call <see cref="CompleteTurn"/> or let cancellation handle it.</summary>
@@ -76,28 +91,51 @@ internal sealed class TurnManagerV2 : IDisposable
 
     public event Action<string>? StatusChanged;
 
+    /// <summary>Buffered lines dropped without being dispatched (silence decision, cancel,
+    /// expiry). The owner must release any bookkeeping it holds for them.</summary>
+    public event Action<IReadOnlyList<TalkLine>>? LinesReleased;
+
     // ------------------------------------------------------------------ input
+
+    /// <summary>Partial transcript without segment identity (kept for callers that have none).</summary>
+    public void ObservePartial(TurnSource source, string text) =>
+        ObservePartial(source, captureEpoch: 0, segmentId: "", revision: -1, text);
 
     /// <summary>Partial (not server-final) transcript. Used only for candidate identification
     /// and context preparation — never starts generation (speculative generation is a P1
-    /// feature and stays disabled here). A retraction inside a partial drops the candidate.</summary>
-    public void ObservePartial(TurnSource source, string text)
+    /// feature and stays disabled here). Revisions of one segment update one candidate; a
+    /// retraction inside a partial drops the candidate and any uncommitted turn.</summary>
+    public void ObservePartial(TurnSource source, long captureEpoch, string segmentId, int revision, string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return;
         lock (_sync)
         {
             if (_disposed) return;
+            var key = (source, captureEpoch, segmentId);
+            if (revision >= 0 && _candidates.TryGetValue(key, out var existing) && existing.Revision > revision)
+                return; // out-of-order older revision
             if (InvitationClassifier.ContainsRetraction(text))
             {
+                _candidates.Remove(key);
                 CancelLocked(TurnCancelReason.RetractedInvitation);
-                return;
+                if (_candidates.Count == 0 && _state == TurnState.Candidate) _state = TurnState.Observing;
             }
-            if (_state == TurnState.Observing)
+            else
             {
-                _state = TurnState.Candidate;
-                StatusChanged?.Invoke($"候选：{source} partial");
+                var isNew = !_candidates.ContainsKey(key);
+                _candidates[key] = (revision, text);
+                if (_state == TurnState.Observing)
+                {
+                    _state = TurnState.Candidate;
+                    PostStatusLocked($"候选：{source} partial");
+                }
+                else if (isNew)
+                {
+                    PostStatusLocked($"候选更新：{source} partial");
+                }
             }
         }
+        FlushOutbox();
     }
 
     /// <summary>Server-confirmed final transcript. Dispatches immediately unless a merge
@@ -116,8 +154,13 @@ internal sealed class TurnManagerV2 : IDisposable
             if (_state == TurnState.Ready)
                 CancelLocked(TurnCancelReason.Superseded);
 
+            // The final closes this source's open partial segment(s).
+            foreach (var key in _candidates.Keys.Where(k => k.Source == source).ToArray())
+                _candidates.Remove(key);
+
             var now = _clock.NowMs;
             _buffer.Add((line, TurnSource: source));
+            if (source == TurnSource.Loopback) _lastOpponentFinalMs = now;
 
             var crossSourceConflict = _lastFinalSource is { } prev && prev != source &&
                 now - _lastOtherSourceFinalMs <= _options.CrossSourceMergeWindowMs;
@@ -126,14 +169,21 @@ internal sealed class TurnManagerV2 : IDisposable
 
             if (crossSourceConflict)
             {
-                // Small window only for two-source conflict (rule 5), reason recorded.
-                ScheduleLocked(_options.CrossSourceMergeWindowMs, () => { lock (_sync) EvaluateLocked("cross_source"); });
-                StatusChanged?.Invoke("两路输入接近，小窗口合并");
-                return;
+                // Small window only for two-source conflict (rule 5), reason recorded. Bound
+                // to this buffer: once it is evaluated or dropped, the timer does nothing.
+                var bufferEpoch = _bufferEpoch;
+                ScheduleLocked(_options.CrossSourceMergeWindowMs, () =>
+                {
+                    if (_bufferEpoch == bufferEpoch) EvaluateLocked("cross_source");
+                });
+                PostStatusLocked("两路输入接近，小窗口合并");
             }
-
-            EvaluateLocked("final_confirmed");
+            else
+            {
+                EvaluateLocked("final_confirmed");
+            }
         }
+        FlushOutbox();
     }
 
     /// <summary>Grades buffered input and either dispatches the turn, holds it (Preparing),
@@ -141,21 +191,22 @@ internal sealed class TurnManagerV2 : IDisposable
     private void EvaluateLocked(string mergeReason)
     {
         if (_disposed || _buffer.Count == 0) return;
-        var now = _clock.NowMs;
-        var decision = InvitationClassifier.Classify(
-            _buffer.Select(b => (b.Line, b.Source)).ToArray(),
-            _options.SelfNames,
-            _lastAssistantMessage,
-            now,
-            _aiSpokeAtMs,
-            _options.ConversationWindowMs);
-        DecisionRecorded?.Invoke(decision);
+        // Audio of the current turn is playing: new input is kept and judged when it ends
+        // (CompleteTurn) instead of starting a second turn over it. Stop and sustained human
+        // voice still cancel through their own paths.
+        if (_state == TurnState.Speaking)
+        {
+            PostStatusLocked("AI 正在说：新输入已记录，说完再判断");
+            return;
+        }
+        var decision = ClassifyLocked();
+        PostLocked(() => DecisionRecorded?.Invoke(decision));
 
         if (!decision.Respond)
         {
-            _buffer.Clear();
-            _state = TurnState.Observing;
-            StatusChanged?.Invoke($"旁听：{decision.ReasonCode}");
+            ReleaseBufferLocked();
+            _state = _candidates.Count > 0 ? TurnState.Candidate : TurnState.Observing;
+            PostStatusLocked($"旁听：{decision.ReasonCode}");
             return;
         }
 
@@ -167,19 +218,16 @@ internal sealed class TurnManagerV2 : IDisposable
             // The context exists from the moment the turn is accepted, so expiry/cancel
             // observers always receive the affected TurnContext.
             CreateContextLocked(decision, mergeReason);
+            var turnId = _activeContext!.TurnId;
             // Hold until the loopback side has been quiet for the quiet-hold window.
-            var deadline = _clock.NowMs + _options.OpponentQuietHoldMs;
-            ScheduleAtLocked(deadline, () => { lock (_sync) DispatchIfOpponentQuietLocked(); });
+            ScheduleForTurnLocked(_options.OpponentQuietHoldMs, turnId, DispatchIfOpponentQuietLocked);
             // Hard expiry so a continuously talking opponent cannot pin the turn forever.
-            ScheduleLocked(_options.TwoWayTalkExpiryMs, () =>
+            ScheduleForTurnLocked(_options.TwoWayTalkExpiryMs, turnId, () =>
             {
-                lock (_sync)
-                {
-                    if (_state == TurnState.Preparing)
-                        CancelLocked(TurnCancelReason.TwoWayTalkExpired);
-                }
+                if (_state == TurnState.Preparing)
+                    CancelLocked(TurnCancelReason.TwoWayTalkExpired);
             });
-            StatusChanged?.Invoke("对面仍在说：准备但暂不出声");
+            PostStatusLocked("对面仍在说：准备但暂不出声");
             return;
         }
 
@@ -192,25 +240,31 @@ internal sealed class TurnManagerV2 : IDisposable
         if (_loopbackActive)
         {
             // Still talking — keep holding, with the same expiry budget.
-            ScheduleLocked(_options.OpponentQuietHoldMs, () => { lock (_sync) DispatchIfOpponentQuietLocked(); });
+            ScheduleForTurnLocked(_options.OpponentQuietHoldMs, _activeContext!.TurnId, DispatchIfOpponentQuietLocked);
             return;
         }
-        var decision = InvitationClassifier.Classify(
-            _buffer.Select(b => (b.Line, b.Source)).ToArray(),
-            _options.SelfNames,
-            _lastAssistantMessage,
-            _clock.NowMs,
-            _aiSpokeAtMs,
-            _options.ConversationWindowMs);
-        DecisionRecorded?.Invoke(decision);
+        var decision = ClassifyLocked();
+        PostLocked(() => DecisionRecorded?.Invoke(decision));
         if (decision.Respond)
             DispatchLocked(decision, "opponent_quiet_after_hold");
         else
         {
-            _buffer.Clear();
+            ReleaseBufferLocked();
+            _activeContext = null;
             _state = TurnState.Observing;
         }
     }
+
+    private TurnDecision ClassifyLocked() => InvitationClassifier.Classify(
+        _buffer.Select(b => (b.Line, b.Source)).ToArray(),
+        new ClassifierContext(
+            _options.SelfNames,
+            _lastAssistantMessage,
+            _clock.NowMs,
+            _aiSpokeAtMs,
+            _options.ConversationWindowMs,
+            _lastAiTurnSources,
+            _lastOpponentFinalMs));
 
     /// <summary>Builds and stores the turn context from the buffered input (does not fire
     /// <see cref="TurnReady"/>).</summary>
@@ -237,10 +291,11 @@ internal sealed class TurnManagerV2 : IDisposable
     {
         var lines = _buffer.Select(b => b.Line).ToArray();
         CreateContextLocked(decision, mergeReason);
-        _buffer.Clear();
+        ClearBufferLocked();
         _state = TurnState.Ready;
-        StatusChanged?.Invoke($"回合就绪：{decision.ReasonCode}");
-        TurnReady?.Invoke(_activeContext!, lines);
+        PostStatusLocked($"回合就绪：{decision.ReasonCode}");
+        var ctx = _activeContext!;
+        PostLocked(() => TurnReady?.Invoke(ctx, lines));
     }
 
     // ------------------------------------------------------------------ commit / cancel
@@ -272,6 +327,10 @@ internal sealed class TurnManagerV2 : IDisposable
         }
     }
 
+    /// <summary>Physical sources that contributed to the active turn.</summary>
+    private TurnSource[] ActiveSourcesLocked() =>
+        _activeContext?.InputSegments.Select(s => s.Source).Distinct().ToArray() ?? [];
+
     /// <summary>The turn finished normally (played out or model chose silence).</summary>
     public void CompleteTurn(long generationId)
     {
@@ -279,10 +338,12 @@ internal sealed class TurnManagerV2 : IDisposable
         {
             if (_activeContext is not { GenerationId: var g } || g != generationId) return;
             _aiSpokeAtMs = _clock.NowMs;
-            _state = TurnState.Observing;
+            _state = _candidates.Count > 0 ? TurnState.Candidate : TurnState.Observing;
             _activeContext = null;
-            _buffer.Clear();
+            // Input that arrived while this turn was speaking is evaluated now, not dropped.
+            if (_buffer.Count > 0) EvaluateLocked("after_turn");
         }
+        FlushOutbox();
     }
 
     /// <summary>Records the assistant's last spoken reply (question-then-answer continuity).</summary>
@@ -293,24 +354,59 @@ internal sealed class TurnManagerV2 : IDisposable
         {
             _lastAssistantMessage = message;
             _aiSpokeAtMs = _clock.NowMs;
+            var sources = ActiveSourcesLocked();
+            if (sources.Length > 0) _lastAiTurnSources = sources;
         }
     }
 
     private void CancelLocked(TurnCancelReason reason)
     {
         if (_disposed) return;
-        _buffer.Clear();
-        _scheduler.Cancel();
-        _timers.Clear();
+        ReleaseBufferLocked();
         if (_activeContext is { } ctx)
         {
             if (ctx.IsCancelled) return;
             ctx.CancelReason = reason;
+            ctx.WasSpeakingWhenCancelled = _state == TurnState.Speaking;
             _activeContext = null;
-            StatusChanged?.Invoke($"回合取消：{reason}");
-            TurnCancelled?.Invoke(ctx, reason);
+            PostStatusLocked($"回合取消：{reason}");
+            PostLocked(() => TurnCancelled?.Invoke(ctx, reason));
         }
-        _state = TurnState.Observing;
+        _state = _candidates.Count > 0 && reason != TurnCancelReason.RetractedInvitation
+            ? TurnState.Candidate
+            : TurnState.Observing;
+    }
+
+    /// <summary>Drops buffered lines that will not be dispatched and tells the owner.</summary>
+    private void ReleaseBufferLocked()
+    {
+        if (_buffer.Count == 0) { ClearBufferLocked(); return; }
+        var released = _buffer.Select(b => b.Line).ToArray();
+        ClearBufferLocked();
+        PostLocked(() => LinesReleased?.Invoke(released));
+    }
+
+    private void ClearBufferLocked()
+    {
+        _buffer.Clear();
+        _bufferEpoch++;
+    }
+
+    private void PostLocked(Action action) => _outbox.Add(action);
+
+    private void PostStatusLocked(string status) => PostLocked(() => StatusChanged?.Invoke(status));
+
+    /// <summary>Raises queued events outside the lock, in the order they were produced.</summary>
+    private void FlushOutbox()
+    {
+        List<Action> pending;
+        lock (_sync)
+        {
+            if (_outbox.Count == 0) return;
+            pending = _outbox;
+            _outbox = [];
+        }
+        foreach (var action in pending) action();
     }
 
     // ------------------------------------------------------------------ external observations
@@ -329,16 +425,14 @@ internal sealed class TurnManagerV2 : IDisposable
                 {
                     _micActive = true;
                     _micActiveSince = now;
-                    // Brief noise should not shred AI speech: only cancel if the voice
-                    // persists past the noise gate.
+                    var episode = ++_micEpisode;
+                    // Brief noise should not shred AI speech: only cancel if THIS voice episode
+                    // persists past the noise gate (a later short blip is a new episode).
                     ScheduleLocked(_options.NoiseGateMs, () =>
                     {
-                        lock (_sync)
-                        {
-                            if (!_micActive) return;
-                            if (_state is TurnState.Ready or TurnState.Preparing or TurnState.Speaking)
-                                CancelLocked(TurnCancelReason.HumanVoiceResumed);
-                        }
+                        if (!_micActive || _micEpisode != episode) return;
+                        if (_state is TurnState.Ready or TurnState.Preparing or TurnState.Speaking)
+                            CancelLocked(TurnCancelReason.HumanVoiceResumed);
                     });
                 }
                 else if (!active && _micActive)
@@ -361,12 +455,23 @@ internal sealed class TurnManagerV2 : IDisposable
                 }
             }
         }
+        FlushOutbox();
     }
 
     /// <summary>Stop command / button: cancel everything in flight immediately.</summary>
-    public void NoteStopCommand()
+    public void NoteStopCommand() => Cancel(TurnCancelReason.StopCommand);
+
+    /// <summary>Hard cancel for an external reason (stop, pause, lost account access):
+    /// the in-flight turn and every buffered or candidate input are dropped.</summary>
+    public void Cancel(TurnCancelReason reason)
     {
-        lock (_sync) CancelLocked(TurnCancelReason.StopCommand);
+        lock (_sync)
+        {
+            _candidates.Clear();
+            CancelLocked(reason);
+            _state = TurnState.Observing;
+        }
+        FlushOutbox();
     }
 
     /// <summary>PK match boundary: in-flight turns and buffered context from the old match
@@ -375,9 +480,12 @@ internal sealed class TurnManagerV2 : IDisposable
     {
         lock (_sync)
         {
+            _candidates.Clear();
             CancelLocked(TurnCancelReason.MatchChanged);
             _matchId = newMatchId;
+            _state = TurnState.Observing;
         }
+        FlushOutbox();
     }
 
     /// <summary>Sets the current match identity without treating it as a change.</summary>
@@ -390,6 +498,13 @@ internal sealed class TurnManagerV2 : IDisposable
 
     private void ScheduleLocked(long delayMs, Action fire) =>
         ScheduleAtLocked(_clock.NowMs + Math.Max(1, delayMs), fire);
+
+    /// <summary>Schedules an action that only runs while the same turn is still active.</summary>
+    private void ScheduleForTurnLocked(long delayMs, long turnId, Action fire) =>
+        ScheduleLocked(delayMs, () =>
+        {
+            if (_activeContext?.TurnId == turnId) fire();
+        });
 
     private void ScheduleAtLocked(long deadlineMs, Action fire)
     {
@@ -417,9 +532,12 @@ internal sealed class TurnManagerV2 : IDisposable
                 var now = _clock.NowMs;
                 due = [.. _timers.Where(t => t.DeadlineMs <= now).Select(t => t.Fire)];
                 _timers.RemoveAll(t => t.DeadlineMs <= now);
+                // Timer actions run under the same lock as every other transition.
+                foreach (var fire in due)
+                    if (!_disposed) fire();
                 RescheduleLocked();
             }
-            foreach (var fire in due) fire();
+            FlushOutbox();
         });
     }
 
@@ -428,10 +546,12 @@ internal sealed class TurnManagerV2 : IDisposable
         lock (_sync)
         {
             if (_disposed) return;
-            _disposed = true;
             CancelLocked(TurnCancelReason.Disposed);
+            _disposed = true;
+            _timers.Clear();
             _scheduler.Dispose();
         }
+        FlushOutbox();
     }
 }
 

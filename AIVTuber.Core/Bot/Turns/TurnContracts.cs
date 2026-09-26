@@ -33,6 +33,10 @@ internal enum TurnCancelReason
     TwoWayTalkExpired,
     Superseded,
     Disposed,
+    /// <summary>The account grant ended (sign-out, expiry, denial).</summary>
+    AccessRevoked,
+    /// <summary>The streamer paused the companion.</summary>
+    Paused,
 }
 
 /// <summary>Graded invitation evidence (plan §5 RT-04 rule 2). Higher = stronger.</summary>
@@ -40,10 +44,14 @@ internal enum InvitationLevel
 {
     None = 0,
     WeakMention = 1,
-    ContinuousDialogue = 2,
-    ResponseToAiQuestion = 3,
-    DirectQuestion = 4,
-    NameCall = 5,
+    /// <summary>No explicit invitation, but the input may continue a conversation with the AI
+    /// (or its addressee is ambiguous). The turn goes to the main model, whose structured
+    /// speak / pass / thought decision is the semantic judgement — no extra cloud call.</summary>
+    SemanticDecision = 2,
+    ContinuousDialogue = 3,
+    ResponseToAiQuestion = 4,
+    DirectQuestion = 5,
+    NameCall = 6,
 }
 
 /// <summary>Machine-readable decision returned for every invitation judgement (RT-04 acceptance:
@@ -78,6 +86,9 @@ internal sealed record TurnContextV2
     public required IReadOnlyList<InputSegmentRef> InputSegments { get; init; }
     public IReadOnlyList<string> VisionSnapshotIds { get; init; } = [];
     public TurnCancelReason CancelReason { get; internal set; } = TurnCancelReason.None;
+    /// <summary>True when the turn was already playing audio when it was cancelled. Suppressing
+    /// output that has not started and interrupting audio that is playing are different acts.</summary>
+    public bool WasSpeakingWhenCancelled { get; internal set; }
 
     public bool IsCancelled => CancelReason != TurnCancelReason.None;
 }
