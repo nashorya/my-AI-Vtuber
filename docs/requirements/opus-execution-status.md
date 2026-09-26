@@ -47,7 +47,7 @@ App.OnStartup → new BotRuntime(config) → MainWindow → BotRuntime.StartAsyn
 | R02 | 同上 | 同上 | B |
 | R03 | 同上 | `AIVTuber.Core/RealtimeTts/` 不存在于 main | B |
 | R04 | 当前不可复现 | main 没有 `reply_protocol`/`StreamEventsAsync`；Cortico 走 legacy `StreamAsync`，没有 v2 冲突 | B |
-| R05 | 部分相关，仍存在 | TurnManagerV2 不在 main；但 main 的 `BotOrchestrator.Interrupt()` 先同步等待在途任务（`CancelCurrentAsync().GetResult()`）再 `_stopPlayback()`，本地停声依赖云端调用响应取消 | A 修最小停止缺口；其余 C |
+| R05 | main 停止缺口已修（b73a44c）；其余仍在 PR #25 | main 的 `BotOrchestrator.Interrupt()` 原先同步等在途任务再 `_stopPlayback()`；现改为先停本地播放。`InterruptLocalStopTests` 先 RED 后 GREEN。TurnManagerV2 相关问题不在 main | A（已修最小缺口）；其余 C |
 | R06 | 当前不可复现 | `RealtimeAsrPump` 不在 main | C |
 | R07 | 当前不可复现 | 同上 | C |
 | R08 | 当前不可复现；火山协议待官方对拍 | `VolcanoRealtimeAsrSession` 不在 main | B/C |
