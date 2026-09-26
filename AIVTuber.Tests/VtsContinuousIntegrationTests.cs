@@ -239,6 +239,10 @@ public sealed class VtsContinuousIntegrationTests : IDisposable
         await session.PrepareInputsAsync(profile); head.Verified = true;
         config.Profiles[profile.ModelId] = profile;
         for (var i = 0; i < 20; i++) await session.ApplyAsync(config);
+        // Measure the steady-state rate: the window starts once the writer is actually sending,
+        // so writer start-up latency on a loaded CI runner is not counted as "no writer".
+        var started = server.Count("InjectParameterDataRequest");
+        await WaitUntilAsync(() => server.Count("InjectParameterDataRequest") > started);
         var before = server.Count("InjectParameterDataRequest");
         await Task.Delay(400);
         Assert.InRange(server.Count("InjectParameterDataRequest") - before, 5, 18);

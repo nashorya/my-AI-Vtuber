@@ -252,6 +252,11 @@ public class RealtimeAsrPumpTests
         var breaks = new System.Collections.Concurrent.ConcurrentQueue<string>();
         pump.StreamBroken += (_, reason) => breaks.Enqueue(reason);
 
+        // A live session must exist before the flood: otherwise, when the consumer task starts
+        // late, the overflow tears down nothing and only one session is ever created.
+        pump.OnCapturedFrame(RealtimeAsrTestHelpers.Frame(30), voicedHint: true);
+        await RealtimeAsrTestHelpers.UntilAsync(() => factory.Sessions.Count == 1);
+
         for (var i = 0; i < 40; i++)
             pump.OnCapturedFrame(RealtimeAsrTestHelpers.Frame(30), voicedHint: true);
 
