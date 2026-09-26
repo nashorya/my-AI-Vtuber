@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "profile_id": "streamer-000",
+  "account": "example-streamer",
+  "credential_revision": 1,
+  "credential_scope": "dedicated",
+  "auth_server": "https://auth.example.invalid/",
+  "providers": {
+    "llm": { "provider": "deepseek", "base_url": "https://api.deepseek.com", "model": "deepseek-chat", "api_key": "FAKE-llm-key-for-docs-only" },
+    "asr": { "provider": "aliyun", "model": "paraformer-realtime-v2", "api_key": "FAKE-asr-key-for-docs-only" },
+    "tts": { "provider": "minimax", "model": "speech-2.8-hd", "voice_id": "your-voice-id", "api_key": "FAKE-tts-key-for-docs-only" }
+  }
+}

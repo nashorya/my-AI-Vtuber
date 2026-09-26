@@ -59,7 +59,12 @@ public sealed class DistributionProfile
     public static DistributionProfile? TryLoad(string contentRoot)
     {
         var path = Path.Combine(contentRoot, DirectoryName, FileName);
-        if (!File.Exists(path)) return null;
+        return File.Exists(path) ? LoadFile(path) : null;
+    }
+
+    /// <summary>Loads and validates a profile file at an explicit path (used by the packager).</summary>
+    public static DistributionProfile LoadFile(string path)
+    {
         DistributionProfile? profile;
         try
         {
