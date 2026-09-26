@@ -230,6 +230,25 @@ public sealed class BotRuntime : IAsyncDisposable
         }
     }
 
+    /// <summary>Creates the voice preview for the streamer page (V02/V03). It synthesises with
+    /// the same TTS adapter as the companion but a frozen copy of the current TTS settings, plays
+    /// on a separate player on the listening device (never the virtual microphone), and is
+    /// refused while the companion is thinking or speaking.</summary>
+    public AIVTuber.Core.Voice.VoicePreviewService CreateVoicePreview(
+        Func<TtsConfig, AIVTuber.Core.Voice.IPreviewAudioOutput>? output = null,
+        Func<TtsConfig, ITtsClient>? client = null) =>
+        new(() => _profile,
+            () => _config.Tts,
+            client ?? CreateTtsClient,
+            output ?? (tts => new AIVTuber.Core.Voice.AudioPlayerPreviewOutput(tts.SampleRate, _config.Audio.OutputDeviceIndex)),
+            () => _cloud,
+            () => _stateTracker.State is PipelineState.Thinking or PipelineState.Speaking);
+
+    /// <summary>Creates the catalog availability checker for the streamer page.</summary>
+    public AIVTuber.Core.Voice.VoiceCatalogService CreateVoiceCatalog(
+        Func<string, AIVTuber.Core.Voice.IVoiceAvailabilitySource?> sourceForProvider) =>
+        new(() => _profile, () => _config.Tts, () => _cloud, sourceForProvider);
+
     private CancellationTokenSource LinkCloudToken() =>
         CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, Volatile.Read(ref _cloudCts).Token);
 
