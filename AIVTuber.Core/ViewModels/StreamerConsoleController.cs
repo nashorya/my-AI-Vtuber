@@ -144,7 +144,12 @@ public sealed class StreamerConsoleController : IDisposable
         var requestId = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("requestId", out var r) &&
                         r.TryGetInt64(out var rid) ? rid : 0;
         var patch = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("patch", out var p) ? p : default;
-        var result = await _config.SaveStreamerAsync(patch).ConfigureAwait(true);
+        // Applying rebuilds pipeline modules, which would cut the current reply off mid-sentence.
+        // Changes therefore take effect at a turn boundary: not while the AI thinks or speaks.
+        var result = _runtime.StateTracker.State is PipelineState.Thinking or PipelineState.Speaking
+            ? new StreamerSaveResult(false, false, _config.SaveStateText,
+                "AI 正在说话，等这一句说完再保存（或先点「停止当前发言」）。", _runtime.ActiveConfigRevision, [])
+            : await _config.SaveStreamerAsync(patch).ConfigureAwait(true);
         _post(new
         {
             type = "saveResult",

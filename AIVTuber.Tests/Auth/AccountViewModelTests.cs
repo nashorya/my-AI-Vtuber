@@ -98,6 +98,6 @@ public sealed class AccountViewModelTests
     [Fact]
     public void AppVersion_ComesFromAssembly()
     {
-        Assert.Equal("0.36.0", AppVersion.Current);
+        Assert.Equal("0.36.0-rc.2", AppVersion.Current);
     }
 }

@@ -161,6 +161,23 @@ public sealed class StreamerConsoleTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task SaveWhileSpeaking_WaitsForTheTurnBoundary()
+    {
+        _runtime.StateTracker.SpeakingStarted(Environment.TickCount64);
+
+        await _controller.HandleAsync("saveSettings", Json("""{ "requestId": 3, "patch": { "voice": { "choiceId": "b" } } }"""));
+
+        var reply = _posted.Single(p => p.Contains("\"type\":\"saveResult\""));
+        Assert.Contains("\"ok\":false", reply);
+        Assert.Contains("说完再保存", reply);
+        Assert.Equal(StreamerConfigTests.VoiceA, _runtime.CurrentConfig.Tts.VoiceId);
+
+        _runtime.StateTracker.SpeakingStopped();
+        await _controller.HandleAsync("saveSettings", Json("""{ "requestId": 4, "patch": { "voice": { "choiceId": "b" } } }"""));
+        Assert.Equal(StreamerConfigTests.VoiceB, _runtime.CurrentConfig.Tts.VoiceId);
+    }
+
+    [Fact]
     public async Task Settings_AndState_NeverCarrySecrets()
     {
         await SignInAsync();
