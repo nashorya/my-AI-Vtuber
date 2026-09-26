@@ -1,5 +1,7 @@
 <Solution>
+  <Project Path="AIVTuber.AuthServer/AIVTuber.AuthServer.csproj" />
   <Project Path="AIVTuber.Core/AIVTuber.Core.csproj" />
   <Project Path="AIVTuber.Tests/AIVTuber.Tests.csproj" />
   <Project Path="App/App.csproj" />
+  <Project Path="tools/AIVTuber.Packager/AIVTuber.Packager.csproj" />
 </Solution>

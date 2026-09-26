@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using AIVTuber.App.WebUi;
+using AIVTuber.Core.Diagnostics;
 using AIVTuber.Core.ViewModels;
 
 namespace AIVTuber.App.Views;
@@ -11,6 +12,8 @@ public partial class WebConsoleView : UserControl
     private MonitorViewModel? _monitor;
     private ConfigViewModel? _config;
     private MemoryViewModel? _memory;
+    private Func<Action<object>, StreamerConsoleController>? _streamerFactory;
+    private StreamerConsoleController? _streamer;
 
     public WebConsoleView()
     {
@@ -19,11 +22,16 @@ public partial class WebConsoleView : UserControl
         Unloaded += OnUnloaded;
     }
 
-    public void Attach(MonitorViewModel monitor, ConfigViewModel config, MemoryViewModel memory)
+    /// <param name="streamerFactory">Distribution builds: builds the streamer console controller
+    /// around a sink that posts to the page. When set, the streamer page is loaded instead of the
+    /// developer console.</param>
+    public void Attach(MonitorViewModel monitor, ConfigViewModel config, MemoryViewModel memory,
+        Func<Action<object>, StreamerConsoleController>? streamerFactory = null)
     {
         _monitor = monitor;
         _config = config;
         _memory = memory;
+        _streamerFactory = streamerFactory;
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -38,20 +46,22 @@ public partial class WebConsoleView : UserControl
         var wwwroot = WebConsoleHost.ResolveWwwroot();
         if (wwwroot is null)
         {
-            FallbackText.Text = "找不到 WebUi/wwwroot。";
+            FallbackText.Text = "安装目录缺少界面文件（WebUi/wwwroot），请重新解压安装包。";
             return;
         }
 
         try
         {
-            _host = new WebConsoleHost(Browser, _monitor, _config, _memory, wwwroot);
+            _streamer ??= _streamerFactory?.Invoke(payload => _host?.PostFromController(payload));
+            _host = new WebConsoleHost(Browser, _monitor, _config, _memory, wwwroot, _streamer);
             await _host.InitializeAsync();
             FallbackText.Visibility = Visibility.Collapsed;
         }
         catch (Exception ex)
         {
-            FallbackText.Text = "WebView2 初始化失败。请安装 Edge WebView2 Runtime。\n" + ex.Message;
-            AIVTuber.Core.Diagnostics.DebugLog.Write($"[WebConsole] init failed: {ex}");
+            var error = UserErrorMapper.FromException(ex, ErrorArea.App);
+            FallbackText.Text = "界面组件没有加载成功，请安装或修复 Microsoft Edge WebView2 Runtime 后重启。" +
+                (error is null ? "" : $"\n诊断编号 {error.DiagnosticId}");
         }
     }
 

@@ -1,3 +1,4 @@
+using AIVTuber.Core.Auth;
 using AIVTuber.Core.Cortico;
 using AIVTuber.Core.Audio;
 using System.Threading.Channels;
@@ -13,6 +14,22 @@ using AIVTuber.Core.RealtimeAsr;
 using AIVTuber.Core.Vts;
 
 namespace AIVTuber.Core.Runtime;
+
+/// <summary>Speech-recognition health as the streamer should see it (U05). HTTP/WebSocket
+/// vendors work per request, so "not yet checked" is a normal state, not a fault.</summary>
+public enum AsrHealth
+{
+    /// <summary>No recognition attempted yet in this session.</summary>
+    Unknown,
+    /// <summary>The last recognition succeeded (or the local sidecar answered its health check).</summary>
+    Ready,
+    /// <summary>A recognition request is in flight.</summary>
+    Recognizing,
+    /// <summary>The last recognition failed; the next utterance retries.</summary>
+    Unavailable,
+    /// <summary>No recognition will run: companion paused or not signed in.</summary>
+    Paused,
+}
 
 /// <summary>
 /// Owns and wires every pipeline module. UI-agnostic: exposes events and state,
@@ -50,6 +67,7 @@ public sealed class BotRuntime : IAsyncDisposable
     private VtsClient? _vts;
     private CorticoProcess? _cortico;
     private CorticoOptions? _corticoOptions;
+    private CorticoProcess? _llmBuiltForCortico;
     private VtsContinuousSession? _continuousVts;
     public VtsContinuousSession? ContinuousVts => _continuousVts;
     private PixelAvatarDriver? _pixelAvatar;
@@ -91,6 +109,207 @@ public sealed class BotRuntime : IAsyncDisposable
     private sealed record CapturedOpponent(string Name, string? Uid, string? MatchId);
     private CapturedOpponent? _capturedOpponent;
 
+    // Account gate (AUTH-02/04/06/09). Public builds keep the unrestricted default.
+    private ICloudAccess _cloud = UnrestrictedCloudAccess.Instance;
+    private DistributionProfile? _profile;
+    private CancellationTokenSource _cloudCts = new();
+
+    /// <summary>Raised after account access was revoked and cloud work has been stopped locally.</summary>
+    public event EventHandler<string>? CloudAccessRevoked;
+    public bool DistributionMode => _profile is not null;
+    public bool CloudAllowed => _cloud.IsAllowed;
+    public DistributionProfile? Profile => _profile;
+
+    /// <summary>Binds the runtime to an account gate. With a <paramref name="profile"/> the runtime
+    /// is in distribution mode: provider settings are pinned to the profile and no local
+    /// inference (ASR sidecar, ONNX embeddings) is started.</summary>
+    public void UseCloudAccess(ICloudAccess access, DistributionProfile? profile = null)
+    {
+        ArgumentNullException.ThrowIfNull(access);
+        _cloud.Revoked -= OnCloudRevoked;
+        _cloud = access;
+        _profile = profile;
+        _cloud.Revoked += OnCloudRevoked;
+    }
+
+    /// <summary>Stops everything that could still produce public output: in-flight ASR is
+    /// cancelled, queued inputs are dropped and playback stops now. The wait for providers to
+    /// unwind runs in the background and never delays the local stop.</summary>
+    private void OnCloudRevoked(string reason)
+    {
+        Interlocked.Exchange(ref _cloudCts, new CancellationTokenSource()).Cancel();
+        _turnManagerV2?.Cancel(TurnCancelReason.AccessRevoked);
+        lock (_talkInputSync)
+        {
+            _turnGate?.Clear();
+            _queuedInputs.Clear();
+        }
+        var orchestrator = _orchestrator;
+        if (orchestrator is not null)
+        {
+            orchestrator.SetHold(false);
+            StartInterrupt(orchestrator);
+        }
+        ReportTurnStatus($"云端已停止：{reason}");
+        AIVTuber.Core.Diagnostics.DebugLog.Write($"[鉴权] 云端已停止：{reason}");
+        Notify(CloudAccessRevoked, reason, nameof(CloudAccessRevoked), this);
+        NotifyAsrHealth();
+    }
+
+    // ── Companion pause and speech-recognition health (A2) ────────────────────
+
+    private volatile bool _companionPaused;
+    private AsrHealth _asrHealth = AsrHealth.Unknown;
+    private int _asrInFlight;
+
+    /// <summary>True while the streamer paused the companion: devices keep running (levels stay
+    /// visible) but no audio is sent for recognition, no turn starts and nothing new is said.
+    /// Not the same as signing out and not the same as muting one microphone.</summary>
+    public bool CompanionPaused => _companionPaused;
+    public event EventHandler? CompanionPausedChanged;
+
+    public void SetCompanionPaused(bool paused)
+    {
+        if (_companionPaused == paused) return;
+        _companionPaused = paused;
+        if (paused)
+        {
+            _turnManagerV2?.Cancel(TurnCancelReason.Paused);
+            SetMicSpeechAbandoned();
+            AbandonLoopbackSpeechChannel();
+            StopSpeaking();
+            ReportTurnStatus("陪播已暂停");
+        }
+        else
+        {
+            ReportTurnStatus("陪播已继续");
+        }
+        Notify(CompanionPausedChanged, nameof(CompanionPausedChanged));
+        NotifyAsrHealth();
+    }
+
+    private void SetMicSpeechAbandoned()
+    {
+        lock (_micInputSync)
+        {
+            _vad?.Reset();
+            Interlocked.Exchange(ref _micSpeechChannel, null)?.Writer.TryComplete();
+        }
+    }
+
+    /// <summary>Cloud work may start: signed in (or public build) and not paused.</summary>
+    private bool CanStartCloudWork => _cloud.IsAllowed && !_companionPaused;
+
+    /// <summary>Speech-recognition health derived from real recognition outcomes (cloud) or the
+    /// sidecar health check (local) — never from the local sidecar flag alone.</summary>
+    public AsrHealth CurrentAsrHealth
+    {
+        get
+        {
+            if (_companionPaused || !_cloud.IsAllowed) return AsrHealth.Paused;
+            if (Volatile.Read(ref _asrInFlight) > 0) return AsrHealth.Recognizing;
+            return _asrHealth;
+        }
+    }
+
+    public event EventHandler<AsrHealth>? AsrHealthChanged;
+
+    private void SetAsrHealth(AsrHealth health)
+    {
+        _asrHealth = health;
+        NotifyAsrHealth();
+    }
+
+    private void NotifyAsrHealth() => Notify(AsrHealthChanged, CurrentAsrHealth, nameof(AsrHealthChanged), this);
+
+    /// <summary>
+    /// Raises a status notification without letting a subscriber's failure reach the caller.
+    /// Subscribers are UI adapters (WebView, view models) that may throw — wrong thread,
+    /// disposed control, serialization. Those are UI faults: they are logged, and must never
+    /// change the outcome of the work that raised them (a successful recognition stays
+    /// successful, a pause or sign-out still completes).
+    /// </summary>
+    private static void Notify<T>(EventHandler<T>? handler, T value, string name, object? sender = null)
+    {
+        if (handler is null) return;
+        foreach (var each in handler.GetInvocationList())
+        {
+            try { ((EventHandler<T>)each)(sender, value); }
+            catch (Exception ex)
+            {
+                AIVTuber.Core.Diagnostics.DebugLog.Write(
+                    $"[界面通知] {name} 处理失败（已隔离，不影响语音链路）: {ex.GetType().Name}: {AIVTuber.Core.Diagnostics.DiagnosticRedactor.Redact(ex.Message)}");
+            }
+        }
+    }
+
+    private void Notify(EventHandler? handler, string name)
+    {
+        if (handler is null) return;
+        foreach (var each in handler.GetInvocationList())
+        {
+            try { ((EventHandler)each)(this, EventArgs.Empty); }
+            catch (Exception ex)
+            {
+                AIVTuber.Core.Diagnostics.DebugLog.Write(
+                    $"[界面通知] {name} 处理失败（已隔离，不影响语音链路）: {ex.GetType().Name}: {AIVTuber.Core.Diagnostics.DiagnosticRedactor.Redact(ex.Message)}");
+            }
+        }
+    }
+
+    /// <summary>Runs one recognition and records its outcome. A cancellation (stop, pause,
+    /// sign-out) says nothing about the service and leaves the health unchanged. Only the
+    /// recognition call itself is inside the try: health notifications are raised after the
+    /// outcome is decided, so a failing UI subscriber cannot turn a success into "unavailable"
+    /// or drop the transcript.</summary>
+    private async Task<AsrResult> RecognizeTrackedAsync(Func<Task<AsrResult>> recognize)
+    {
+        Interlocked.Increment(ref _asrInFlight);
+        NotifyAsrHealth();
+        AsrResult result;
+        try
+        {
+            result = await recognize().ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            Interlocked.Decrement(ref _asrInFlight);
+            NotifyAsrHealth();
+            throw;
+        }
+        catch
+        {
+            Interlocked.Decrement(ref _asrInFlight);
+            SetAsrHealth(AsrHealth.Unavailable);
+            throw;
+        }
+        Interlocked.Decrement(ref _asrInFlight);
+        SetAsrHealth(AsrHealth.Ready);
+        return result;
+    }
+
+    /// <summary>Creates the voice preview for the streamer page (V02/V03). It synthesises with
+    /// the same TTS adapter as the companion but a frozen copy of the current TTS settings, plays
+    /// on a separate player on the listening device (never the virtual microphone), and is
+    /// refused while the companion is thinking or speaking.</summary>
+    public AIVTuber.Core.Voice.VoicePreviewService CreateVoicePreview(
+        Func<TtsConfig, AIVTuber.Core.Voice.IPreviewAudioOutput>? output = null,
+        Func<TtsConfig, ITtsClient>? client = null) =>
+        new(() => _profile,
+            () => _config.Tts,
+            client ?? CreatePreviewTtsClient,
+            output ?? (tts => new AIVTuber.Core.Voice.AudioPlayerPreviewOutput(tts.SampleRate, _config.Audio.OutputDeviceIndex)),
+            () => _cloud,
+            () => _stateTracker.State is PipelineState.Thinking or PipelineState.Speaking);
+
+    /// <summary>Creates the catalog availability checker for the streamer page.</summary>
+    public AIVTuber.Core.Voice.VoiceCatalogService CreateVoiceCatalog(
+        Func<string, AIVTuber.Core.Voice.IVoiceAvailabilitySource?> sourceForProvider) =>
+        new(() => _profile, () => _config.Tts, () => _cloud, sourceForProvider);
+
+    private CancellationTokenSource LinkCloudToken() =>
+        CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, Volatile.Read(ref _cloudCts).Token);
+
     private CapturedOpponent CaptureOpponent()
     {
         var (matchId, opponent) = _pkBuffer.CaptureIdentity();
@@ -126,7 +345,7 @@ public sealed class BotRuntime : IAsyncDisposable
     private void ReportTurnStatus(string status)
     {
         AIVTuber.Core.Diagnostics.DebugLog.Write($"[回合状态] {status}");
-        TurnStatusChanged?.Invoke(this, status);
+        Notify(TurnStatusChanged, status, nameof(TurnStatusChanged), this);
     }
     /// <summary>Fired per mic frame with RMS in [0,1] for a level indicator.</summary>
     public event EventHandler<float>? MicLevelUpdated;
@@ -176,7 +395,8 @@ public sealed class BotRuntime : IAsyncDisposable
     public PkTurnRepository PkTurnRepository => _pkTurnRepo;
     public DanmakuSelector? Selector => _selector;
 
-    public Task ForceExtractMemoryAsync() => _memoryExtractor.ExtractFactsAsync();
+    public Task ForceExtractMemoryAsync() =>
+        _cloud.IsAllowed ? _memoryExtractor.ExtractFactsAsync() : Task.CompletedTask;
 
     private volatile bool _micMuted;
     private readonly object _micInputSync = new();
@@ -202,11 +422,38 @@ public sealed class BotRuntime : IAsyncDisposable
         lock (_talkInputSync)
         {
             _turnGate?.Clear();
-            _turnManagerV2?.NoteStopCommand();
             _queuedInputs.Clear();
         }
-        _orchestrator?.SetHold(false);
-        _orchestrator?.Interrupt();
+        // Outside _talkInputSync: the turn manager raises its events after its own lock.
+        _turnManagerV2?.NoteStopCommand();
+        var orchestrator = _orchestrator;
+        if (orchestrator is null) return;
+        orchestrator.SetHold(false);
+        // Local output stops now; waiting for the vendor to unwind (and, for bidirectional TTS,
+        // its cancel acknowledgement) happens in the background. The caller — often the UI
+        // thread — never blocks on a provider that ignores cancellation (TURN-05).
+        StartInterrupt(orchestrator);
+    }
+
+    /// <summary>Local stop now, vendor unwind in the background, recorded as the barrier the
+    /// next turn waits on.</summary>
+    private void StartInterrupt(BotOrchestrator orchestrator)
+    {
+        var interrupt = orchestrator.BeginInterrupt();
+        _interruptBarrier = interrupt;
+        SuperviseBackgroundTask(interrupt);
+    }
+
+    // The last interrupt's vendor-side completion. A new turn waits for it (bounded) so the
+    // next text is not submitted before the previous cancel barrier settled.
+    private Task _interruptBarrier = Task.CompletedTask;
+    private static readonly TimeSpan InterruptBarrierLimit = TimeSpan.FromSeconds(3);
+
+    private async Task AwaitInterruptBarrierAsync()
+    {
+        var barrier = _interruptBarrier;
+        if (barrier.IsCompleted) return;
+        await Task.WhenAny(barrier, Task.Delay(InterruptBarrierLimit)).ConfigureAwait(false);
     }
 
     // True while AI is speaking — loopback VAD feed is paused to prevent self-hearing.
@@ -326,7 +573,13 @@ public sealed class BotRuntime : IAsyncDisposable
         await _memoryDb.InitializeAsync();
         _embedding = null;
         MemoryVectorSearchDegraded = false;
-        if (!CloudOnlyGate.ShouldLoadLocalEmbedding(_config.Realtime))
+        if (_profile is not null)
+        {
+            // Distribution builds never run local inference (AUTH-09).
+            MemoryVectorSearchDegraded = true;
+            Console.WriteLine("[记忆] 分发版不加载本地向量模型，记忆检索改用字符串相似度（记忆数据保留）");
+        }
+        else if (!CloudOnlyGate.ShouldLoadLocalEmbedding(_config.Realtime))
         {
             // Explicit, visible degradation — the gate must not silently start the ONNX
             // runtime in cloud-only mode. Existing databases and memories are untouched.
@@ -391,7 +644,9 @@ public sealed class BotRuntime : IAsyncDisposable
             {
                 // A sidecar/VTS failure must not kill the voice pipeline (mirrors the
                 // fail-soft legacy VTS path below) — degrade to plain VTS and continue.
-                var msg = $"[Cortico] 启动失败，降级为普通 VTS 路径: {ex.Message}";
+                // Temporary degradation for this run only — not Cortico compatibility. The prompt,
+                // parser and player all switch together to the plain path (no half state).
+                var msg = $"[Cortico] 启动失败，本次运行临时降级为普通 VTS 演出（不是 Cortico 演出，重启或重连形象后再试）: {ex.Message}";
                 Console.WriteLine(msg);
                 PipelineError?.Invoke(this, msg);
             }
@@ -636,6 +891,15 @@ public sealed class BotRuntime : IAsyncDisposable
             _ => new TtsClient(tts),
         };
 
+    /// <summary>Preview uses a request-scoped client of the same vendor and voice. The RT-06
+    /// bidirectional MiniMax transport is one long session that the companion owns, so preview
+    /// takes the per-sentence WebSocket client instead of competing for that session.</summary>
+    internal static ITtsClient CreatePreviewTtsClient(TtsConfig tts) =>
+        tts.Provider.Equals("minimax", StringComparison.OrdinalIgnoreCase) &&
+        tts.Transport.Equals("bidi", StringComparison.OrdinalIgnoreCase)
+            ? new MiniMaxWsTtsClient(tts)
+            : CreateTtsClient(tts);
+
     private void InitPipeline(RuntimeChange rebuild =
         RuntimeChange.RebuildAsr | RuntimeChange.RebuildLlm | RuntimeChange.RebuildTts)
     {
@@ -646,16 +910,20 @@ public sealed class BotRuntime : IAsyncDisposable
             (_asr as IDisposable)?.Dispose();
             _asr = CreateAsrClient(_config.Asr, ex => PipelineError?.Invoke(this, $"[ASR连接] {ex.GetType().Name}: {ex.Message}"));
         }
-        if (_llm is null || rebuild.HasFlag(RuntimeChange.RebuildLlm))
+        // The prompt and the parser depend on which performance layer is live; a Cortico restart
+        // or failure must never leave the model writing for the other one.
+        if (_llm is null || rebuild.HasFlag(RuntimeChange.RebuildLlm) || !ReferenceEquals(_llmBuiltForCortico, _cortico))
         {
             _llm?.Dispose();
             _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model,
                 BuildLlmSystemPrompt(),
-                _config.Avatar.UsesVts && _config.Vts.ContinuousControl.Enabled
+                _cortico is null && _config.Avatar.UsesVts && _config.Vts.ContinuousControl.Enabled
                     ? () => _continuousVts is { } vts && vts.DeclaredChannels.Length > 0
                         ? vts.DeclaredChannels
                         : [] : null,
-                _config.Llm.ReplyProtocol);
+                _config.Llm.ReplyProtocol,
+                scriptMarkup: _cortico is not null);
+            _llmBuiltForCortico = _cortico;
         }
         if (_tts is null || rebuild.HasFlag(RuntimeChange.RebuildTts))
         {
@@ -678,82 +946,7 @@ public sealed class BotRuntime : IAsyncDisposable
         _orchestrator.Trace = _trace;
         if (_config.Avatar.UsesVts && _config.Vts.ContinuousControl.Enabled && _continuousVts is not null)
             _orchestrator.ConfigureContinuousControl(_continuousVts);
-        _orchestrator.ShouldSpeak = probe => _wakeGate.ShouldSpeak(
-            _config.Interaction.IsPkMode,
-            _config.Interaction.WakeKeywords,
-            _config.Interaction.WakeHoldSec,
-            probe,
-            Environment.TickCount64);
-
-        _orchestrator.OnError += (_, msg) => PipelineError?.Invoke(this, msg);
-
-        _orchestrator.OnUserTranscript += (_, text) =>
-        {
-            AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风识别] 「{text}」");
-            _stateTracker.TranscriptReady(Environment.TickCount64);
-            UserTranscript?.Invoke(this, text);
-        };
-        _orchestrator.OnReplyCommitted += (_, reply) => CommitReply(reply);
-        _orchestrator.OnSentenceReady += (_, s) => SentenceReady?.Invoke(this, s);
-        _orchestrator.OnEmotionDetected += (_, e) => EmotionDetected?.Invoke(this, e);
-        _orchestrator.OnActionDetected += (_, a) => ActionDetected?.Invoke(this, a);
-        _orchestrator.OnUserEmotionDetected += (_, e) => UserEmotionDetected?.Invoke(this, e);
-        _orchestrator.OnLoopbackTranscript += (_, t) =>
-        {
-            AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录识别→对面] 「{t}」");
-            if (CurrentPkOpponent is not null)
-                _pkBuffer.NoteOpponentSpeech(t, "loopback");
-            LoopbackTranscript?.Invoke(this, t);
-        };
-
-        _orchestrator.ConfigureOutputCommands(
-            _obs is null
-                ? null
-                : (text, ct) => _obs.SetSubtitleTypewriterAsync(
-                    text, _config.Obs.AssistantTextComponent, ct),
-            _obs is null
-                ? null
-                : (text, ct) => _obs.SetSubtitleAsync(
-                    $"[用户] {text}", _config.Obs.UserTextComponent, ct));
-
-        _orchestrator.OnFirstSentenceToTts += (_, _) =>
-            _stateTracker.LlmFirstSentenceReady(Environment.TickCount64);
-
-        // Mute loopback VAD while AI is playing so it doesn't hear its own TTS output.
-        // Also abandon any in-flight streaming channel so mute gaps cannot mix into later ASR.
-        _orchestrator.OnAiStartSpeaking += (_, _) =>
-        {
-            _loopbackVadMuted = true;
-            _loopbackVad?.Reset();
-            Interlocked.Exchange(ref _capturedOpponent, null);
-            AbandonLoopbackSpeechChannel();
-        };
-        _orchestrator.OnAiStopSpeaking += (_, _) =>
-        {
-            _loopbackVadMuted = false;
-            _loopbackVad?.Reset();
-            Interlocked.Exchange(ref _capturedOpponent, null);
-            AbandonLoopbackSpeechChannel();
-            if (_pkBuffer.IsActive)
-                _pkBuffer.EndAssistantReply();
-        };
-
-        // Stable speaking->selector bridge, added once per orchestrator. Null-safe so it works
-        // whether or not danmaku is active, and reads the current _selector field after rebuilds —
-        // so it never needs re-adding (which would accumulate handlers).
-        _orchestrator.OnAiStartSpeaking += (_, _) =>
-        {
-            _selector?.SetSpeaking(true);
-            _stateTracker.SpeakingStarted(Environment.TickCount64);
-            AiStartSpeaking?.Invoke(this, EventArgs.Empty);
-        };
-        _orchestrator.OnAiStopSpeaking += (_, _) =>
-        {
-            _selector?.SetSpeaking(false);
-            _selector?.TrySelectNext();
-            _stateTracker.SpeakingStopped();
-            AiStopSpeaking?.Invoke(this, EventArgs.Empty);
-        };
+        WireOrchestrator(_orchestrator);
 
         // Orchestrator is recreated here — re-attach pixel avatar hooks if active.
         if (_pixelAvatar is not null)
@@ -797,6 +990,92 @@ public sealed class BotRuntime : IAsyncDisposable
         }
     }
 
+    /// <summary>Subscribes the runtime to an orchestrator: errors, transcripts, commits,
+    /// speaking lifecycle, subtitles, loopback muting and the danmaku bridge. The only place
+    /// these subscriptions are made (tests drive a fake-backed orchestrator through it too).</summary>
+    internal void WireOrchestrator(BotOrchestrator o)
+    {
+        o.ShouldSpeak = probe => _wakeGate.ShouldSpeak(
+            _config.Interaction.IsPkMode,
+            _config.Interaction.WakeKeywords,
+            _config.Interaction.WakeHoldSec,
+            probe,
+            Environment.TickCount64);
+
+        o.OnError += (_, msg) => PipelineError?.Invoke(this, msg);
+
+        o.OnUserTranscript += (_, text) =>
+        {
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风识别] 「{text}」");
+            _stateTracker.TranscriptReady(Environment.TickCount64);
+            UserTranscript?.Invoke(this, text);
+        };
+        o.OnReplyCommitted += (_, reply) => CommitReply(reply);
+        o.OnSentenceReady += (_, s) => SentenceReady?.Invoke(this, s);
+        o.OnEmotionDetected += (_, e) => EmotionDetected?.Invoke(this, e);
+        o.OnActionDetected += (_, a) => ActionDetected?.Invoke(this, a);
+        o.OnUserEmotionDetected += (_, e) => UserEmotionDetected?.Invoke(this, e);
+        o.OnLoopbackTranscript += (_, t) =>
+        {
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录识别→对面] 「{t}」");
+            if (CurrentPkOpponent is not null)
+                _pkBuffer.NoteOpponentSpeech(t, "loopback");
+            LoopbackTranscript?.Invoke(this, t);
+        };
+
+        o.ConfigureOutputCommands(
+            _obs is null
+                ? null
+                : (text, ct) => _obs.SetSubtitleTypewriterAsync(
+                    text, _config.Obs.AssistantTextComponent, ct),
+            _obs is null
+                ? null
+                : (text, ct) => _obs.SetSubtitleAsync(
+                    $"[用户] {text}", _config.Obs.UserTextComponent, ct));
+
+        o.OnFirstSentenceToTts += (_, _) =>
+            _stateTracker.LlmFirstSentenceReady(Environment.TickCount64);
+
+        // Mute loopback VAD while AI is playing so it doesn't hear its own TTS output.
+        // Also abandon any in-flight streaming channel so mute gaps cannot mix into later ASR.
+        o.OnAiStartSpeaking += (_, _) =>
+        {
+            _loopbackVadMuted = true;
+            _loopbackVad?.Reset();
+            Interlocked.Exchange(ref _capturedOpponent, null);
+            AbandonLoopbackSpeechChannel();
+        };
+        o.OnAiStopSpeaking += (_, _) =>
+        {
+            _loopbackVadMuted = false;
+            _loopbackVad?.Reset();
+            Interlocked.Exchange(ref _capturedOpponent, null);
+            AbandonLoopbackSpeechChannel();
+            if (_pkBuffer.IsActive)
+                _pkBuffer.EndAssistantReply();
+        };
+
+        // Stable speaking->selector bridge, added once per orchestrator. Null-safe so it works
+        // whether or not danmaku is active, and reads the current _selector field after rebuilds —
+        // so it never needs re-adding (which would accumulate handlers).
+        o.OnAiStartSpeaking += (_, _) =>
+        {
+            // Real playback lifecycle: the v2 turn becomes Speaking at first audio.
+            var generation = Interlocked.Read(ref _pendingV2Generation);
+            if (generation != 0) _turnManagerV2?.NoteSpeakingStarted(generation);
+            _selector?.SetSpeaking(true);
+            _stateTracker.SpeakingStarted(Environment.TickCount64);
+            AiStartSpeaking?.Invoke(this, EventArgs.Empty);
+        };
+        o.OnAiStopSpeaking += (_, _) =>
+        {
+            _selector?.SetSpeaking(false);
+            _selector?.TrySelectNext();
+            _stateTracker.SpeakingStopped();
+            AiStopSpeaking?.Invoke(this, EventArgs.Empty);
+        };
+    }
+
     /// <summary>Merges VTS + pixel avatar emotion/pose allow-lists into the LLM system prompt.</summary>
     private string BuildLlmSystemPrompt()
     {
@@ -813,7 +1092,8 @@ public sealed class BotRuntime : IAsyncDisposable
             ? ""
             : "\n" + _config.Identity.ExtraNotes.Trim();
         if (_cortico is not null)
-            return _config.Llm.SystemPrompt + "\n\n" + protocol + extra + "\n\n" + _cortico.Prompt;
+            return _config.Llm.SystemPrompt + "\n\n" + protocol + extra + "\n\n" +
+                   CorticoPrompt.For(_config.Llm.ReplyProtocol, _cortico.ScriptGrammar);
         return string.IsNullOrWhiteSpace(basePrompt) ? protocol + extra : basePrompt + "\n\n" + protocol + extra;
     }
 
@@ -831,21 +1111,55 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             _turnManagerV2 = new TurnManagerV2(new TurnManagerOptions
             {
-                SelfNames = [_config.Identity.SelfName, .. _config.Interaction.WakeKeywords],
+                // The AI's own names only. Identity.SelfName is what the AI calls the
+                // microphone user (the streamer) — saying it must not count as calling the AI.
+                SelfNames = AiCallNames(_config),
                 SpeculativeGenerationEnabled = _config.Realtime.SpeculativeGenerationEnabled,
             });
             _turnManagerV2.StatusChanged += status => ReportTurnStatus(status);
             _turnManagerV2.TurnReady += (ctx, lines) => SuperviseBackgroundTask(HandleTurnReadyV2Async(ctx, lines));
-            _turnManagerV2.TurnCancelled += (_, reason) =>
-                AIVTuber.Core.Diagnostics.DebugLog.Write($"[回合v2] 已取消 generation，原因={reason}");
+            _turnManagerV2.TurnCancelled += OnV2TurnCancelled;
+            _turnManagerV2.LinesReleased += lines =>
+            {
+                // Lines the manager decided not to answer stay in the conversation history.
+                lock (_talkInputSync)
+                    foreach (var line in lines)
+                        if (line.HistoryMessage is { } message) _queuedInputs.Remove(message);
+            };
             _turnManagerV2.DecisionRecorded += d =>
                 AIVTuber.Core.Diagnostics.DebugLog.Write(
                     $"[回合v2] 决策 respond={d.Respond} level={d.Level} reason={d.ReasonCode}");
         }
     }
 
-    /// <summary>RT-04 v2 turn dispatch. Mirrors the legacy path, with CanCommit additionally
-    /// bound to the v2 generation (voice recovery / match change / retraction / stop).</summary>
+    /// <summary>Names the AI answers to (wake keywords / aliases). Not the streamer's name.</summary>
+    internal static IReadOnlyList<string> AiCallNames(AppConfig config) =>
+        config.Interaction.WakeKeywords.Where(k => !string.IsNullOrWhiteSpace(k)).Select(k => k.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+
+    /// <summary>Maps a v2 cancellation onto the real pipeline. Output that has not started is
+    /// suppressed and its generation cancelled (local stop first, vendor unwind in the
+    /// background). Audio already playing is only cut for hard reasons; a soft reason
+    /// (human voice resumed, superseded, two-way expiry) lets the current sentence end while
+    /// the commit gate blocks the rest. Stop/pause/sign-out are already stopped by the caller.</summary>
+    private void OnV2TurnCancelled(TurnContextV2 context, TurnCancelReason reason)
+    {
+        AIVTuber.Core.Diagnostics.DebugLog.Write(
+            $"[回合v2] 已取消 generation，原因={reason} speaking={context.WasSpeakingWhenCancelled}");
+        if (context.GenerationId != Interlocked.Read(ref _pendingV2Generation)) return;
+        if (reason is TurnCancelReason.StopCommand or TurnCancelReason.Paused or TurnCancelReason.AccessRevoked
+            or TurnCancelReason.Disposed) return;
+        var soft = reason is TurnCancelReason.HumanVoiceResumed or TurnCancelReason.Superseded
+            or TurnCancelReason.TwoWayTalkExpired;
+        if (soft && context.WasSpeakingWhenCancelled) return;
+        var orchestrator = _orchestrator;
+        if (orchestrator is null) return;
+        StartInterrupt(orchestrator);
+    }
+
+    /// <summary>RT-04 v2 turn dispatch. Mirrors the legacy path — including the account and
+    /// pause checks — with CanCommit additionally bound to the v2 generation (voice recovery /
+    /// match change / retraction / stop).</summary>
     private async Task HandleTurnReadyV2Async(TurnContextV2 context, IReadOnlyList<TalkLine> lines)
     {
         var manager = _turnManagerV2;
@@ -855,6 +1169,8 @@ public sealed class BotRuntime : IAsyncDisposable
         try
         {
             if (orchestrator is null) return;
+            var cloudEpoch = _cloud.Epoch;
+            if (!CanStartCloudWork) return;
             lines = lines.Where(IsCurrentMatch).ToArray();
             if (lines.Count == 0) return;
             var formatted = IdentityPrompt.FormatTurn(lines);
@@ -864,16 +1180,19 @@ public sealed class BotRuntime : IAsyncDisposable
 
             bool CanCommit()
             {
-                return ReferenceEquals(orchestrator, _orchestrator) && ReferenceEquals(manager, _turnManagerV2) &&
+                return CanStartCloudWork && _cloud.Epoch == cloudEpoch &&
+                    ReferenceEquals(orchestrator, _orchestrator) && ReferenceEquals(manager, _turnManagerV2) &&
                     manager.CanCommit(context.GenerationId) &&
                     turnMatchId == _pkBuffer.MatchId && lines.All(IsCurrentMatch);
             }
-            lock (_talkInputSync) _pendingV2Generation = context.GenerationId;
+            Interlocked.Exchange(ref _pendingV2Generation, context.GenerationId);
+            _pendingTurnLines = lines;
             if (lines.Any(l => l.Identity is TalkIdentity.Self or TalkIdentity.Opponent))
                 _stateTracker.VoiceTurnDispatched(Environment.TickCount64);
             else
                 _stateTracker.TextInputStarted(Environment.TickCount64);
             UserTranscript?.Invoke(this, formatted);
+            await AwaitInterruptBarrierAsync().ConfigureAwait(false);
             await orchestrator.ProcessTextAsync(formatted, history, bypassWake: true, canCommit: CanCommit,
                 requireStructuredReply: true).ConfigureAwait(false);
         }
@@ -886,6 +1205,8 @@ public sealed class BotRuntime : IAsyncDisposable
             lock (_talkInputSync)
                 foreach (var line in lines)
                     if (line.HistoryMessage is { } message) _queuedInputs.Remove(message);
+            Interlocked.CompareExchange(ref _pendingV2Generation, 0, context.GenerationId);
+            _pendingTurnLines = [];
             _stateTracker.SpeakingStopped();
             manager.CompleteTurn(context.GenerationId);
         }
@@ -893,7 +1214,8 @@ public sealed class BotRuntime : IAsyncDisposable
 
     internal void AcceptTalkLine(TalkLine line)
     {
-        if (_cts.IsCancellationRequested || string.IsNullOrWhiteSpace(line.Text) || !IsCurrentMatch(line)) return;
+        if (_cts.IsCancellationRequested || !CanStartCloudWork ||
+            string.IsNullOrWhiteSpace(line.Text) || !IsCurrentMatch(line)) return;
         var stop = line.Identity == TalkIdentity.Self &&
             IdentityPrompt.IsStopRequest(line.Text, _config.Interaction.WakeKeywords);
         lock (_talkInputSync)
@@ -941,7 +1263,7 @@ public sealed class BotRuntime : IAsyncDisposable
             history.RemoveAll(_queuedInputs.Contains);
             foreach (var line in lines)
                 if (line.HistoryMessage is { } message) _queuedInputs.Remove(message);
-            history.Add(new Message { Role = MessageRole.System, Content = IdentityPrompt.InvitationPolicyFor(_config.Llm.ReplyProtocol) });
+            history.Add(new Message { Role = MessageRole.System, Content = IdentityPrompt.InvitationPolicyFor(_config.Llm.ReplyProtocol, cortico: _orchestrator?.Cortico is not null) });
             // VIS-02: synchronous read of the in-memory observation snapshot. Never awaits the
             // VLM; when no (valid) snapshot exists the turn proceeds exactly as before.
             if (_vision is { Enabled: true })
@@ -954,7 +1276,7 @@ public sealed class BotRuntime : IAsyncDisposable
         }
     }
 
-    private async Task HandleTurnReadyAsync(IReadOnlyList<TalkLine> lines)
+    internal async Task HandleTurnReadyAsync(IReadOnlyList<TalkLine> lines)
     {
         var gate = _turnGate;
         if (gate is null) return;
@@ -964,6 +1286,8 @@ public sealed class BotRuntime : IAsyncDisposable
         try
         {
             if (orchestrator is null) return;
+            var cloudEpoch = _cloud.Epoch;
+            if (!CanStartCloudWork) return;
             lock (_talkInputSync)
                 foreach (var stale in lines.Where(l => !IsCurrentMatch(l)))
                     if (stale.HistoryMessage is { } message) _queuedInputs.Remove(message);
@@ -977,7 +1301,8 @@ public sealed class BotRuntime : IAsyncDisposable
 
             bool CanCommit()
             {
-                return ReferenceEquals(orchestrator, _orchestrator) && ReferenceEquals(gate, _turnGate) && gate.CanCommit(revision) &&
+                return CanStartCloudWork && _cloud.Epoch == cloudEpoch &&
+                    ReferenceEquals(orchestrator, _orchestrator) && ReferenceEquals(gate, _turnGate) && gate.CanCommit(revision) &&
                     turnMatchId == _pkBuffer.MatchId && lines.All(IsCurrentMatch);
             }
             if (lines.Any(l => l.Identity is TalkIdentity.Self or TalkIdentity.Opponent))
@@ -986,6 +1311,7 @@ public sealed class BotRuntime : IAsyncDisposable
                 _stateTracker.TextInputStarted(Environment.TickCount64);
             _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TurnCommitReady);
             UserTranscript?.Invoke(this, formatted);
+            await AwaitInterruptBarrierAsync().ConfigureAwait(false);
             await orchestrator.ProcessTextAsync(formatted, history, bypassWake: true, canCommit: CanCommit,
                 requireStructuredReply: true).ConfigureAwait(false);
         }
@@ -1020,11 +1346,11 @@ public sealed class BotRuntime : IAsyncDisposable
                 // second persistence route for a paraphrased PASS observation.
                 if (!_conversation.HasTransientContext)
                     NotePkPair(lines, reply.Spoken);
-                SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
+                if (_cloud.IsAllowed && _memoryExtractor is not null) SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
                 break;
             case ReplyKind.InnerThought:
                 ReportTurnStatus("模型选择心里话，本轮不播放语音");
-                SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
+                if (_cloud.IsAllowed && _memoryExtractor is not null) SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
                 break;
             case ReplyKind.Pass:
                 ReportTurnStatus("继续旁听，对话已保留");
@@ -1072,30 +1398,15 @@ public sealed class BotRuntime : IAsyncDisposable
                 AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风段] 能量过低(<{MicAsrMinPeak})，跳过ASR");
             return;
         }
+        if (!CanStartCloudWork) return;
         _trace.BeginTurn();
         // VAD closed the segment here: this is the local end-of-speech boundary on the capture
         // timeline (plan RT-00 input_last_voiced), not the ASR request time.
         _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.InputLastVoiced);
         _stateTracker.InputStarted(Environment.TickCount64);
-        AsrResult result;
-        if (_config.Asr.Streaming)
-        {
-            // Consumer of the buffered frames starts only now (after SpeechDetected) — see
-            // docs/realtime/baseline.md; RT-02 moves it to first voiced frame.
-            _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.AsrFirstAudioSent);
-            var stream = channel is null
-                ? System.Linq.AsyncEnumerable.Empty<byte[]>()
-                : channel.Reader.ReadAllAsync();
-            result = await _orchestrator.TranscribeStreamAsync(stream, _cts.Token).ConfigureAwait(false);
-        }
-        else
-        {
-            _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.AsrFirstAudioSent);
-            result = await _orchestrator.TranscribeAsync(seg.AudioData, _cts.Token).ConfigureAwait(false);
-        }
-        _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.AsrSegmentFinal);
+        var result = await RecognizeSegmentAsync(seg, channel).ConfigureAwait(false);
 
-        if (!string.IsNullOrWhiteSpace(result.Text))
+        if (result is not null && !string.IsNullOrWhiteSpace(result.Text))
         {
             var text = BotOrchestrator.AnnotateWithUserEmotion(result.Text, result.Emotion);
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风识别] 「{result.Text}」");
@@ -1127,25 +1438,12 @@ public sealed class BotRuntime : IAsyncDisposable
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
             return;
         }
+        if (!CanStartCloudWork) return;
         _trace.BeginTurn();
         _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.InputLastVoiced);
-        AsrResult result;
-        if (_config.Asr.Streaming)
-        {
-            _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.AsrFirstAudioSent);
-            var stream = channel is null
-                ? System.Linq.AsyncEnumerable.Empty<byte[]>()
-                : channel.Reader.ReadAllAsync();
-            result = await _orchestrator.TranscribeStreamAsync(stream, _cts.Token).ConfigureAwait(false);
-        }
-        else
-        {
-            _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.AsrFirstAudioSent);
-            result = await _orchestrator.TranscribeAsync(seg.AudioData, _cts.Token).ConfigureAwait(false);
-        }
-        _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.AsrSegmentFinal);
+        var result = await RecognizeSegmentAsync(seg, channel).ConfigureAwait(false);
 
-        if (!string.IsNullOrWhiteSpace(result.Text))
+        if (result is not null && !string.IsNullOrWhiteSpace(result.Text))
         {
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录识别→对面] 「{result.Text}」");
             LoopbackTranscript?.Invoke(this, result.Text);
@@ -1155,6 +1453,40 @@ public sealed class BotRuntime : IAsyncDisposable
                 result.Text,
                 opponent.Uid, opponent.MatchId, seg.StartTime));
         }
+    }
+
+    /// <summary>Recognises one segment under the current account grant. A result that arrives
+    /// after that grant ended — even if a new login happened meanwhile — or after the companion
+    /// was paused is dropped, because a provider may ignore cancellation.</summary>
+    private async Task<AsrResult?> RecognizeSegmentAsync(SpeechSegment seg, Channel<byte[]>? channel)
+    {
+        var epoch = _cloud.Epoch;
+        AsrResult result;
+        using (var cloud = LinkCloudToken())
+        {
+            var token = cloud.Token;
+            // Consumer of the buffered frames starts only now (after SpeechDetected) — see
+            // docs/realtime/baseline.md.
+            _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.AsrFirstAudioSent);
+            result = await RecognizeTrackedAsync(() =>
+            {
+                if (_config.Asr.Streaming)
+                {
+                    var stream = channel is null
+                        ? System.Linq.AsyncEnumerable.Empty<byte[]>()
+                        : channel.Reader.ReadAllAsync();
+                    return _orchestrator.TranscribeStreamAsync(stream, token);
+                }
+                return _orchestrator.TranscribeAsync(seg.AudioData, token);
+            }).ConfigureAwait(false);
+        }
+        _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.AsrSegmentFinal);
+        if (!CanStartCloudWork || _cloud.Epoch != epoch)
+        {
+            AIVTuber.Core.Diagnostics.DebugLog.Write("[识别] 许可已变化或陪播已暂停，丢弃迟到的识别结果");
+            return null;
+        }
+        return result;
     }
 
     private IEnumerable<string> ResolvePoseIdsForPrompt()
@@ -1186,7 +1518,7 @@ public sealed class BotRuntime : IAsyncDisposable
     public async Task StartLocalAsrServerAsync()
     {
         CloudOnlySidecarSkipped = false;
-        if (_asr is not LocalAsrClient localAsr) return;
+        if (_profile is not null || _asr is not LocalAsrClient localAsr) return; // AUTH-09: cloud only
         if (!CloudOnlyGate.ShouldStartAsrSidecar(_config.Realtime, _config.Asr.Provider))
         {
             // RT-00 cloud-only gate: never spawn the Python ASR sidecar in this mode.
@@ -1223,6 +1555,7 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         if (_localAsrReachable == reachable) return;
         _localAsrReachable = reachable;
+        if (_asr is LocalAsrClient) SetAsrHealth(reachable ? AsrHealth.Ready : AsrHealth.Unavailable);
         LocalAsrReachableChanged?.Invoke(this, reachable);
     }
 
@@ -1261,6 +1594,27 @@ public sealed class BotRuntime : IAsyncDisposable
     /// <summary>Commits a realtime final segment into the conversation, mirroring the legacy
     /// Observe*SegmentAsync result handling. Client-endpoint snapshots carry their lower
     /// confidence in the log line — they are never presented as vendor finals.</summary>
+    /// <summary>The production subscription of a realtime ASR pump: partials feed the turn
+    /// manager's candidate tracking (keyed by source, capture epoch, segment and revision),
+    /// finals become talk lines, breaks are reported.</summary>
+    internal void WireRealtimePump(RealtimeAsrPump pump)
+    {
+        pump.PartialUpdate += (_, u) => HandleRealtimePartial(u);
+        pump.FinalCommitted += (_, u) => HandleRealtimeFinal(u);
+        pump.StreamBroken += (_, reason) => PipelineError?.Invoke(this, reason);
+    }
+
+    private void HandleRealtimePartial(TranscriptUpdate update)
+    {
+        var mic = update.Source == AIVTuber.Core.Audio.AudioSource.Microphone;
+        AIVTuber.Core.Diagnostics.DebugLog.Write(
+            $"[{(mic ? "麦克风" : "内录")}识别·实时partial] seg={update.SegmentId} rev={update.Revision} 「{update.TextSnapshot}」");
+        if (!CanStartCloudWork || (mic && _micMuted)) return;
+        if (_turnManagerV2 is null || !_config.Realtime.TurnManagerV2Enabled) return;
+        _turnManagerV2.ObservePartial(mic ? TurnSource.Microphone : TurnSource.Loopback,
+            update.CaptureEpoch, update.SegmentId, update.Revision, update.TextSnapshot);
+    }
+
     private void HandleRealtimeFinal(TranscriptUpdate update)
     {
         try
@@ -1338,11 +1692,7 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             _micAsrPump = new RealtimeAsrPump(AIVTuber.Core.Audio.AudioSource.Microphone,
                 realtimeFactory, opponentProvider: null, realtimeOptions);
-            _micAsrPump.PartialUpdate += (_, u) =>
-                AIVTuber.Core.Diagnostics.DebugLog.Write(
-                    $"[麦克风识别·实时partial] seg={u.SegmentId} rev={u.Revision} 「{u.TextSnapshot}」");
-            _micAsrPump.FinalCommitted += (_, u) => HandleRealtimeFinal(u);
-            _micAsrPump.StreamBroken += (_, reason) => PipelineError?.Invoke(this, reason);
+            WireRealtimePump(_micAsrPump);
             _realtimeAsrActive = true;
         }
         _mic.AudioFrameAvailable += (_, buf) =>
@@ -1428,11 +1778,7 @@ public sealed class BotRuntime : IAsyncDisposable
                             return new OpponentSnapshot(captured.Name, captured.Uid, captured.MatchId);
                         },
                         realtimeOptions);
-                    _loopbackAsrPump.PartialUpdate += (_, u) =>
-                        AIVTuber.Core.Diagnostics.DebugLog.Write(
-                            $"[内录识别·实时partial] seg={u.SegmentId} rev={u.Revision} 「{u.TextSnapshot}」");
-                    _loopbackAsrPump.FinalCommitted += (_, u) => HandleRealtimeFinal(u);
-                    _loopbackAsrPump.StreamBroken += (_, reason) => PipelineError?.Invoke(this, reason);
+                    WireRealtimePump(_loopbackAsrPump);
                 }
 
                 _loopbackVad.SpeechFrame += (_, frame) =>
@@ -1596,6 +1942,12 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         try
         {
+            if (!_cloud.IsAllowed)
+            {
+                // No cloud curation without an account; close the match without losing raw turns.
+                await _pkTurnRepo.EndMatchAsync(matchId, DateTime.UtcNow.ToString("o")).ConfigureAwait(false);
+                return;
+            }
             await _pkCurator.PersistMatchAsync(
                 matchId,
                 opponent?.Uid,
@@ -1693,6 +2045,8 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(newConfig);
         var candidate = ConfigManager.Clone(newConfig);
+        // Provider settings stay pinned to the private profile; the voice choice survives when offered.
+        var voiceNotice = _profile?.ApplyTo(candidate);
 
         await _configApplyGate.WaitAsync().ConfigureAwait(false);
         try
@@ -1733,6 +2087,7 @@ public sealed class BotRuntime : IAsyncDisposable
             _activeConfig = ConfigManager.Clone(candidate);
             _config = candidate;
             Interlocked.Exchange(ref _activeRevision, candidateRevision);
+            LastApplyNotice = voiceNotice;
             _wakeGate.Reset();
             InteractionModeChanged?.Invoke(this, EventArgs.Empty);
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[配置] 应用完成 revision={candidateRevision}");
@@ -1742,6 +2097,10 @@ public sealed class BotRuntime : IAsyncDisposable
             _configApplyGate.Release();
         }
     }
+
+    /// <summary>User-facing notice from the last successful apply (e.g. the saved voice was not
+    /// offered by this package and the default was used). Null when there is nothing to say.</summary>
+    public string? LastApplyNotice { get; private set; }
 
     /// <summary>Applies the last successfully replaced snapshot as a new revision.</summary>
     public Task RollbackConfigAsync()
@@ -1826,6 +2185,10 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         if (_cortico is not null)
         {
+            // Stop what the old sidecar is performing before it goes away; the orchestrator is
+            // rebuilt (with the new Cortico and a matching prompt) right after this.
+            if (_orchestrator is { } orchestrator) StartInterrupt(orchestrator);
+            await AwaitInterruptBarrierAsync().ConfigureAwait(false);
             await _cortico.DisposeAsync();
             _cortico = null;
         }
@@ -1868,7 +2231,9 @@ public sealed class BotRuntime : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _cloud.Revoked -= OnCloudRevoked;
         _cts.Cancel();
+        _cloudCts.Cancel();
         _turnGate?.Dispose();
         _turnManagerV2?.Dispose();
         _turnManagerV2 = null;

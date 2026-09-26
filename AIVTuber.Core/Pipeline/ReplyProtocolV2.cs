@@ -244,6 +244,25 @@ public sealed class ReplyProtocolV2Parser
 /// format section changes (NDJSON events instead of one JSON object).</summary>
 public static class ReplyProtocolV2
 {
+    /// <summary>With <paramref name="scriptMarkup"/> (Cortico selected) motion is written as script
+    /// markup inside speech text and no control lines are requested: the performance layer owns
+    /// every VTS write. The event envelope is otherwise identical.</summary>
+    public static string Prompt(IEnumerable<string> allowedChannels, bool scriptMarkup)
+    {
+        if (!scriptMarkup) return Prompt(allowedChannels);
+        return """
+
+            【输出协议 v2——逐行 NDJSON，每行一个完整 JSON 对象，不要代码块、不要 Markdown】
+            第一行必须是 decision：{"v":2,"type":"decision","mode":"speak"}；本轮不想出声用 "mode":"pass"；只在心里想用 "mode":"thought"（可附 "text":"一句私有备注"）。
+            mode=speak 时，之后每行输出一段完整可朗读的话：{"v":2,"type":"speech","seq":0,"text":"……"}，seq 从 0 连续递增。
+            每段是独立、语义完整、立刻可朗读的短句；第一段尽量简短，全轮合计不超过80字。
+            动作和表情用系统消息里的演出台本标记直接写在 speech 的 text 里；不要输出 control 行。
+            最后一行必须是 {"v":2,"type":"end"}。
+            pass 或 thought 之后不得再输出 speech；speak 之后不得改回 pass。
+            speech 的 text 里不要出现 JSON、括号心里话、思考过程或【PASS】。
+            """;
+    }
+
     public static string Prompt(IEnumerable<string> allowedChannels)
     {
         var allowed = new HashSet<string>(allowedChannels, StringComparer.Ordinal);

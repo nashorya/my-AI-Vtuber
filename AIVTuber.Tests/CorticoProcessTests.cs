@@ -32,19 +32,19 @@ public sealed class CorticoProcessTests
                 Enabled = true, SidecarPath = sidecar, AudioDevice = "none"
             }, temp, new VtsConfig { Host = "127.0.0.1", Port = port }, () => tts,
                 () => new TtsConfig { SampleRate = 16000 }, _ => {}, deadline.Token);
-            Assert.Contains("点头", bridge.Prompt);
+            Assert.Contains("点头", bridge.ScriptGrammar);
             Assert.Equal("你好", await bridge.PrepareAsync("<微笑>你好【点头】", deadline.Token));
             var starts = 0;
-            await bridge.PerformAsync("<微笑>你好", () => true, () => starts++, deadline.Token);
+            await bridge.PerformAsync("<微笑>你好", _ => true, () => starts++, deadline.Token);
             Assert.True(starts > 0);
             tts.Block = true;
             using var cancel = new CancellationTokenSource();
-            var pending = bridge.PerformAsync("这次取消", () => true, () => {}, cancel.Token);
+            var pending = bridge.PerformAsync("这次取消", _ => true, () => {}, cancel.Token);
             await tts.Blocked.Task.WaitAsync(deadline.Token);
             cancel.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
             tts.Block = false;
-            await bridge.PerformAsync("再试一次", () => true, () => starts++, deadline.Token);
+            await bridge.PerformAsync("再试一次", _ => true, () => starts++, deadline.Token);
             Assert.True(starts >= 2);
         }
         finally
