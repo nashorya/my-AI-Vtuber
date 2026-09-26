@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { WebSocketServer } from 'ws';
 import { loadPack, EXAMPLE_PACK_DIR } from '../upstream/pack.ts';
+import { writeModel } from './harness.ts';
 
 const root = new URL('../', import.meta.url);
 test('vendored upstream files exactly match the pinned source hashes', () => {
@@ -19,6 +20,8 @@ test('vendored upstream files exactly match the pinned source hashes', () => {
 
 test('real host + original Performer: clean speech, VTS frames, authorization and cancellation', { timeout: 20000 }, async () => {
  const temp = mkdtempSync(join(tmpdir(), 'cortico-host-'));
+ // The fake model's file wires every pack input, so the conservative adaptation may drive them.
+ writeModel(temp, 'Fake', loadPack(EXAMPLE_PACK_DIR).paramIds);
  const server = new WebSocketServer({ port: 0 }); await once(server, 'listening');
  const frames: any[] = [];
  const names = loadPack(EXAMPLE_PACK_DIR).paramIds;
@@ -58,8 +61,8 @@ test('real host + original Performer: clean speech, VTS frames, authorization an
  });
  try {
   const init = await command('init', { config: { vtsUrl: `ws://127.0.0.1:${(server.address() as any).port}`,
-   tokenPath: join(temp,'token'), audioDevice: 'none', modelProfile: 'auto' } });
-  assert.equal(init.error, undefined, errors); assert.match(init.prompt, /点头/);
+   tokenPath: join(temp,'token'), audioDevice: 'none', modelProfile: 'auto', live2dDir: temp } });
+  assert.equal(init.error, undefined, errors); assert.match(init.grammar, /点头/);
   const script = '<微笑>你好【点头】再见';
   assert.equal((await command('prepare', { script })).spoken, '你好再见');
   const result = await command('perform', { script });

@@ -45,6 +45,7 @@ public sealed class CorticoProcess : ICorticoPerformance, IAsyncDisposable
     private readonly SemaphoreSlim _write = new(1, 1);
     private readonly ConcurrentDictionary<long, TaskCompletionSource<JsonElement>> _pending = new();
     private readonly ConcurrentDictionary<long, Turn> _turns = new();
+    private readonly ConcurrentDictionary<long, TaskCompletionSource> _ready = new();
     private readonly ConcurrentDictionary<long, Task> _callbacks = new();
     private readonly Func<ITtsClient> _tts;
     private readonly Func<TtsConfig> _ttsConfig;
@@ -54,10 +55,10 @@ public sealed class CorticoProcess : ICorticoPerformance, IAsyncDisposable
     private long _sequence;
     private long _callbackSequence;
     private int _disposed;
-    public string Prompt { get; private set; } = "";
+    public string ScriptGrammar { get; private set; } = "";
     public bool IsConnected { get; private set; }
     public event Action<string>? Diagnostic;
-    private sealed record Turn(Func<bool> Authorize, Action Started, CancellationToken Token);
+    private sealed record Turn(Func<string, bool> Authorize, Action Started, CancellationToken Token);
 
     private CorticoProcess(Process process, Func<ITtsClient> tts, Func<TtsConfig> ttsConfig)
     { _process = process; _tts = tts; _ttsConfig = ttsConfig; }
@@ -88,7 +89,7 @@ public sealed class CorticoProcess : ICorticoPerformance, IAsyncDisposable
                 vtsUrl = $"ws://{vts.Host}:{vts.Port}", options.Live2dDir, options.ModelProfile,
                 options.PackDir, options.AudioDevice, tokenPath = Path.Combine(baseDir, ".cortico-vts-token")
             } }, timeout.Token).ConfigureAwait(false);
-            self.Prompt = reply.GetProperty("prompt").GetString()!;
+            self.ScriptGrammar = reply.GetProperty("grammar").GetString()!;
             return self;
         }
         catch { await self.DisposeAsync(); throw; }
@@ -100,23 +101,78 @@ public sealed class CorticoProcess : ICorticoPerformance, IAsyncDisposable
         return reply.GetProperty("spoken").GetString() ?? "";
     }
 
-    public async Task PerformAsync(string script, Func<bool> authorize, Action started, CancellationToken ct)
+    public async Task<ICorticoStage> BeginAsync(Func<string, bool> authorize, Action started, CancellationToken ct)
     {
         var id = Interlocked.Increment(ref _sequence);
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
+        var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
         timeout.CancelAfter(TimeSpan.FromMinutes(3));
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _ready[id] = ready;
         _turns[id] = new Turn(authorize, started, timeout.Token);
-        try { await CommandAsync(new { command = "perform", script }, timeout.Token, id).ConfigureAwait(false); }
-        finally
+        var stage = new Stage(this, id, timeout);
+        stage.Result = CommandAsync(new { command = "perform" }, timeout.Token, id);
+        try
         {
-            _turns.TryRemove(id, out _);
-            if (timeout.IsCancellationRequested && !_lifetime.IsCancellationRequested)
+            // The host accepts segments only once it has taken the turn (it may first wait for a
+            // model switch to finish resolving the new rig's mapping).
+            var first = await Task.WhenAny(ready.Task, stage.Result).WaitAsync(timeout.Token).ConfigureAwait(false);
+            if (first == stage.Result) await stage.Result.ConfigureAwait(false); // surfaces the refusal
+            return stage;
+        }
+        catch
+        {
+            await stage.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+        finally { _ready.TryRemove(id, out _); }
+    }
+
+    public async Task InterruptAsync(CancellationToken ct)
+    {
+        if (Volatile.Read(ref _disposed) != 0 || _lifetime.IsCancellationRequested) return;
+        // Fenced: only performances begun before this call are stopped, never a later turn.
+        await CommandAsync(new { command = "interrupt", fence = Interlocked.Read(ref _sequence) }, ct).ConfigureAwait(false);
+    }
+
+    private sealed class Stage(CorticoProcess owner, long id, CancellationTokenSource timeout) : ICorticoStage
+    {
+        public Task<JsonElement> Result = Task.FromResult(default(JsonElement));
+        private int _disposed;
+
+        public async Task FeedAsync(string script, CancellationToken ct)
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+            await owner.CommandAsync(new { command = "feed", requestId = id, script }, linked.Token).ConfigureAwait(false);
+        }
+
+        public async Task CompleteAsync(CancellationToken ct)
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+            await owner.CommandAsync(new { command = "end", requestId = id }, linked.Token).ConfigureAwait(false);
+            await Result.WaitAsync(linked.Token).ConfigureAwait(false);
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            owner._turns.TryRemove(id, out _);
+            var unfinished = !Result.IsCompletedSuccessfully;
+            if (!unfinished)
             {
-                // Wait for the cut to be acknowledged before the next generation can speak.
-                using var stopTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
-                try { await CommandAsync(new { command = "interrupt" }, stopTimeout.Token).ConfigureAwait(false); }
-                catch { Kill(); }
+                timeout.Dispose();
+                return;
             }
+            // The app side gave up (stop, pause, sign-out, error): the sidecar may still be
+            // performing. Wait for the cut to be acknowledged before the next turn can speak.
+            timeout.Cancel();
+            if (!owner._lifetime.IsCancellationRequested && Volatile.Read(ref owner._disposed) == 0)
+            {
+                using var stopTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+                try { await owner.CommandAsync(new { command = "interrupt", fence = id }, stopTimeout.Token).ConfigureAwait(false); }
+                catch { owner.Kill(); }
+            }
+            try { await Result.ConfigureAwait(false); } catch { /* reported by the caller's own await */ }
+            timeout.Dispose();
         }
     }
 
@@ -170,6 +226,10 @@ public sealed class CorticoProcess : ICorticoPerformance, IAsyncDisposable
                     IsConnected = message.GetProperty("connected").GetBoolean();
                     Diagnostic?.Invoke(line);
                 }
+                else if (kind == "ready")
+                {
+                    if (_ready.TryGetValue(message.GetProperty("requestId").GetInt64(), out var ready)) ready.TrySetResult();
+                }
                 else if (kind is "tts" or "authorize" or "started")
                 {
                     var callbackId = Interlocked.Increment(ref _callbackSequence);
@@ -200,7 +260,11 @@ public sealed class CorticoProcess : ICorticoPerformance, IAsyncDisposable
             if (kind == "started") { turn.Started(); return; }
             if (kind == "authorize")
             {
-                await SendAsync(new { kind = "reply", id, allowed = turn.Authorize() }, _lifetime.Token).ConfigureAwait(false);
+                var text = message.TryGetProperty("text", out var piece) ? piece.GetString() ?? "" : "";
+                bool allowed;
+                try { allowed = turn.Authorize(text); }
+                catch (Exception ex) { Diagnostic?.Invoke($"authorize failed: {ex.Message}"); allowed = false; }
+                await SendAsync(new { kind = "reply", id, allowed }, _lifetime.Token).ConfigureAwait(false);
                 return;
             }
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(turn.Token, _lifetime.Token);

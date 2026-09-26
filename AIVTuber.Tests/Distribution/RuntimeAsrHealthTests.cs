@@ -172,6 +172,53 @@ public sealed class RuntimeAsrHealthTests
         Assert.Equal(0, h.Llm.Calls);
     }
 
+    [Fact]
+    public async Task ThrowingUiSubscriber_DoesNotTurnASuccessfulRecognitionIntoAFailure()
+    {
+        // Local finding: a WebView push that throws (cross-thread CoreWebView2 read) was raised
+        // inside the recognition try block and re-classified the success as Unavailable,
+        // dropping the transcript.
+        await using var h = Harness.Create();
+        var raised = 0;
+        h.Runtime.AsrHealthChanged += (_, _) =>
+        {
+            Interlocked.Increment(ref raised);
+            throw new InvalidOperationException("The calling thread cannot access this object");
+        };
+        h.Runtime.TurnStatusChanged += (_, _) => throw new InvalidOperationException("ui gone");
+
+        await h.ObserveMicAsync();
+
+        Assert.True(raised >= 2);
+        Assert.Equal(AsrHealth.Ready, h.Runtime.CurrentAsrHealth);
+        await Until(() => { lock (h.Transcripts) return h.Transcripts.Contains("你好呀"); });
+    }
+
+    [Fact]
+    public async Task ThrowingUiSubscriber_DoesNotBreakPauseOrSignOut()
+    {
+        await using var h = Harness.Create();
+        h.Runtime.AsrHealthChanged += (_, _) => throw new InvalidOperationException("ui");
+        h.Runtime.CompanionPausedChanged += (_, _) => throw new InvalidOperationException("ui");
+        h.Runtime.CloudAccessRevoked += (_, _) => throw new InvalidOperationException("ui");
+
+        h.Runtime.SetCompanionPaused(true);
+        Assert.True(h.Runtime.CompanionPaused);
+        h.Runtime.SetCompanionPaused(false);
+        h.Cloud.Revoke("已退出登录");
+        Assert.Equal(AsrHealth.Paused, h.Runtime.CurrentAsrHealth);
+    }
+
+    private static async Task Until(Func<bool> condition)
+    {
+        var deadline = Environment.TickCount64 + 5000;
+        while (!condition())
+        {
+            if (Environment.TickCount64 > deadline) Assert.Fail("condition not met before timeout");
+            await Task.Delay(10);
+        }
+    }
+
     private static SpeechSegment LoudSegment()
     {
         var pcm = new byte[16000];

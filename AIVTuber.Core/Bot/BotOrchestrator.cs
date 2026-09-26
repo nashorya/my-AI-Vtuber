@@ -601,17 +601,41 @@ public sealed class BotOrchestrator : IDisposable
         _deferLlmEvents = false;
         ClearDeferredControls();
         _stopPlayback();
+        // With Cortico selected the audible output lives in the sidecar: stop it there too, now,
+        // rather than only when the in-flight request happens to unwind.
+        var performanceStop = StopPerformance();
         Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.PlaybackStopped);
-        return CompleteInterruptAsync(unwind);
+        return CompleteInterruptAsync(unwind, performanceStop);
+    }
+
+    private Task StopPerformance()
+    {
+        var performance = Cortico;
+        if (performance is null) return Task.CompletedTask;
+        try
+        {
+            return performance.InterruptAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(3))
+                .ContinueWith(t =>
+                {
+                    if (t.Exception is { } ex)
+                        AIVTuber.Core.Diagnostics.DebugLog.Write($"[Cortico] 停止演出失败: {ex.GetBaseException().Message}");
+                }, TaskScheduler.Default);
+        }
+        catch (Exception ex)
+        {
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[Cortico] 停止演出失败: {ex.Message}");
+            return Task.CompletedTask;
+        }
     }
 
     /// <summary>The part of an interrupt that may wait on providers: the in-flight request
     /// unwinding and, for bidirectional TTS, the vendor cancel barrier (RT-06) — its
     /// task_cancel acknowledgement or an epoch rebuild when the ack is lost — before a next
     /// turn's text can be submitted. Local output is already silent when this starts.</summary>
-    private async Task CompleteInterruptAsync(Task unwind)
+    private async Task CompleteInterruptAsync(Task unwind, Task performanceStop)
     {
         await unwind.ConfigureAwait(false);
+        await performanceStop.ConfigureAwait(false);
         if (_tts is AIVTuber.Core.RealtimeTts.IBidiTtsController bidi)
         {
             var outcome = await bidi.CancelPendingAsync().ConfigureAwait(false);
@@ -1094,64 +1118,119 @@ public sealed class BotOrchestrator : IDisposable
         }
     }
 
+    /// <summary>
+    /// Cortico is the one performance layer when selected: every reply — legacy script or
+    /// protocol v2 events — is adapted into Cortico script segments and performed there, never on
+    /// the app's own player or VTS writer. Segments are fed as they are approved, so the first
+    /// sentence is performed while the model is still writing the rest. PASS and thoughts never
+    /// reach Cortico. Each piece is committed (history, captions) with its own clean text right
+    /// before it becomes audible, so an interrupted reply records only what was actually heard.
+    /// </summary>
     private async Task RunCorticoAsync(List<Message> history, string userInput,
         InputEnvelope envelope, CancellationToken ct, Func<bool>? canCommit)
     {
         var performance = Cortico!;
+        AIVTuber.Core.Diagnostics.DebugLog.Write($"[LLM输入] {userInput}");
         var context = new RequestContext(envelope.Generation, ct);
         var oldContext = _eventContext.Value;
-        var committed = false;
-        var started = false;
+        var firstCommit = false;
+        var started = 0;
+        var fedSpeech = false;
+        var pendingActions = new StringBuilder();
+        CorticoReplyEvent? decision = null;
+        string? violation = null;
+        ICorticoStage? stage = null;
         _coordinator.SetHold(true);
         _eventContext.Value = context;
-        _deferLlmEvents = true;
+        _deferLlmEvents = true; // legacy client events (sentences/tags) must not bypass Cortico
         ClearDeferredControls();
+
+        bool Authorize(string text)
+        {
+            if (!IsCurrent(envelope, ct) || canCommit?.Invoke() == false) return false;
+            if (!LlmClient.IsSpeakableText(text)) return true;
+            if (!firstCommit)
+            {
+                firstCommit = true;
+                OnFirstSentenceToTts?.Invoke(this, EventArgs.Empty);
+            }
+            OnReplyCommitted?.Invoke(this, new ClassifiedReply(ReplyKind.Speak, text, "", []));
+            PublishSpokenSentence(context, text);
+            return true;
+        }
+
+        void Started()
+        {
+            if (!IsCurrent(envelope, ct) || Interlocked.Exchange(ref started, 1) != 0) return;
+            OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
+        }
+
         try
         {
-            var raw = new StringBuilder();
-            await foreach (var token in _llm.StreamAsync(history, userInput, ct))
+            var replies = _llm is IReplyProtocolStream { ReplyProtocol: "v2" } v2
+                ? CorticoReplyAdapter.FromV2(v2.StreamEventsAsync(history, userInput, ct), ct)
+                : CorticoReplyAdapter.FromLegacy(_llm.StreamAsync(history, userInput, ct), ct);
+            await foreach (var reply in replies.ConfigureAwait(false))
             {
                 if (!IsCurrent(envelope, ct)) return;
-                raw.Append(token);
-            }
-            if (!IsCurrent(envelope, ct) || canCommit?.Invoke() == false) return;
-            var script = raw.ToString();
-            var reply = ReplyClassifier.Classify(script);
-            if (reply.Kind != ReplyKind.Speak)
-            {
-                CommitClassifiedReply(context, reply, script);
-                return;
-            }
-            var spoken = await performance.PrepareAsync(script, ct).ConfigureAwait(false);
-            if (!LlmClient.IsSpeakableText(spoken)) return;
-            reply = reply with { Spoken = spoken, StagedControls = [] };
-            if (!IsCurrent(envelope, ct) || canCommit?.Invoke() == false) return;
-            await performance.PerformAsync(script, () =>
-            {
-                if (!IsCurrent(envelope, ct) || canCommit?.Invoke() == false) return false;
-                if (!committed)
+                if (reply.Kind is CorticoReplyKind.Pass or CorticoReplyKind.Thought) { decision = reply; continue; }
+                if (reply.Kind == CorticoReplyKind.Invalid) { violation = reply.Text; break; }
+                if (canCommit?.Invoke() == false) return; // people resumed: nothing new may start
+
+                var spoken = await performance.PrepareAsync(reply.Text, ct).ConfigureAwait(false);
+                if (!IsCurrent(envelope, ct)) return;
+                if (!LlmClient.IsSpeakableText(spoken))
                 {
-                    committed = true;
-                    // Upstream owns all VTS controls. Publish only clean speech to history/OBS.
-                    OnReplyCommitted?.Invoke(this, reply);
-                    PublishSpokenSentence(context, spoken);
-                    OnFirstSentenceToTts?.Invoke(this, EventArgs.Empty);
+                    // Actions alone never start a turn: without a voice there is no authorization
+                    // point. Keep them for the next spoken segment.
+                    pendingActions.Append(reply.Text);
+                    continue;
                 }
-                return true;
-            }, () =>
+                stage ??= await performance.BeginAsync(Authorize, Started, ct).ConfigureAwait(false);
+                await stage.FeedAsync(pendingActions + reply.Text, ct).ConfigureAwait(false);
+                pendingActions.Clear();
+                fedSpeech = true;
+            }
+
+            if (stage is not null)
             {
-                if (started || !IsCurrent(envelope, ct)) return;
-                started = true;
-                OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
-            }, ct).ConfigureAwait(false);
+                // Trailing actions after spoken text belong to this (already authorized) turn.
+                if (pendingActions.Length > 0 && fedSpeech && IsCurrent(envelope, ct) && canCommit?.Invoke() != false)
+                    await stage.FeedAsync(pendingActions.ToString(), ct).ConfigureAwait(false);
+                await stage.CompleteAsync(ct).ConfigureAwait(false);
+            }
+            else if (violation is null && IsCurrent(envelope, ct) && canCommit?.Invoke() != false)
+            {
+                if (decision?.Kind == CorticoReplyKind.Pass)
+                    CommitClassifiedReply(context, new ClassifiedReply(ReplyKind.Pass, "", "", []), "");
+                else if (decision?.Kind == CorticoReplyKind.Thought)
+                    CommitClassifiedReply(context, new ClassifiedReply(ReplyKind.InnerThought, "", decision.Value.Text, []), "");
+            }
+            if (violation is not null)
+                ReportCurrentError(envelope.Generation, fedSpeech
+                    ? $"[Cortico] 回复后半段不符合协议，已停止后续演出（已开始的部分照常说完）：{violation}"
+                    : $"[LLM] 回复不符合协议，已丢弃：{violation}");
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested || !IsCurrent(envelope, ct)) { }
+        catch (Exception ex) when (!IsCurrent(envelope, ct, allowCancellation: true)) { _ = ex; }
+        catch (Exception ex) when (ex.Message is "Cancelled" or "Turn superseded" or "Stale performance")
+        {
+            // Stopped by the performance layer itself (model switch, denied piece): not a fault.
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[Cortico] 本轮演出被中止：{ex.Message}");
+        }
+        catch (Exception ex)
+        {
+            // No silent switch to another player: Cortico stays the only performance layer.
+            ReportCurrentError(envelope.Generation, $"[Cortico] 演出层出错，本轮未演出：{ex.GetType().Name}: {ex.Message}");
         }
         finally
         {
+            if (stage is not null) await stage.DisposeAsync().ConfigureAwait(false);
             _eventContext.Value = oldContext;
             _deferLlmEvents = false;
             ClearDeferredControls();
             _coordinator.SetHold(false);
-            if (started && IsCurrent(envelope, ct, allowCancellation: true))
+            if (Volatile.Read(ref started) != 0 && IsCurrent(envelope, ct, allowCancellation: true))
                 OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
         }
     }

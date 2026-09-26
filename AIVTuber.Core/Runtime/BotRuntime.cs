@@ -67,6 +67,7 @@ public sealed class BotRuntime : IAsyncDisposable
     private VtsClient? _vts;
     private CorticoProcess? _cortico;
     private CorticoOptions? _corticoOptions;
+    private CorticoProcess? _llmBuiltForCortico;
     private VtsContinuousSession? _continuousVts;
     public VtsContinuousSession? ContinuousVts => _continuousVts;
     private PixelAvatarDriver? _pixelAvatar;
@@ -151,8 +152,8 @@ public sealed class BotRuntime : IAsyncDisposable
         }
         ReportTurnStatus($"云端已停止：{reason}");
         AIVTuber.Core.Diagnostics.DebugLog.Write($"[鉴权] 云端已停止：{reason}");
-        CloudAccessRevoked?.Invoke(this, reason);
-        AsrHealthChanged?.Invoke(this, CurrentAsrHealth);
+        Notify(CloudAccessRevoked, reason, nameof(CloudAccessRevoked), this);
+        NotifyAsrHealth();
     }
 
     // ── Companion pause and speech-recognition health (A2) ────────────────────
@@ -183,8 +184,8 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             ReportTurnStatus("陪播已继续");
         }
-        CompanionPausedChanged?.Invoke(this, EventArgs.Empty);
-        AsrHealthChanged?.Invoke(this, CurrentAsrHealth);
+        Notify(CompanionPausedChanged, nameof(CompanionPausedChanged));
+        NotifyAsrHealth();
     }
 
     private void SetMicSpeechAbandoned()
@@ -216,26 +217,64 @@ public sealed class BotRuntime : IAsyncDisposable
     private void SetAsrHealth(AsrHealth health)
     {
         _asrHealth = health;
-        AsrHealthChanged?.Invoke(this, CurrentAsrHealth);
+        NotifyAsrHealth();
+    }
+
+    private void NotifyAsrHealth() => Notify(AsrHealthChanged, CurrentAsrHealth, nameof(AsrHealthChanged), this);
+
+    /// <summary>
+    /// Raises a status notification without letting a subscriber's failure reach the caller.
+    /// Subscribers are UI adapters (WebView, view models) that may throw — wrong thread,
+    /// disposed control, serialization. Those are UI faults: they are logged, and must never
+    /// change the outcome of the work that raised them (a successful recognition stays
+    /// successful, a pause or sign-out still completes).
+    /// </summary>
+    private static void Notify<T>(EventHandler<T>? handler, T value, string name, object? sender = null)
+    {
+        if (handler is null) return;
+        foreach (var each in handler.GetInvocationList())
+        {
+            try { ((EventHandler<T>)each)(sender, value); }
+            catch (Exception ex)
+            {
+                AIVTuber.Core.Diagnostics.DebugLog.Write(
+                    $"[界面通知] {name} 处理失败（已隔离，不影响语音链路）: {ex.GetType().Name}: {AIVTuber.Core.Diagnostics.DiagnosticRedactor.Redact(ex.Message)}");
+            }
+        }
+    }
+
+    private void Notify(EventHandler? handler, string name)
+    {
+        if (handler is null) return;
+        foreach (var each in handler.GetInvocationList())
+        {
+            try { ((EventHandler)each)(this, EventArgs.Empty); }
+            catch (Exception ex)
+            {
+                AIVTuber.Core.Diagnostics.DebugLog.Write(
+                    $"[界面通知] {name} 处理失败（已隔离，不影响语音链路）: {ex.GetType().Name}: {AIVTuber.Core.Diagnostics.DiagnosticRedactor.Redact(ex.Message)}");
+            }
+        }
     }
 
     /// <summary>Runs one recognition and records its outcome. A cancellation (stop, pause,
-    /// sign-out) says nothing about the service and leaves the health unchanged.</summary>
+    /// sign-out) says nothing about the service and leaves the health unchanged. Only the
+    /// recognition call itself is inside the try: health notifications are raised after the
+    /// outcome is decided, so a failing UI subscriber cannot turn a success into "unavailable"
+    /// or drop the transcript.</summary>
     private async Task<AsrResult> RecognizeTrackedAsync(Func<Task<AsrResult>> recognize)
     {
         Interlocked.Increment(ref _asrInFlight);
-        AsrHealthChanged?.Invoke(this, CurrentAsrHealth);
+        NotifyAsrHealth();
+        AsrResult result;
         try
         {
-            var result = await recognize().ConfigureAwait(false);
-            Interlocked.Decrement(ref _asrInFlight);
-            SetAsrHealth(AsrHealth.Ready);
-            return result;
+            result = await recognize().ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             Interlocked.Decrement(ref _asrInFlight);
-            AsrHealthChanged?.Invoke(this, CurrentAsrHealth);
+            NotifyAsrHealth();
             throw;
         }
         catch
@@ -244,6 +283,9 @@ public sealed class BotRuntime : IAsyncDisposable
             SetAsrHealth(AsrHealth.Unavailable);
             throw;
         }
+        Interlocked.Decrement(ref _asrInFlight);
+        SetAsrHealth(AsrHealth.Ready);
+        return result;
     }
 
     /// <summary>Creates the voice preview for the streamer page (V02/V03). It synthesises with
@@ -303,7 +345,7 @@ public sealed class BotRuntime : IAsyncDisposable
     private void ReportTurnStatus(string status)
     {
         AIVTuber.Core.Diagnostics.DebugLog.Write($"[回合状态] {status}");
-        TurnStatusChanged?.Invoke(this, status);
+        Notify(TurnStatusChanged, status, nameof(TurnStatusChanged), this);
     }
     /// <summary>Fired per mic frame with RMS in [0,1] for a level indicator.</summary>
     public event EventHandler<float>? MicLevelUpdated;
@@ -602,7 +644,9 @@ public sealed class BotRuntime : IAsyncDisposable
             {
                 // A sidecar/VTS failure must not kill the voice pipeline (mirrors the
                 // fail-soft legacy VTS path below) — degrade to plain VTS and continue.
-                var msg = $"[Cortico] 启动失败，降级为普通 VTS 路径: {ex.Message}";
+                // Temporary degradation for this run only — not Cortico compatibility. The prompt,
+                // parser and player all switch together to the plain path (no half state).
+                var msg = $"[Cortico] 启动失败，本次运行临时降级为普通 VTS 演出（不是 Cortico 演出，重启或重连形象后再试）: {ex.Message}";
                 Console.WriteLine(msg);
                 PipelineError?.Invoke(this, msg);
             }
@@ -866,16 +910,20 @@ public sealed class BotRuntime : IAsyncDisposable
             (_asr as IDisposable)?.Dispose();
             _asr = CreateAsrClient(_config.Asr, ex => PipelineError?.Invoke(this, $"[ASR连接] {ex.GetType().Name}: {ex.Message}"));
         }
-        if (_llm is null || rebuild.HasFlag(RuntimeChange.RebuildLlm))
+        // The prompt and the parser depend on which performance layer is live; a Cortico restart
+        // or failure must never leave the model writing for the other one.
+        if (_llm is null || rebuild.HasFlag(RuntimeChange.RebuildLlm) || !ReferenceEquals(_llmBuiltForCortico, _cortico))
         {
             _llm?.Dispose();
             _llm = new LlmClient(_config.Llm.BaseUrl, _config.Llm.ApiKey, _config.Llm.Model,
                 BuildLlmSystemPrompt(),
-                _config.Avatar.UsesVts && _config.Vts.ContinuousControl.Enabled
+                _cortico is null && _config.Avatar.UsesVts && _config.Vts.ContinuousControl.Enabled
                     ? () => _continuousVts is { } vts && vts.DeclaredChannels.Length > 0
                         ? vts.DeclaredChannels
                         : [] : null,
-                _config.Llm.ReplyProtocol);
+                _config.Llm.ReplyProtocol,
+                scriptMarkup: _cortico is not null);
+            _llmBuiltForCortico = _cortico;
         }
         if (_tts is null || rebuild.HasFlag(RuntimeChange.RebuildTts))
         {
@@ -1044,7 +1092,8 @@ public sealed class BotRuntime : IAsyncDisposable
             ? ""
             : "\n" + _config.Identity.ExtraNotes.Trim();
         if (_cortico is not null)
-            return _config.Llm.SystemPrompt + "\n\n" + protocol + extra + "\n\n" + _cortico.Prompt;
+            return _config.Llm.SystemPrompt + "\n\n" + protocol + extra + "\n\n" +
+                   CorticoPrompt.For(_config.Llm.ReplyProtocol, _cortico.ScriptGrammar);
         return string.IsNullOrWhiteSpace(basePrompt) ? protocol + extra : basePrompt + "\n\n" + protocol + extra;
     }
 
@@ -1214,7 +1263,7 @@ public sealed class BotRuntime : IAsyncDisposable
             history.RemoveAll(_queuedInputs.Contains);
             foreach (var line in lines)
                 if (line.HistoryMessage is { } message) _queuedInputs.Remove(message);
-            history.Add(new Message { Role = MessageRole.System, Content = IdentityPrompt.InvitationPolicyFor(_config.Llm.ReplyProtocol) });
+            history.Add(new Message { Role = MessageRole.System, Content = IdentityPrompt.InvitationPolicyFor(_config.Llm.ReplyProtocol, cortico: _orchestrator?.Cortico is not null) });
             // VIS-02: synchronous read of the in-memory observation snapshot. Never awaits the
             // VLM; when no (valid) snapshot exists the turn proceeds exactly as before.
             if (_vision is { Enabled: true })
@@ -2136,6 +2185,10 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         if (_cortico is not null)
         {
+            // Stop what the old sidecar is performing before it goes away; the orchestrator is
+            // rebuilt (with the new Cortico and a matching prompt) right after this.
+            if (_orchestrator is { } orchestrator) StartInterrupt(orchestrator);
+            await AwaitInterruptBarrierAsync().ConfigureAwait(false);
             await _cortico.DisposeAsync();
             _cortico = null;
         }

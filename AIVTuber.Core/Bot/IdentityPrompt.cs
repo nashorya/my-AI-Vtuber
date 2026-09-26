@@ -58,11 +58,35 @@ internal static class IdentityPrompt
         speech 只放准备朗读的口语正文，不含思考过程、JSON 包装或括号心里话。
         """;
 
-    /// <summary>Returns the invitation policy matching the configured reply protocol.</summary>
-    public static string InvitationPolicyFor(string? replyProtocol) =>
-        (replyProtocol ?? "").Trim().Equals("v2", StringComparison.OrdinalIgnoreCase)
-            ? InvitationPolicyV2
-            : InvitationPolicy;
+    /// <summary>Returns the invitation policy matching the configured reply protocol and the
+    /// performance layer actually in use. With Cortico the invitation rules are identical; only
+    /// the output format changes to the one <see cref="Cortico.CorticoReplyAdapter"/> parses.</summary>
+    public static string InvitationPolicyFor(string? replyProtocol, bool cortico = false)
+    {
+        var v2 = (replyProtocol ?? "").Trim().Equals("v2", StringComparison.OrdinalIgnoreCase);
+        if (!cortico) return v2 ? InvitationPolicyV2 : InvitationPolicy;
+        return v2 ? InvitationPolicyV2Cortico : InvitationPolicyCortico;
+    }
+
+    /// <summary>Legacy protocol with Cortico: the reply is a Cortico script (not the JSON object).</summary>
+    public static readonly string InvitationPolicyCortico =
+        InvitationPolicy[..InvitationPolicy.IndexOf("只输出一个 JSON 对象", StringComparison.Ordinal)]
+            .Replace("【当前接话规则与输出格式】", "【当前接话规则与输出格式（Cortico 演出）】", StringComparison.Ordinal) +
+        """
+        输出遵循系统消息里的【Cortico 回复格式】：静默只输出【PASS】；只在心里想只输出一对全角括号；
+        回应时直接输出要朗读的台本，动作用演出台本标记写在台词里。不要输出 JSON、Markdown 或说明。
+        示例：人类说“她昨天说那个特别搞笑”并继续聊天 → 【PASS】
+        示例：你们正在讨论辣火锅，人类问“那你觉得呢？” → <微笑>我光听你们说就觉得辣了【摇头】先给我备杯水。
+        """;
+
+    /// <summary>Protocol v2 with Cortico: speech text carries the Cortico script; no control lines.</summary>
+    public static readonly string InvitationPolicyV2Cortico =
+        InvitationPolicyV2
+            .Replace("说话时每段一行 speech，控制走 control 行，最后一行必须是 end。",
+                "说话时每段一行 speech，最后一行必须是 end；不要输出 control 行。", StringComparison.Ordinal)
+            .Replace("speech 只放准备朗读的口语正文，不含思考过程、JSON 包装或括号心里话。",
+                "speech 的 text 是准备朗读的台本，动作用演出台本标记写在台词里，不含思考过程、JSON 包装、【PASS】或括号心里话。",
+                StringComparison.Ordinal);
 
     public static bool IsStopRequest(string text, IReadOnlyList<string> aliases)
     {

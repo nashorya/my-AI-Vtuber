@@ -41,9 +41,15 @@ public sealed class LlmClient : ILlmClient, IReplyProtocolStream, IDisposable, I
     public event EventHandler<string>? OnActionDetected;
     public event EventHandler<string>? OnPoseDetected;
 
+    /// <summary>True when replies are performed by Cortico: motion is script markup inside the
+    /// spoken text and no avatar control channel is offered.</summary>
+    public bool ScriptMarkup { get; }
+
     public LlmClient(string baseUrl, string apiKey, string model, string systemPrompt,
-        Func<string[]>? avatarChannels = null, string? replyProtocol = null)
+        Func<string[]>? avatarChannels = null, string? replyProtocol = null, bool scriptMarkup = false)
     {
+        ScriptMarkup = scriptMarkup;
+        if (scriptMarkup) avatarChannels = null; // one VTS writer: Cortico
         _baseUrl = baseUrl.TrimEnd('/');
         _apiKey = apiKey;
         _model = model.Trim();
@@ -57,8 +63,8 @@ public sealed class LlmClient : ILlmClient, IReplyProtocolStream, IDisposable, I
     }
 
     internal LlmClient(string systemPrompt, Func<string[]>? avatarChannels, HttpMessageHandler handler,
-        string? replyProtocol = null)
-        : this("https://example.test/v1", "test", "test", systemPrompt, avatarChannels, replyProtocol)
+        string? replyProtocol = null, bool scriptMarkup = false)
+        : this("https://example.test/v1", "test", "test", systemPrompt, avatarChannels, replyProtocol, scriptMarkup)
     {
         _httpClient.Dispose();
         _httpClient = new HttpClient(handler);
@@ -208,7 +214,7 @@ public sealed class LlmClient : ILlmClient, IReplyProtocolStream, IDisposable, I
 
         var allowedChannels = _avatarChannels?.Invoke();
         var messages = BuildMessages(history, userInput);
-        messages.Insert(1, new { role = "system", content = ReplyProtocolV2.Prompt(allowedChannels ?? []) });
+        messages.Insert(1, new { role = "system", content = ReplyProtocolV2.Prompt(allowedChannels ?? [], ScriptMarkup) });
 
         // Safety cap only — brevity comes from the prompt. Must leave room for the protocol
         // envelope (decision + end lines) so a normal reply finishes with its end event
