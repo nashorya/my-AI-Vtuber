@@ -1,0 +1,37 @@
+<UserControl x:Class="AIVTuber.App.Views.LoginView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml">
+    <Grid Background="{DynamicResource AppSurfaceBrush}">
+        <ui:Card Width="420" Padding="24" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <StackPanel>
+                <TextBlock Text="登录 AIVTuber" FontSize="{StaticResource FontSizeTitle}" FontWeight="SemiBold"
+                           Foreground="{DynamicResource AppTextPrimaryBrush}" />
+                <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="{DynamicResource AppTextSecondaryBrush}">
+                    <Run Text="专属包 " /><Run Text="{Binding ProfileId, Mode=OneWay}" /><Run Text=" · " /><Run Text="{Binding VersionText, Mode=OneWay}" />
+                </TextBlock>
+
+                <TextBlock Text="账号" Margin="0,18,0,4" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+                <ui:TextBox x:Name="UsernameBox" Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"
+                            AutomationProperties.Name="账号" />
+
+                <TextBlock Text="密码" Margin="0,12,0,4" Foreground="{DynamicResource AppTextPrimaryBrush}" />
+                <PasswordBox x:Name="PasswordInput" KeyDown="OnPasswordKeyDown" AutomationProperties.Name="密码" />
+
+                <TextBlock Text="{Binding ErrorText}" Margin="0,12,0,0" TextWrapping="Wrap"
+                           Foreground="{DynamicResource AppDangerBrush}" />
+
+                <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                    <ui:Button x:Name="LoginButton" Content="登录" Appearance="Primary" Click="OnLogin"
+                               AutomationProperties.Name="登录" />
+                    <ui:Button Content="先去设置 / 诊断" Appearance="Secondary" Margin="8,0,0,0" Click="OnDismiss"
+                               ToolTip="未登录时可以查看设置和诊断，但不会连接任何云端服务"
+                               AutomationProperties.Name="先去设置或诊断" />
+                </StackPanel>
+
+                <TextBlock Margin="0,16,0,0" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}"
+                           Text="登录只验证账号有效期；语音、文字和画面直接发往厂商，不经过鉴权服务。" />
+            </StackPanel>
+        </ui:Card>
+    </Grid>
+</UserControl>

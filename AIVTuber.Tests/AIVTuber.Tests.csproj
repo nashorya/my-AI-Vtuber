@@ -24,6 +24,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AIVTuber.Core\AIVTuber.Core.csproj" />
+    <ProjectReference Include="..\AIVTuber.AuthServer\AIVTuber.AuthServer.csproj" />
+    <ProjectReference Include="..\tools\AIVTuber.Packager\AIVTuber.Packager.csproj" />
   </ItemGroup>
 
   <ItemGroup>

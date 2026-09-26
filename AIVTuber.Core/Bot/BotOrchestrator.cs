@@ -582,16 +582,21 @@ public sealed class BotOrchestrator : IDisposable
     }
 
     /// <summary>Interrupt any ongoing processing and stop playback immediately.</summary>
-    public void Interrupt()
+    public void Interrupt() => BeginInterrupt().GetAwaiter().GetResult();
+
+    /// <summary>Silences local output now and returns the wait for the in-flight request to
+    /// unwind. Playback never waits for a provider to acknowledge cancellation (AUTH-04).</summary>
+    public Task BeginInterrupt()
     {
         _motion?.Cancel(Interlocked.Read(ref _activeAvatarGeneration));
         _motion?.OnRms(0);
         _coordinator.SetHold(false);
-        _coordinator.CancelCurrentAsync().GetAwaiter().GetResult();
+        var unwind = _coordinator.CancelCurrent();
         _currentEmotion = null;
         _deferLlmEvents = false;
         ClearDeferredControls();
         _stopPlayback();
+        return unwind;
     }
 
     public bool IsProcessing => _coordinator.IsBusy;

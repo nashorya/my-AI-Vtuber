@@ -13,9 +13,12 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     private readonly ConfigViewModel _configVm;
     private readonly MemoryViewModel _memoryVm;
 
-    public MainWindow(BotRuntime runtime, ConfigManager configManager)
+    private readonly AccountViewModel? _accountVm;
+
+    public MainWindow(BotRuntime runtime, ConfigManager configManager, AccountViewModel? accountVm = null)
     {
         InitializeComponent();
+        _accountVm = accountVm;
 
         _monitorVm = new MonitorViewModel(runtime, action => Dispatcher.BeginInvoke(action));
         _configVm = new ConfigViewModel(
@@ -36,6 +39,31 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             _ = section;
         };
         FirstRunHost.SkipRequested += (_, _) => ShowConsolePage();
+
+        if (_accountVm is not null)
+        {
+            LoginHost.DataContext = _accountVm;
+            AccountStrip.Visibility = Visibility.Visible;
+            _accountVm.PropertyChanged += (_, _) => RefreshAccount();
+            RefreshAccount();
+        }
+    }
+
+    private void RefreshAccount()
+    {
+        if (_accountVm is not { } vm) return;
+        LoginHost.Visibility = vm.ShowLogin ? Visibility.Visible : Visibility.Collapsed;
+        AccountStatusText.Text = vm.IsSignedIn
+            ? $"已登录 {vm.Username} · {vm.ValidUntilText} · 专属包 {vm.ProfileId} · {vm.VersionText}"
+            : $"未登录：不会连接任何云端服务{(vm.ErrorText.Length > 0 ? "（" + vm.ErrorText + "）" : "")}";
+        AccountActionButton.Content = vm.IsSignedIn ? "退出登录" : "登录";
+    }
+
+    private async void OnAccountAction(object sender, RoutedEventArgs e)
+    {
+        if (_accountVm is not { } vm) return;
+        if (vm.IsSignedIn) await vm.LogoutAsync();
+        else vm.ReopenLogin();
     }
 
     public void ShowFirstRunPage()

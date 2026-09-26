@@ -1,0 +1,6 @@
+<Project>
+  <!-- Single version source for assemblies, UI, diagnostics and package names. -->
+  <PropertyGroup>
+    <Version>0.36.0</Version>
+  </PropertyGroup>
+</Project>

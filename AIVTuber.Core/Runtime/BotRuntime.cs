@@ -1,3 +1,4 @@
+using AIVTuber.Core.Auth;
 using AIVTuber.Core.Cortico;
 using AIVTuber.Core.Audio;
 using System.Threading.Channels;
@@ -77,6 +78,54 @@ public sealed class BotRuntime : IAsyncDisposable
     private sealed record CapturedOpponent(string Name, string? Uid, string? MatchId);
     private CapturedOpponent? _capturedOpponent;
 
+    // Account gate (AUTH-02/04/06/09). Public builds keep the unrestricted default.
+    private ICloudAccess _cloud = UnrestrictedCloudAccess.Instance;
+    private DistributionProfile? _profile;
+    private CancellationTokenSource _cloudCts = new();
+
+    /// <summary>Raised after account access was revoked and cloud work has been stopped locally.</summary>
+    public event EventHandler<string>? CloudAccessRevoked;
+    public bool DistributionMode => _profile is not null;
+    public bool CloudAllowed => _cloud.IsAllowed;
+    public DistributionProfile? Profile => _profile;
+
+    /// <summary>Binds the runtime to an account gate. With a <paramref name="profile"/> the runtime
+    /// is in distribution mode: provider settings are pinned to the profile and no local
+    /// inference (ASR sidecar, ONNX embeddings) is started.</summary>
+    public void UseCloudAccess(ICloudAccess access, DistributionProfile? profile = null)
+    {
+        ArgumentNullException.ThrowIfNull(access);
+        _cloud.Revoked -= OnCloudRevoked;
+        _cloud = access;
+        _profile = profile;
+        _cloud.Revoked += OnCloudRevoked;
+    }
+
+    /// <summary>Stops everything that could still produce public output: in-flight ASR is
+    /// cancelled, queued inputs are dropped and playback stops now. The wait for providers to
+    /// unwind runs in the background and never delays the local stop.</summary>
+    private void OnCloudRevoked(string reason)
+    {
+        Interlocked.Exchange(ref _cloudCts, new CancellationTokenSource()).Cancel();
+        lock (_talkInputSync)
+        {
+            _turnGate?.Clear();
+            _queuedInputs.Clear();
+        }
+        var orchestrator = _orchestrator;
+        if (orchestrator is not null)
+        {
+            orchestrator.SetHold(false);
+            SuperviseBackgroundTask(orchestrator.BeginInterrupt());
+        }
+        ReportTurnStatus($"云端已停止：{reason}");
+        AIVTuber.Core.Diagnostics.DebugLog.Write($"[鉴权] 云端已停止：{reason}");
+        CloudAccessRevoked?.Invoke(this, reason);
+    }
+
+    private CancellationTokenSource LinkCloudToken() =>
+        CancellationTokenSource.CreateLinkedTokenSource(_cts.Token, Volatile.Read(ref _cloudCts).Token);
+
     private CapturedOpponent CaptureOpponent()
     {
         var (matchId, opponent) = _pkBuffer.CaptureIdentity();
@@ -152,7 +201,8 @@ public sealed class BotRuntime : IAsyncDisposable
     public PkTurnRepository PkTurnRepository => _pkTurnRepo;
     public DanmakuSelector? Selector => _selector;
 
-    public Task ForceExtractMemoryAsync() => _memoryExtractor.ExtractFactsAsync();
+    public Task ForceExtractMemoryAsync() =>
+        _cloud.IsAllowed ? _memoryExtractor.ExtractFactsAsync() : Task.CompletedTask;
 
     private volatile bool _micMuted;
     private readonly object _micInputSync = new();
@@ -290,7 +340,9 @@ public sealed class BotRuntime : IAsyncDisposable
         _memoryDb = new MemoryDb(dbPath);
         await _memoryDb.InitializeAsync();
         _embedding = null;
-        try
+        if (_profile is not null)
+            Console.WriteLine("[记忆] 分发版不加载本地向量模型，记忆检索改用字符串相似度（记忆数据保留）");
+        else try
         {
             var modelDir = Path.Combine(_baseDir, _config.Memory.EmbeddingModelPath);
             var hasModel = File.Exists(Path.Combine(modelDir, "model.onnx"));
@@ -732,7 +784,8 @@ public sealed class BotRuntime : IAsyncDisposable
 
     internal void AcceptTalkLine(TalkLine line)
     {
-        if (_cts.IsCancellationRequested || string.IsNullOrWhiteSpace(line.Text) || !IsCurrentMatch(line)) return;
+        if (_cts.IsCancellationRequested || !_cloud.IsAllowed ||
+            string.IsNullOrWhiteSpace(line.Text) || !IsCurrentMatch(line)) return;
         var stop = line.Identity == TalkIdentity.Self &&
             IdentityPrompt.IsStopRequest(line.Text, _config.Interaction.WakeKeywords);
         lock (_talkInputSync)
@@ -772,7 +825,7 @@ public sealed class BotRuntime : IAsyncDisposable
         }
     }
 
-    private async Task HandleTurnReadyAsync(IReadOnlyList<TalkLine> lines)
+    internal async Task HandleTurnReadyAsync(IReadOnlyList<TalkLine> lines)
     {
         var gate = _turnGate;
         if (gate is null) return;
@@ -782,6 +835,8 @@ public sealed class BotRuntime : IAsyncDisposable
         try
         {
             if (orchestrator is null) return;
+            var cloudEpoch = _cloud.Epoch;
+            if (!_cloud.IsAllowed) return;
             lock (_talkInputSync)
                 foreach (var stale in lines.Where(l => !IsCurrentMatch(l)))
                     if (stale.HistoryMessage is { } message) _queuedInputs.Remove(message);
@@ -795,7 +850,8 @@ public sealed class BotRuntime : IAsyncDisposable
 
             bool CanCommit()
             {
-                return ReferenceEquals(orchestrator, _orchestrator) && ReferenceEquals(gate, _turnGate) && gate.CanCommit(revision) &&
+                return _cloud.IsAllowed && _cloud.Epoch == cloudEpoch &&
+                    ReferenceEquals(orchestrator, _orchestrator) && ReferenceEquals(gate, _turnGate) && gate.CanCommit(revision) &&
                     turnMatchId == _pkBuffer.MatchId && lines.All(IsCurrentMatch);
             }
             _stateTracker.TextInputStarted(Environment.TickCount64);
@@ -833,11 +889,11 @@ public sealed class BotRuntime : IAsyncDisposable
                 // second persistence route for a paraphrased PASS observation.
                 if (!_conversation.HasTransientContext)
                     NotePkPair(lines, reply.Spoken);
-                SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
+                if (_cloud.IsAllowed) SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
                 break;
             case ReplyKind.InnerThought:
                 ReportTurnStatus("模型选择心里话，本轮不播放语音");
-                SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
+                if (_cloud.IsAllowed) SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
                 break;
             case ReplyKind.Pass:
                 ReportTurnStatus("继续旁听，对话已保留");
@@ -878,18 +934,22 @@ public sealed class BotRuntime : IAsyncDisposable
                 AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风段] 能量过低(<{MicAsrMinPeak})，跳过ASR");
             return;
         }
+        if (!_cloud.IsAllowed) return;
         _stateTracker.InputStarted(Environment.TickCount64);
         AsrResult result;
-        if (_config.Asr.Streaming)
+        using (var cloud = LinkCloudToken())
         {
-            var stream = channel is null
-                ? System.Linq.AsyncEnumerable.Empty<byte[]>()
-                : channel.Reader.ReadAllAsync();
-            result = await _orchestrator.TranscribeStreamAsync(stream, _cts.Token).ConfigureAwait(false);
-        }
-        else
-        {
-            result = await _orchestrator.TranscribeAsync(seg.AudioData, _cts.Token).ConfigureAwait(false);
+            if (_config.Asr.Streaming)
+            {
+                var stream = channel is null
+                    ? System.Linq.AsyncEnumerable.Empty<byte[]>()
+                    : channel.Reader.ReadAllAsync();
+                result = await _orchestrator.TranscribeStreamAsync(stream, cloud.Token).ConfigureAwait(false);
+            }
+            else
+            {
+                result = await _orchestrator.TranscribeAsync(seg.AudioData, cloud.Token).ConfigureAwait(false);
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(result.Text))
@@ -919,17 +979,21 @@ public sealed class BotRuntime : IAsyncDisposable
             AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录段] 能量过低(<{LoopbackAsrMinPeak})，跳过ASR");
             return;
         }
+        if (!_cloud.IsAllowed) return;
         AsrResult result;
-        if (_config.Asr.Streaming)
+        using (var cloud = LinkCloudToken())
         {
-            var stream = channel is null
-                ? System.Linq.AsyncEnumerable.Empty<byte[]>()
-                : channel.Reader.ReadAllAsync();
-            result = await _orchestrator.TranscribeStreamAsync(stream, _cts.Token).ConfigureAwait(false);
-        }
-        else
-        {
-            result = await _orchestrator.TranscribeAsync(seg.AudioData, _cts.Token).ConfigureAwait(false);
+            if (_config.Asr.Streaming)
+            {
+                var stream = channel is null
+                    ? System.Linq.AsyncEnumerable.Empty<byte[]>()
+                    : channel.Reader.ReadAllAsync();
+                result = await _orchestrator.TranscribeStreamAsync(stream, cloud.Token).ConfigureAwait(false);
+            }
+            else
+            {
+                result = await _orchestrator.TranscribeAsync(seg.AudioData, cloud.Token).ConfigureAwait(false);
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(result.Text))
@@ -972,7 +1036,7 @@ public sealed class BotRuntime : IAsyncDisposable
     /// </summary>
     public async Task StartLocalAsrServerAsync()
     {
-        if (_asr is not LocalAsrClient localAsr) return;
+        if (_profile is not null || _asr is not LocalAsrClient localAsr) return; // AUTH-09: cloud only
         SetLocalAsrReachable(false);
         try
         {
@@ -1223,6 +1287,12 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         try
         {
+            if (!_cloud.IsAllowed)
+            {
+                // No cloud curation without an account; close the match without losing raw turns.
+                await _pkTurnRepo.EndMatchAsync(matchId, DateTime.UtcNow.ToString("o")).ConfigureAwait(false);
+                return;
+            }
             await _pkCurator.PersistMatchAsync(
                 matchId,
                 opponent?.Uid,
@@ -1319,6 +1389,7 @@ public sealed class BotRuntime : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(newConfig);
         var candidate = ConfigManager.Clone(newConfig);
+        _profile?.ApplyTo(candidate); // provider settings stay pinned to the private profile
 
         await _configApplyGate.WaitAsync().ConfigureAwait(false);
         try
@@ -1488,7 +1559,9 @@ public sealed class BotRuntime : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _cloud.Revoked -= OnCloudRevoked;
         _cts.Cancel();
+        _cloudCts.Cancel();
         _turnGate?.Dispose();
         _orchestrator?.Interrupt();
         await DrainBackgroundTasksAsync();
