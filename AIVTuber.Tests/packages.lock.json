@@ -264,6 +264,13 @@
           "xunit.extensibility.core": "[2.9.3]"
         }
       },
+      "aivtuber.authserver": {
+        "type": "Project",
+        "dependencies": {
+          "Microsoft.Data.Sqlite": "[10.0.9, )",
+          "SQLitePCLRaw.bundle_e_sqlite3": "[3.0.3, )"
+        }
+      },
       "aivtuber.core": {
         "type": "Project",
         "dependencies": {
