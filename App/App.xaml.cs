@@ -1,9 +1,11 @@
 using System.Windows;
 using AIVTuber.App.Views;
 using AIVTuber.Core;
+using AIVTuber.Core.Auth;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Runtime;
 using AIVTuber.Core.Ui;
+using AIVTuber.Core.ViewModels;
 using Wpf.Ui.Appearance;
 
 namespace AIVTuber.App;
@@ -11,6 +13,8 @@ namespace AIVTuber.App;
 public partial class App : Application
 {
     private BotRuntime? _runtime;
+    private AuthApiClient? _authApi;
+    private CloudLicense? _license;
     private MainWindow? _window;
     private AvatarWindow? _avatarWindow;
     private readonly ThemeService _themeService = new();
@@ -39,8 +43,24 @@ public partial class App : Application
             args.SetObserved();
         };
 
+        // Private packages carry distribution/profile.json; public builds do not (DIST-01).
+        DistributionProfile? profile;
+        try
+        {
+            profile = DistributionProfile.TryLoad(AppPaths.ContentRoot);
+            if (profile is not null)
+                CredentialRevisionGuard.Check(profile,
+                    System.IO.Path.Combine(AppPaths.ContentRoot, CredentialRevisionGuard.StateFileName));
+        }
+        catch (DistributionProfileException ex)
+        {
+            MessageBox.Show(ex.Message, "AIVTuber 专属包", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown(1);
+            return;
+        }
+
         var configPath = System.IO.Path.Combine(AppPaths.ContentRoot, "config.json");
-        var configManager = new ConfigManager(configPath);
+        var configManager = new ConfigManager(configPath) { Profile = profile };
         var config = LoadConfigSafe(configManager, configPath);
         if (config is null)
         {
@@ -48,16 +68,29 @@ public partial class App : Application
             return;
         }
 
-        var firstRun = FirstRunGuidance.NeedsGuidance(config);
+        var firstRun = profile is null && FirstRunGuidance.NeedsGuidance(config);
 
         Console.WriteLine($"[App] content root: {AppPaths.ContentRoot}");
         Console.WriteLine($"[App] BaseDirectory: {AppContext.BaseDirectory}");
 
+        Console.WriteLine($"[App] version: {AppVersion.Informational}");
         _runtime = new BotRuntime(config, AppPaths.ContentRoot);
+
+        AccountViewModel? accountVm = null;
+        if (profile is not null)
+        {
+            Console.WriteLine($"[App] distribution {profile.Describe()}");
+            _authApi = new AuthApiClient(profile.AuthServerUri);
+            _license = new CloudLicense(_authApi, profile.ProfileId, profile.CredentialRevision, AppVersion.Current);
+            // Until login succeeds the runtime starts devices only; every cloud entry is gated.
+            _runtime.UseCloudAccess(_license, profile);
+            accountVm = new AccountViewModel(_license, profile.ProfileId, profile.Account,
+                action => Dispatcher.BeginInvoke(action));
+        }
 
         // Always show the window — even with no keys — so the user can configure in the UI.
         // Then init in the background.
-        _window = new MainWindow(_runtime, configManager);
+        _window = new MainWindow(_runtime, configManager, accountVm);
         _window.Show();
         if (firstRun) _window.ShowFirstRunPage();
 
@@ -68,6 +101,13 @@ public partial class App : Application
     {
         try { _avatarWindow?.Close(); } catch { /* ignore */ }
         _avatarWindow = null;
+        if (_license is not null)
+        {
+            // Local stop first; the server-side logout is best effort and bounded.
+            try { await _license.LogoutAsync().WaitAsync(TimeSpan.FromSeconds(3)); } catch { /* ignore */ }
+            await _license.DisposeAsync();
+        }
+        _authApi?.Dispose();
         if (_runtime is not null) await _runtime.DisposeAsync();
         base.OnExit(e);
     }
