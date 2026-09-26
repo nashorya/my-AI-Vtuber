@@ -213,10 +213,3 @@ public sealed class AuthServiceTests : IDisposable
             _service.CreateAccount("alice", "other", "streamer-099", Start.AddDays(1)));
     }
 }
-
-internal sealed class ManualClock(DateTimeOffset now) : TimeProvider
-{
-    private DateTimeOffset _now = now;
-    public override DateTimeOffset GetUtcNow() => _now;
-    public void Advance(TimeSpan by) => _now += by;
-}
