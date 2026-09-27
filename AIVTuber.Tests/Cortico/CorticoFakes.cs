@@ -1,71 +1,99 @@
 using System.Runtime.CompilerServices;
-using System.Text.RegularExpressions;
 using AIVTuber.Core.Cortico;
 using AIVTuber.Core.Pipeline;
 
 namespace AIVTuber.Tests.Cortico;
 
-/// <summary>Records what reaches the performance layer. Clean text follows Cortico's grammar
-/// (【…】 and &lt;…&gt; removed); each speakable feed is authorized with that text, as the host does
-/// per piece. It proves routing and gating only — not rendering, timing or real audio.</summary>
+/// <summary>
+/// Emulates the host side: each fed segment becomes one piece (clean text per Cortico grammar),
+/// synthesized on request, played when upstream would ask. It proves routing, pacing hand-off and
+/// the fallback rules — not rendering, real timing or real audio.
+/// </summary>
 internal sealed class FakeCortico : ICorticoPerformance
 {
     public string ScriptGrammar => "【演出台本语法】<动作>随说随做；【动作】暂停说话做动作。点头 摇头 微笑";
-    public readonly List<string> Feeds = [];
-    public readonly List<string> Heard = [];
-    public int Begins, Interrupts, Starts, Disposed;
-    public bool HoldPlayback;
-    public readonly TaskCompletionSource FirstFeed = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    public readonly TaskCompletionSource Playing = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    public Action? BeforeAuthorize;
+    public int MaxHoldMs { get; set; } = 300;
+    public bool IsAlive { get; set; } = true;
+    /// <summary>When set, pieces are synthesized but never asked to play.</summary>
+    public bool HoldPlay;
+    public readonly List<string> Feeds = [], Log = [];
+    public int Begins, Interrupts;
+    public Stage? Current;
 
-    public static string Clean(string script) => Regex.Replace(script, @"【[^】]*】|<[^>]*>", "").Trim();
+    public static string Clean(string script) => CorticoScript.Clean(script);
 
-    public Task<string> PrepareAsync(string script, CancellationToken ct) => Task.FromResult(Clean(script));
-
-    public Task<ICorticoStage> BeginAsync(Func<string, bool> authorize, Action started, CancellationToken ct)
+    public Task<ICorticoStage> BeginAsync(ICorticoAudioHandler handler, CancellationToken ct)
     {
         Interlocked.Increment(ref Begins);
-        return Task.FromResult<ICorticoStage>(new Stage(this, authorize, started));
+        Current = new Stage(this, handler);
+        return Task.FromResult<ICorticoStage>(Current);
     }
 
     public Task InterruptAsync(CancellationToken ct)
     {
         Interlocked.Increment(ref Interrupts);
+        Current?.Cut();
         return Task.CompletedTask;
     }
 
-    private sealed class Stage(FakeCortico owner, Func<string, bool> authorize, Action started) : ICorticoStage
+    internal sealed class Stage(FakeCortico owner, ICorticoAudioHandler handler) : ICorticoStage
     {
-        private bool _denied;
+        private long _next;
+        private readonly Dictionary<long, (TaskCompletionSource Ready, TaskCompletionSource Done)> _pieces = [];
+        private readonly List<Task> _runs = [];
+        private readonly CancellationTokenSource _cut = new();
+        public ICorticoAudioHandler Handler => handler;
+
+        private void Note(string line) { lock (owner.Log) owner.Log.Add(line); }
+        public void Cut() => _cut.Cancel();
 
         public Task FeedAsync(string script, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
             lock (owner.Feeds) owner.Feeds.Add(script);
-            owner.FirstFeed.TrySetResult();
             var text = Clean(script);
             if (text.Length == 0) return Task.CompletedTask;
-            owner.BeforeAuthorize?.Invoke();
-            if (!authorize(text)) { _denied = true; return Task.CompletedTask; }
-            lock (owner.Heard) owner.Heard.Add(text);
-            Interlocked.Increment(ref owner.Starts);
-            started();
-            owner.Playing.TrySetResult();
+            var id = Interlocked.Increment(ref _next);
+            var entry = (new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously),
+                         new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+            lock (_pieces) _pieces[id] = entry;
+            Task previous;
+            lock (_runs) previous = _runs.Count > 0 ? _runs[^1] : Task.CompletedTask;
+            var run = Task.Run(async () =>
+            {
+                if (_cut.IsCancellationRequested) return;  // a cut host requests nothing more
+                handler.Synth(id, text);
+                await entry.Item1.Task.WaitAsync(_cut.Token);
+                await previous;                       // upstream plays pieces one after another
+                // A holding host keeps the performance open until it is interrupted.
+                if (owner.HoldPlay) { await Task.Delay(Timeout.Infinite, _cut.Token); return; }
+                if (_cut.IsCancellationRequested) return;
+                handler.Cue();
+                handler.Play(id);
+                await entry.Item2.Task.WaitAsync(_cut.Token);
+            });
+            lock (_runs) _runs.Add(run);
             return Task.CompletedTask;
         }
 
         public async Task CompleteAsync(CancellationToken ct)
         {
-            if (owner.HoldPlayback) await Task.Delay(Timeout.Infinite, ct);
-            if (_denied) throw new InvalidOperationException("Turn superseded");
+            Task[] runs;
+            lock (_runs) runs = [.. _runs];
+            await Task.WhenAll(runs).WaitAsync(ct);
+            if (_cut.IsCancellationRequested) throw new InvalidOperationException("Cancelled");
         }
 
-        public ValueTask DisposeAsync()
-        {
-            Interlocked.Increment(ref owner.Disposed);
-            return ValueTask.CompletedTask;
-        }
+        private void Ready(long id) { lock (_pieces) if (_pieces.TryGetValue(id, out var p)) p.Ready.TrySetResult(); }
+        private void Done(long id) { lock (_pieces) if (_pieces.TryGetValue(id, out var p)) { p.Ready.TrySetResult(); p.Done.TrySetResult(); } }
+
+        public Task PcmAsync(long pieceId, int sampleRate, byte[] pcm) { Note($"pcm:{pieceId}"); Ready(pieceId); return Task.CompletedTask; }
+        public Task SynthEndAsync(long pieceId) { Note($"synthEnd:{pieceId}"); Ready(pieceId); return Task.CompletedTask; }
+        public Task SynthErrorAsync(long pieceId, string message) { Note($"synthError:{pieceId}"); Done(pieceId); return Task.CompletedTask; }
+        public Task StartedAsync(long pieceId) { Note($"started:{pieceId}"); return Task.CompletedTask; }
+        public Task EndedAsync(long pieceId) { Note($"ended:{pieceId}"); Done(pieceId); return Task.CompletedTask; }
+        public Task StoppedAsync(long pieceId) { Note($"stopped:{pieceId}"); Done(pieceId); return Task.CompletedTask; }
+        public ValueTask DisposeAsync() { _cut.Cancel(); return ValueTask.CompletedTask; }
     }
 }
 

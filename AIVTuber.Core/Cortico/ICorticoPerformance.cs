@@ -1,50 +1,57 @@
 namespace AIVTuber.Core.Cortico;
 
 /// <summary>
-/// The Cortico performance layer. While this backend is selected it is the only audio player and
-/// the only VTS parameter writer for replies; the app's own player and VTS controller are not
-/// initialized. Replies of every protocol are adapted into Cortico scripts and performed here.
+/// The Cortico sidecar as a visual follower. It decides when each piece may start (upstream
+/// pacing: boundary pauses, blocking gestures) and drives the rig from the app's real playback;
+/// it never synthesizes or plays audio itself.
 /// </summary>
 public interface ICorticoPerformance
 {
-    /// <summary>Cortico script grammar and vocabulary only. The reply envelope (legacy script or
-    /// protocol v2 events) and the PASS/thought rules are composed by the app, so the prompt always
-    /// matches the parser in use (see <see cref="CorticoPrompt"/>).</summary>
+    /// <summary>Cortico script grammar and vocabulary for the system prompt.</summary>
     string ScriptGrammar { get; }
 
-    /// <summary>Clean spoken text of a script, as Cortico's own parser extracts it.</summary>
-    Task<string> PrepareAsync(string script, CancellationToken ct);
+    /// <summary>Longest time the host may legitimately hold a ready piece (one beat), in ms.</summary>
+    int MaxHoldMs { get; }
 
-    /// <summary>Starts one reply's performance. Segments are fed as they are approved, so the first
-    /// one is performed while the LLM is still generating. <paramref name="authorize"/> is asked
-    /// with the clean text of every piece right before it becomes audible; returning false stops
-    /// the rest of the turn. <paramref name="started"/> fires when audio actually starts.</summary>
-    Task<ICorticoStage> BeginAsync(Func<string, bool> authorize, Action started, CancellationToken ct);
+    /// <summary>False once the sidecar exited or its 1 s heartbeat lapsed for more than 2 s.</summary>
+    bool IsAlive { get; }
 
-    /// <summary>Stops the real performance now: queued segments, audio, synthesis, held states and
-    /// gestures under way. Safe to call when nothing is performing.</summary>
+    /// <summary>Starts one reply. Host requests for this reply arrive on <paramref name="handler"/>.</summary>
+    Task<ICorticoStage> BeginAsync(ICorticoAudioHandler handler, CancellationToken ct);
+
+    /// <summary>Stops every performance begun before this call: queued pieces, held states, gestures.</summary>
     Task InterruptAsync(CancellationToken ct);
+}
+
+/// <summary>Host → app requests for one reply. Called on the IPC reader; must not block.</summary>
+public interface ICorticoAudioHandler
+{
+    /// <summary>Start synthesizing this clean text and report PCM for it.</summary>
+    void Synth(long pieceId, string text);
+    /// <summary>Upstream no longer wants this piece: stop its synthesis and drop its audio.</summary>
+    void CancelSynth(long pieceId);
+    /// <summary>Upstream's moment to speak this piece.</summary>
+    void Play(long pieceId);
+    /// <summary>Upstream cut this piece while it was playing.</summary>
+    void Stop(long pieceId);
+    /// <summary>A beat fired (liveness for the hold watchdog).</summary>
+    void Cue();
+    /// <summary>The rig side ended this reply (model switch): finish the current piece, the rest voice-only.</summary>
+    void Aborted(string reason);
 }
 
 /// <summary>One reply being performed. Dispose always; disposing an unfinished stage interrupts it.</summary>
 public interface ICorticoStage : IAsyncDisposable
 {
-    /// <summary>Performs one approved segment (appended after the earlier ones).</summary>
+    /// <summary>Performs one approved script segment (appended after the earlier ones).</summary>
     Task FeedAsync(string script, CancellationToken ct);
-
-    /// <summary>No more segments: waits until everything fed has been performed. Throws when the
-    /// performance was cancelled, denied or failed.</summary>
+    /// <summary>No more segments: waits until everything fed has been performed.</summary>
     Task CompleteAsync(CancellationToken ct);
-}
-
-public static class CorticoPerformanceExtensions
-{
-    /// <summary>Whole-script convenience: one segment, then complete.</summary>
-    public static async Task PerformAsync(this ICorticoPerformance performance, string script,
-        Func<string, bool> authorize, Action started, CancellationToken ct)
-    {
-        await using var stage = await performance.BeginAsync(authorize, started, ct).ConfigureAwait(false);
-        await stage.FeedAsync(script, ct).ConfigureAwait(false);
-        await stage.CompleteAsync(ct).ConfigureAwait(false);
-    }
+    Task PcmAsync(long pieceId, int sampleRate, byte[] pcm);
+    Task SynthEndAsync(long pieceId);
+    Task SynthErrorAsync(long pieceId, string message);
+    /// <summary>The piece's first audio actually reached the sound card.</summary>
+    Task StartedAsync(long pieceId);
+    Task EndedAsync(long pieceId);
+    Task StoppedAsync(long pieceId);
 }

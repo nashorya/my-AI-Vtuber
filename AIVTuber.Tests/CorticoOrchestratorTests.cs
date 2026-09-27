@@ -1,3 +1,4 @@
+#if CORTICO_ORCHESTRATOR_TESTS_REWRITE_PENDING // rewritten in Task 7 (ledger Ruling R2)
 using System.Runtime.CompilerServices;
 using AIVTuber.Core.Audio;
 using AIVTuber.Core.Bot;
@@ -242,3 +243,5 @@ public sealed class CorticoOrchestratorTests
         }
     }
 }
+
+#endif

@@ -636,7 +636,6 @@ public sealed class BotRuntime : IAsyncDisposable
             try
             {
                 _cortico = await CorticoProcess.StartAsync(_corticoOptions, _baseDir, _config.Vts,
-                    () => _tts, () => _config.Tts,
                     message => AIVTuber.Core.Diagnostics.DebugLog.Write($"[Cortico] {message}"), _cts.Token);
                 return;
             }

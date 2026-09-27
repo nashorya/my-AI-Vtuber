@@ -1,15 +1,46 @@
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Cortico;
-using AIVTuber.Core.Pipeline;
 
 namespace AIVTuber.Tests;
 
 public sealed class CorticoProcessTests
 {
+    /// <summary>Plays the app's side of the protocol: tone PCM for every synth, started/ended for every play.</summary>
+    private sealed class ToneApp : ICorticoAudioHandler
+    {
+        public ICorticoStage Stage = null!;
+        public readonly List<string> Synth = [], Played = [], Log = [];
+        private readonly Dictionary<long, string> _texts = [];
+        public bool HoldSynth;
+        public readonly TaskCompletionSource SynthHeld = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void ICorticoAudioHandler.Synth(long pieceId, string text)
+        {
+            lock (Log) { Synth.Add(text); _texts[pieceId] = text; Log.Add($"synth:{pieceId}"); }
+            if (HoldSynth) { SynthHeld.TrySetResult(); return; }
+            _ = Task.Run(async () =>
+            {
+                var pcm = new byte[6400];
+                for (var i = 0; i < pcm.Length / 2; i++)
+                    System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(pcm.AsSpan(i * 2), (short)(3000 * Math.Sin(i / 8.0)));
+                await Stage.PcmAsync(pieceId, 16000, pcm);
+                await Stage.SynthEndAsync(pieceId);
+            });
+        }
+        void ICorticoAudioHandler.CancelSynth(long pieceId) { lock (Log) Log.Add($"cancelSynth:{pieceId}"); }
+        void ICorticoAudioHandler.Play(long pieceId)
+        {
+            lock (Log) { Played.Add(_texts[pieceId]); Log.Add($"play:{pieceId}"); }
+            _ = Task.Run(async () => { await Stage.StartedAsync(pieceId); await Task.Delay(200); await Stage.EndedAsync(pieceId); });
+        }
+        void ICorticoAudioHandler.Stop(long pieceId) { lock (Log) Log.Add($"stop:{pieceId}"); }
+        void ICorticoAudioHandler.Cue() { lock (Log) Log.Add("cue"); }
+        void ICorticoAudioHandler.Aborted(string reason) { lock (Log) Log.Add($"aborted:{reason}"); }
+    }
+
     [SkippableFact]
-    public async Task RealNodeHost_RoundTripsAudioAndCancelsPendingSynthesis()
+    public async Task RealNodeHost_PacesAppAudio_AndCancelsPendingSynthesis()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "sidecar/cortico/host.ts")))
@@ -22,30 +53,47 @@ public sealed class CorticoProcessTests
         var start = new ProcessStartInfo("node") { WorkingDirectory = sidecar, UseShellExecute = false,
             RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
         start.ArgumentList.Add("--import"); start.ArgumentList.Add("tsx"); start.ArgumentList.Add("tests/fake-vts.ts");
+        start.Environment.Remove("FORCE_COLOR"); start.Environment["NO_COLOR"] = "1"; // the port line must be plain digits
         using var server = Process.Start(start)!;
         try
         {
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             var port = int.Parse((await server.StandardOutput.ReadLineAsync(deadline.Token))!);
-            var tts = new FixtureTts();
-            await using var bridge = await CorticoProcess.StartAsync(new CorticoOptions {
-                Enabled = true, SidecarPath = sidecar, AudioDevice = "none"
-            }, temp, new VtsConfig { Host = "127.0.0.1", Port = port }, () => tts,
-                () => new TtsConfig { SampleRate = 16000 }, _ => {}, deadline.Token);
+            await using var bridge = await CorticoProcess.StartAsync(new CorticoOptions { Enabled = true, SidecarPath = sidecar },
+                temp, new VtsConfig { Host = "127.0.0.1", Port = port }, _ => { }, deadline.Token);
             Assert.Contains("点头", bridge.ScriptGrammar);
-            Assert.Equal("你好", await bridge.PrepareAsync("<微笑>你好【点头】", deadline.Token));
-            var starts = 0;
-            await bridge.PerformAsync("<微笑>你好", _ => true, () => starts++, deadline.Token);
-            Assert.True(starts > 0);
-            tts.Block = true;
-            using var cancel = new CancellationTokenSource();
-            var pending = bridge.PerformAsync("这次取消", _ => true, () => {}, cancel.Token);
-            await tts.Blocked.Task.WaitAsync(deadline.Token);
-            cancel.Cancel();
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
-            tts.Block = false;
-            await bridge.PerformAsync("再试一次", _ => true, () => starts++, deadline.Token);
-            Assert.True(starts >= 2);
+            Assert.True(bridge.IsAlive);
+
+            var app = new ToneApp();
+            await using (var stage = await bridge.BeginAsync(app, deadline.Token))
+            {
+                app.Stage = stage;
+                await stage.FeedAsync("<微笑>你好【点头】再见。", deadline.Token);
+                await stage.CompleteAsync(deadline.Token);
+            }
+            Assert.Equal(["你好", "再见。"], app.Played);
+            Assert.True(bridge.MaxHoldMs > 1000);
+            lock (app.Log)
+                foreach (var played in app.Log.Where(l => l.StartsWith("play:")))
+                    Assert.True(app.Log.IndexOf("synth:" + played[5..]) < app.Log.IndexOf(played));
+
+            var held = new ToneApp { HoldSynth = true };
+            var stage2 = await bridge.BeginAsync(held, deadline.Token);
+            held.Stage = stage2;
+            await stage2.FeedAsync("这次取消", deadline.Token);
+            await held.SynthHeld.Task.WaitAsync(deadline.Token);
+            // Unfinished: the app gives up the turn and the host is interrupted (acknowledged) before
+            // the next turn may start. Host requests for the abandoned turn are no longer delivered.
+            await stage2.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5), deadline.Token);
+
+            var again = new ToneApp();
+            await using (var stage3 = await bridge.BeginAsync(again, deadline.Token))
+            {
+                again.Stage = stage3;
+                await stage3.FeedAsync("再试一次", deadline.Token);
+                await stage3.CompleteAsync(deadline.Token);
+            }
+            Assert.Equal(["再试一次"], again.Played);
         }
         finally
         {
@@ -55,19 +103,17 @@ public sealed class CorticoProcessTests
             Directory.Delete(temp, true);
         }
     }
+}
 
-    private sealed class FixtureTts : ITtsClient
+internal static class TestWait
+{
+    public static async Task Until(Func<bool> condition, int timeoutMs = 10000)
     {
-        public bool Block;
-        public TaskCompletionSource Blocked = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public async IAsyncEnumerable<byte[]> StreamAsync(string text, string voiceId, string? emotion,
-            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        var deadline = Environment.TickCount64 + timeoutMs;
+        while (!condition())
         {
-            if (Block) { Blocked.TrySetResult(); await Task.Delay(Timeout.Infinite, cancellationToken); }
-            var pcm = new byte[6400];
-            for (var i = 0; i < pcm.Length / 2; i++)
-                System.Buffers.Binary.BinaryPrimitives.WriteInt16LittleEndian(pcm.AsSpan(i * 2), (short)(3000 * Math.Sin(i / 8.0)));
-            yield return pcm;
+            if (Environment.TickCount64 > deadline) Assert.Fail("condition not met before timeout");
+            await Task.Delay(20);
         }
     }
 }
