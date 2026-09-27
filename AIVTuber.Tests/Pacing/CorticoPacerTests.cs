@@ -14,7 +14,8 @@ public sealed class CorticoPacerTests
         await pacer.SubmitAsync(new SpeechItem("<微笑>你好。"), default);
         await pacer.SubmitAsync(new SpeechItem("【点头】再见。"), default);
         await pacer.CompleteAsync(default);
-        Assert.Equal(["你好。", "再见。"], kit.Synthesized);
+        // Each piece is synthesized exactly once; two pumps may reach the TTS in either order.
+        Assert.Equal(["你好。", "再见。"], kit.Synthesized.Order());
         Assert.Equal(["你好。", "再见。"], kit.Played);
         Assert.Equal(["你好。", "再见。"], kit.Committed);
         Assert.Equal(["<微笑>你好。", "【点头】再见。"], cortico.Feeds);

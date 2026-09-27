@@ -55,6 +55,42 @@ public sealed class ImmediatePacerTests
         Assert.Equal(["后说。"], kit.Played);
     }
 
+    [Fact]
+    public async Task RejectedPiece_WithProvidedAudio_StopsItsSynthesis()
+    {
+        var kit = new PacingTestKit { Speakable = false };
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var audio = PieceAudio.Start("被拒绝。", ct => Endless(ct, cancelled), _ => Task.CompletedTask, () => { }, _ => Task.CompletedTask, default);
+        await using var pacer = new ImmediatePacer(kit.Ports, CancellationToken.None);
+        pacer.Enqueue(new SpeechItem("被拒绝。", Audio: audio));
+        await pacer.CompleteAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Empty(kit.Played);
+    }
+
+    [Fact]
+    public async Task CancelledTurn_DoesNotWaitForAfter_NorPlay()
+    {
+        var kit = new PacingTestKit();
+        using var turn = new CancellationTokenSource();
+        var never = new TaskCompletionSource();
+        await using var pacer = new ImmediatePacer(kit.Ports, turn.Token, after: never.Task);
+        await pacer.SubmitAsync(new SpeechItem("不会说。"), default);
+        turn.Cancel();
+        await pacer.CompleteAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Empty(kit.Played);
+        Assert.Empty(kit.Synthesized);
+    }
+
+    private static async IAsyncEnumerable<byte[]> Endless(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct, TaskCompletionSource cancelled)
+    {
+        using var reg = ct.Register(() => cancelled.TrySetResult());
+        yield return new byte[] { 1, 2 };
+        await Task.Delay(Timeout.Infinite, ct);
+        yield return new byte[] { 3, 4 };
+    }
+
     private static async IAsyncEnumerable<byte[]> One(string text)
     {
         await Task.Yield();

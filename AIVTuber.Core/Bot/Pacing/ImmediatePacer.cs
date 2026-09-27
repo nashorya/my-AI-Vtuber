@@ -42,8 +42,10 @@ internal sealed class ImmediatePacer(SpeechTurnPorts ports, CancellationToken tu
     {
         if (after is not null)
         {
-            try { await after.ConfigureAwait(false); } catch { /* its own owner reported it */ }
+            // A cancelled turn must not stay parked behind the piece it was waiting for.
+            try { await after.WaitAsync(turn).ConfigureAwait(false); } catch { /* its own owner reported it */ }
         }
+        if (turn.IsCancellationRequested) { Drain(); return; }
         await ports.Play(Chunks(turn), turn, ports.OnFirstPcm).ConfigureAwait(false);
     }
 
@@ -60,7 +62,7 @@ internal sealed class ImmediatePacer(SpeechTurnPorts ports, CancellationToken tu
                 {
                     first = false;
                     // Recheck after synthesis: people may have resumed while TTS was on the network.
-                    if (!ports.CanSpeak()) { Drain(); yield break; }
+                    if (!ports.CanSpeak()) { item.Audio?.Cancel(); Drain(); yield break; }
                     ports.Commit(item.Text);
                 }
                 yield return chunk;
