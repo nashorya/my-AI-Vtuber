@@ -2,38 +2,20 @@
 import { createInterface } from 'node:readline';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { createRequire } from 'node:module';
-import { Performer, type AudioSink } from './upstream/orchestrator.ts';
+import { Performer } from './upstream/orchestrator.ts';
 import { Mixer } from './upstream/mixer.ts';
 import type { IRFrame } from './upstream/mixer.ts';
 import { VtsBackend } from './upstream/backend.ts';
 import { VtsClient } from './upstream/vts-client.ts';
-import { DeviceAudioSink } from './upstream/device-audio.ts';
 import { loadPack, EXAMPLE_PACK_DIR, vocabTableRows } from './upstream/pack.ts';
 import { loadProfiles, resolveProfile, DEFAULT_PROFILE } from './upstream/models/index.ts';
-import { ScriptParser } from './upstream/parser.ts';
-import { decodeWav, extractEnvelope, pcm16ToWav } from './upstream/tts.ts';
 import { adapt } from './adapt.ts';
+import { AppAudioBridge } from './app-audio.ts';
 
 const send = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
 const log = Object.fromEntries(['debug','info','warn','error'].map(level => [level,
  (message: string, fields?: unknown) => process.stderr.write(JSON.stringify({ level, message, fields })+'\n')])) as any;
 console.log = (...args) => console.error(...args);
-let seq = 0;
-const replies = new Map<number, { resolve: (x: any) => void; reject: (e: Error) => void }>();
-function ask(kind: string, value: object, signal?: AbortSignal): Promise<any> {
- return new Promise((resolveReply, reject) => {
-  const id = ++seq;
-  const abort = () => { replies.delete(id); reject(new Error('Cancelled')); };
-  if (signal?.aborted) { abort(); return; }
-  signal?.addEventListener('abort', abort, { once: true });
-  replies.set(id, {
-   resolve: x => { signal?.removeEventListener('abort', abort); resolveReply(x); },
-   reject: e => { signal?.removeEventListener('abort', abort); reject(e); },
-  });
-  send({ kind, id, ...value });
- });
-}
 /**
  * Upstream preempt drops queued content, but a head gesture that already started runs to its
  * end (up to ~1.5 s). A stop must stop the visible action too, so the host fades running
@@ -79,7 +61,7 @@ interface Performance {
  ended: boolean; rounds: number; finish: () => void; finished: Promise<void>;
 }
 let active: Performance | undefined;
-let device: DeviceAudioSink | undefined;
+const bridge = new AppAudioBridge(send);
 let statusTimer: ReturnType<typeof setInterval> | undefined;
 let initialized = false;
 let shutdown = false;
@@ -100,6 +82,7 @@ const interrupt = async () => {
  mixer?.stopGestures(Date.now());
  await cut;
  await performer?.whenIdle();
+ bridge.reset();
  if (active === victim) active = undefined;
 };
 const owned = (requestId: unknown): Performance => {
@@ -116,7 +99,6 @@ const feedRound = (current: Performance, script: unknown) => {
 };
 async function initialize(config: any) {
  if (initialized) throw new Error('Already initialized');
- if (config.audioDevice !== 'none') createRequire(import.meta.url)('audify');
  pack = loadPack(config.packDir || EXAMPLE_PACK_DIR);
  let profile = DEFAULT_PROFILE;
  const tokenPath = resolve(config.tokenPath);
@@ -190,56 +172,11 @@ async function initialize(config: any) {
   syncing = true; backend?.beginParameterSync();
   void interrupt().then(sync).catch(e => log.error(String(e)));
  });
- const audioLog = { ...log, warn: (message: string, fields?: unknown) => {
-  log.warn(message, fields);
-  if (active && config.audioDevice !== 'none' && (message.includes('静音时间线') || message.includes('没有声音')))
-   active.failure = message;
- }, error: (message: string, fields?: unknown) => {
-  log.error(message, fields);
-  if (active && config.audioDevice !== 'none') active.failure = message;
- }};
- const sink = new DeviceAudioSink(audioLog, { device: () => config.audioDevice || '', secondary: () => 'off' });
- device = sink;
- const audio: AudioSink = {
-  async play(piece) {
-   const current = active;
-   if (!current || current.aborted) throw new Error('Cancelled');
-   // Last gate before the audience hears anything: the app decides per piece, with its text,
-   // whether this turn may still speak (people resumed talking, stop, pause, sign-out).
-   const permission = await ask('authorize', { requestId: current.id, text: piece.text }, current.controller.signal);
-   if (!permission.allowed || active !== current || current.aborted) {
-    current.failure = 'Turn superseded';
-    // Upstream would otherwise move on to the next beat and keep acting without a voice.
-    if (active === current) void interrupt();
-    throw new Error(current.failure);
-   }
-   const playback = await sink.play(piece);
-   if (current.failure) { sink.stop(0); throw new Error(current.failure); }
-   send({ kind: 'started', requestId: current.id });
-   return playback;
-  },
-  beginStream: (...args) => sink.beginStream(...args),
-  stop: fade => sink.stop(fade),
-  cut: (...args) => sink.cut(...args),
- };
  mixer = new StoppableMixer({ pack: () => pack, idleBlinks: () => profile.idleBlinks });
- performer = new Performer({ pack: () => pack, mixer, backend, audio, log,
-  tts: { async synth(text, signal) {
-   const current = active;
-   if (!current || current.aborted) throw new Error('No active turn');
-   try {
-    const result = await ask('tts', { text, requestId: current.id }, current.controller.signal);
-    if (current.aborted || signal?.aborted) throw new Error('Cancelled');
-    const pcm = Buffer.from(result.pcm, 'base64');
-    if (pcm.length === 0 || pcm.length % 2 || !Number.isInteger(result.sampleRate) || result.sampleRate < 8000)
-     throw new Error('Invalid PCM16 mono audio');
-    const wav = pcm16ToWav([pcm], result.sampleRate);
-    const decoded = decodeWav(wav);
-    return { text, wav, durationMs: decoded.samples.length / decoded.sampleRate * 1000,
-      envelope: extractEnvelope(decoded) };
-   } catch (e) { current.failure = String(e); throw e; }
-  } },
-  streamEnabled: () => false, alignEnabled: () => false,
+ performer = new Performer({ pack: () => pack, mixer, backend, log,
+  audio: bridge.audio, tts: bridge.tts,
+  // App TTS streams; upstream forced alignment (a VoxCPM server feature) is not available.
+  streamEnabled: () => true, alignEnabled: () => false,
   trace: (area, message, opts) => { log.debug(message, { area, ...opts });
    if (opts?.level === 'error' && active) active.failure = message;
   },
@@ -257,9 +194,8 @@ async function initialize(config: any) {
   + '\n不要使用旧的 [action:]、[emotion:]、[pose:] 标签，不要输出 TTS 专属方括号语气标签，不要写 VTS 参数名。' };
 }
 async function handle(message: any) {
- if (message.kind === 'reply') {
-  const item = replies.get(message.id); replies.delete(message.id);
-  if (message.error) item?.reject(new Error(message.error)); else item?.resolve(message);
+ if (['pcm', 'synthEnd', 'synthError', 'started', 'ended', 'stopped'].includes(message.kind)) {
+  bridge.onMessage(message);
   return;
  }
  const { id, command } = message;
@@ -272,12 +208,7 @@ async function handle(message: any) {
    const fence = typeof message.fence === 'number' ? message.fence : undefined;
    if (fence === undefined || !active || active.id <= fence) await interrupt();
   }
-  else if (command === 'prepare') {
-   if (!initialized) throw new Error('Not initialized');
-   const pieces: string[] = [];
-   const parser = new ScriptParser({ onBeat() {}, onSpeech(_index, piece) { pieces.push(piece.text); }, onEnd() {} }, pack);
-   parser.feed(message.script); parser.end(); value = { spoken: pieces.join('') };
-  } else if (command === 'perform') {
+  else if (command === 'perform') {
    if (!initialized || !performer) throw new Error('Not initialized');
    if (active) throw new Error('An earlier performance is still active');
    while (syncing) await syncDone; // never start on a model whose mapping is still being resolved
@@ -287,6 +218,7 @@ async function handle(message: any) {
    const current: Performance = { id, aborted: false, controller: new AbortController(), ended: false,
     rounds: 0, finish, finished };
    active = current;
+   bridge.beginTurn(id);
    try {
     if (message.script !== undefined) { feedRound(current, message.script); current.ended = true; finish(); }
     else send({ kind: 'ready', requestId: id });
@@ -309,7 +241,7 @@ const input = createInterface({ input: process.stdin });
 input.on('line', line => { try { void handle(JSON.parse(line)); } catch (e) { log.error(String(e)); } });
 async function close() {
  if (shutdown) return; shutdown = true;
- await interrupt(); performer?.stop(); device?.close();
+ await interrupt(); performer?.stop();
  if (statusTimer) clearInterval(statusTimer);
  await vts?.close(); process.exit(0);
 }

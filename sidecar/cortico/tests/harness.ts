@@ -74,13 +74,17 @@ export class Host {
  readonly child: ChildProcess;
  readonly temp = mkdtempSync(join(tmpdir(), 'cortico-host-'));
  readonly ttsTexts: string[] = [];
- readonly authorized: string[] = [];
  readonly statuses: any[] = [];
  starts = 0;
- allow: (text: string) => boolean = () => true;
  holdTts = false;
  onTts?: (text: string) => void;
  errors = '';
+ readonly played: string[] = [];
+ readonly controls: any[] = [];
+ /** Return false to refuse a play (the app's own gate): the host gets 'stopped'. */
+ allowPlay: (text: string) => boolean = () => true;
+ playMs = 400;
+ private texts = new Map<number, string>();
  private pending = new Map<number, (m: any) => void>();
  private ready = new Map<number, () => void>();
  private seq = 0;
@@ -93,16 +97,21 @@ export class Host {
    if (m.kind === 'result') { this.pending.get(m.id)?.(m); this.pending.delete(m.id); }
    if (m.kind === 'ready') this.ready.get(m.requestId)?.();
    if (m.kind === 'status' && m.profile) this.statuses.push(m);
-   if (m.kind === 'started') this.starts++;
-   if (m.kind === 'authorize') {
-    const ok = this.allow(m.text);
-    if (ok) this.authorized.push(m.text);
-    this.send({ kind: 'reply', id: m.id, allowed: ok });
+   if (m.kind === 'synth') {
+    this.ttsTexts.push(m.text); this.texts.set(m.pieceId, m.text); this.onTts?.(m.text);
+    if (!this.holdTts) {
+     this.send({ kind: 'pcm', requestId: m.requestId, pieceId: m.pieceId, sampleRate: 16000, data: tone(this.playMs) });
+     this.send({ kind: 'synthEnd', requestId: m.requestId, pieceId: m.pieceId });
+    }
    }
-   if (m.kind === 'tts') {
-    this.ttsTexts.push(m.text); this.onTts?.(m.text);
-    if (!this.holdTts) this.send({ kind: 'reply', id: m.id, pcm: tone(400), sampleRate: 16000 });
+   if (m.kind === 'play') {
+    const text = this.texts.get(m.pieceId) ?? '';
+    if (!this.allowPlay(text)) { this.send({ kind: 'stopped', requestId: m.requestId, pieceId: m.pieceId }); return; }
+    this.played.push(text); this.starts++;
+    this.send({ kind: 'started', requestId: m.requestId, pieceId: m.pieceId });
+    setTimeout(() => this.send({ kind: 'ended', requestId: m.requestId, pieceId: m.pieceId }), this.playMs);
    }
+   if (['cancelSynth', 'stop', 'cue', 'aborted'].includes(m.kind)) this.controls.push(m);
   });
  }
  send(m: any) { this.child.stdin!.write(JSON.stringify(m) + '\n'); }
@@ -125,7 +134,7 @@ export class Host {
   };
  }
  init(vtsUrl: string, extra: any = {}) {
-  return this.command('init', { config: { vtsUrl, tokenPath: join(this.temp, 'token'), audioDevice: 'none',
+  return this.command('init', { config: { vtsUrl, tokenPath: join(this.temp, 'token'),
    modelProfile: 'auto', ...extra } }).result;
  }
  async close() {

@@ -27,16 +27,17 @@ test('streamed segments start performing before the turn is ended; only clean te
  await withHost(async (vts, host) => {
   const perf = await host.begin();
   await perf.feed('<微笑>你好呀。');
-  // The first segment is synthesized and authorized while the app has not ended the turn.
-  await until(() => host.authorized.length === 1);
-  assert.equal(host.authorized[0], '你好呀。');
+  // The first segment is synthesized and played while the app has not ended the turn.
+  await until(() => host.played.length === 1);
+  assert.equal(host.played[0], '你好呀。');
   await perf.feed('【点头】今天也要加油。');
   assert.equal((await perf.end()).error, undefined);
   const result = await perf.result;
   assert.equal(result.error, undefined, host.errors);
   assert.equal(result.rounds, 2);
-  assert.deepEqual(host.authorized, ['你好呀。', '今天也要加油。']);
+  assert.deepEqual(host.played, ['你好呀。', '今天也要加油。']);
   assert.ok(host.ttsTexts.every(t => !/[<>【】]/.test(t)));
+  assert.ok(host.played.every(t => host.ttsTexts.indexOf(t) >= 0), 'play always follows its synth');
   assert.ok(peak(vts.values('MouthOpen')) > 0, 'mouth follows the audio');
   assert.ok(peak(vts.values('FaceAngleY')) > 3, 'nod reaches the model');
  }, (live2d) => writeModel(live2d, 'Fake', PACK_PARAMS));
@@ -63,18 +64,23 @@ test('interrupt stops the real performance; late feeds for it are rejected; the 
   const next = await host.begin();
   await next.feed('下一轮。'); await next.end();
   assert.equal((await next.result).error, undefined, host.errors);
-  assert.deepEqual(host.authorized, ['下一轮。']);
+  assert.deepEqual(host.played, ['下一轮。']);
  }, (live2d) => writeModel(live2d, 'Fake', PACK_PARAMS));
 });
 
 test('a denied piece stops the rest of that turn instead of acting without a voice', { timeout: 30000 }, async () => {
- await withHost(async (vts, host) => {
-  host.allow = () => false;
+ await withHost(async (_vts, host) => {
+  // Playback permission is now the app's own gate (per piece, via 'play'/'stopped'); the
+  // sidecar no longer authorizes anything itself. A denial that should end the turn is the
+  // app's call too, made by following up with an interrupt fenced to this performance.
+  host.allowPlay = t => t !== '被拒绝的一句。';
   const perf = await host.begin();
-  await perf.feed('第一句。'); await perf.feed('【用力点头】第二句。'); await perf.end();
-  assert.ok((await perf.result).error);
-  assert.equal(host.starts, 0);
-  assert.ok(!host.ttsTexts.includes('第二句。') || peak(vts.values('FaceAngleY')) < 5);
+  await perf.feed('第一句。'); await perf.feed('【用力点头】被拒绝的一句。'); await perf.end();
+  await until(() => host.ttsTexts.includes('被拒绝的一句。'));
+  await host.command('interrupt', { fence: perf.id }).result;
+  const settled = await Promise.race([perf.result.then(() => true), sleep(5000).then(() => false)]);
+  assert.ok(settled, 'perf.result completes within 5s of the app interrupt');
+  assert.ok(!host.played.includes('被拒绝的一句。'));
  }, (live2d) => writeModel(live2d, 'Fake', PACK_PARAMS));
 });
 
@@ -154,6 +160,6 @@ test('a stop fenced to an earlier turn never cuts the next one', { timeout: 3000
   await host.command('interrupt', { fence: perf.id - 1 }).result; // a late stop aimed at the previous turn
   await perf.feed('这一轮不受影响。'); await perf.end();
   assert.equal((await perf.result).error, undefined, host.errors);
-  assert.deepEqual(host.authorized, ['这一轮不受影响。']);
+  assert.deepEqual(host.played, ['这一轮不受影响。']);
  }, (live2d) => writeModel(live2d, 'Fake', PACK_PARAMS));
 });
