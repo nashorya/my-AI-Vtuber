@@ -74,9 +74,29 @@ export class AppAudioBridge {
  readonly audio: AudioSink = {
   play: async () => { throw new Error('Whole-piece playback is not used: audio is app-owned'); },
   beginStream: (_sampleRate, text) => this.beginStream(text),
-  // The app owns its player; per-piece stops go through the session's abort.
-  stop: () => {},
+  /**
+   * Upstream's preempt() halts an already-synthesized, actively-playing piece only through this
+   * call (session.abort() is never reached in that state) — see orchestrator.ts's preempt(),
+   * which calls this.d.audio.stop(fadeMs) directly. Every unit the app has been told to play and
+   * that hasn't ended yet is stopped here, so whenIdle() never blocks on the app's own timeline.
+   */
+  stop: () => {
+   for (const pieceId of [...this.order]) {
+    const u = this.units.get(pieceId);
+    if (u?.played) this.stopUnit(pieceId);
+   }
+  },
  };
+
+ /** Tells the app to stop one played piece (unless suppressed) and releases its session. */
+ private stopUnit(pieceId: number): void {
+  const u = this.units.get(pieceId);
+  if (!u) return;
+  if (!this.suppressStop) this.send({ kind: 'stop', requestId: this.requestId, pieceId });
+  const t = this.now();
+  u.started?.(t); u.ended?.(t);
+  this.drop(pieceId);
+ }
 
  private beginStream(text: string): AudioStreamSession {
   let started!: (t: number) => void; let ended!: (t: number) => void;
@@ -90,11 +110,7 @@ export class AppAudioBridge {
   if (pieceId === undefined) { const t = this.now(); started(t); ended(t); return session; }
   const unit = this.units.get(pieceId)!;
   unit.played = true; unit.started = started; unit.ended = ended;
-  session.abort = () => {
-   if (!this.suppressStop) this.send({ kind: 'stop', requestId: this.requestId, pieceId });
-   const t = this.now(); started(t); ended(t);
-   this.drop(pieceId);
-  };
+  session.abort = () => this.stopUnit(pieceId);
   this.send({ kind: 'play', requestId: this.requestId, pieceId });
   return session;
  }

@@ -68,6 +68,25 @@ test('interrupt stops the real performance; late feeds for it are rejected; the 
  }, (live2d) => writeModel(live2d, 'Fake', PACK_PARAMS));
 });
 
+test('interrupting mid-playback stops the app instead of waiting for its audio to end on its own', { timeout: 30000 }, async () => {
+ await withHost(async (_vts, host) => {
+  // A long playMs stands in for real audio still running when the app is told to stop: without
+  // AppAudioBridge.audio.stop actually reaching the app, whenIdle() inside interrupt() would
+  // block until this timer's own 'ended' fires, and the next perform would be refused meanwhile.
+  host.playMs = 3000;
+  const perf = await host.begin();
+  await perf.feed('这句话会被打断。'); await perf.end();
+  await until(() => host.played.length === 1);
+  const start = Date.now();
+  await host.command('interrupt').result;
+  assert.ok(Date.now() - start < 1000, `interrupt must not wait for playMs (${host.playMs}ms) to elapse`);
+  assert.ok(host.controls.some(c => c.kind === 'stop' && c.requestId === perf.id), 'the app was told to stop the playing piece');
+  const next = await host.begin();
+  await next.feed('下一轮。'); await next.end();
+  assert.equal((await next.result).error, undefined, host.errors);
+ }, (live2d) => writeModel(live2d, 'Fake', PACK_PARAMS));
+});
+
 test('a denied piece stops the rest of that turn instead of acting without a voice', { timeout: 30000 }, async () => {
  await withHost(async (_vts, host) => {
   // Playback permission is now the app's own gate (per piece, via 'play'/'stopped'); the

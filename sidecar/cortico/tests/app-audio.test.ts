@@ -74,6 +74,32 @@ test('abort sends cancelSynth; session abort sends stop; stale turn reports are 
  assert.deepEqual(sent.at(-1), { kind: 'stop', requestId: 7, pieceId: 2 });
 });
 
+test('audio.stop halts the piece that is currently playing: sends stop and resolves session.ended', async () => {
+ const { sent, bridge } = setup();
+ const piece = bridge.tts.synthStream!('你好', { pcm() {} }, new AbortController().signal);
+ bridge.onMessage({ kind: 'synthEnd', requestId: 7, pieceId: 1 }); await piece;
+ const session = bridge.audio.beginStream(16000, '你好');
+ bridge.onMessage({ kind: 'started', requestId: 7, pieceId: 1 });
+ await session.started;
+ bridge.audio.stop(0);
+ assert.deepEqual(sent.at(-1), { kind: 'stop', requestId: 7, pieceId: 1 });
+ await session.ended; // upstream's whenIdle() must never wait on the app's own 'ended' here
+});
+
+test('audio.stop during a model switch (suppressStop) sends nothing but still resolves session.ended', async () => {
+ const { sent, bridge } = setup();
+ const piece = bridge.tts.synthStream!('你好', { pcm() {} }, new AbortController().signal);
+ bridge.onMessage({ kind: 'synthEnd', requestId: 7, pieceId: 1 }); await piece;
+ const session = bridge.audio.beginStream(16000, '你好');
+ bridge.onMessage({ kind: 'started', requestId: 7, pieceId: 1 });
+ await session.started;
+ bridge.suppressStop = true;
+ const before = sent.length;
+ bridge.audio.stop(0);
+ assert.equal(sent.length, before, 'no stop message while the app is told to keep its current audio');
+ await session.ended;
+});
+
 test('synthError rejects so upstream skips the piece', async () => {
  const { bridge } = setup();
  const piece = bridge.tts.synthStream!('坏片', { pcm() {} }, new AbortController().signal);
