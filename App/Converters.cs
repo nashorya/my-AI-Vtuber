@@ -65,24 +65,6 @@ internal sealed class StringNotEmptyToVisibilityConverter : IValueConverter
         => throw new NotSupportedException();
 }
 
-/// <summary>Maps mic RMS [0,1] to pixel width [0,60] for the level bar.</summary>
-[ValueConversion(typeof(float), typeof(double))]
-internal sealed class MicLevelToWidthConverter : IValueConverter
-{
-    private const double MaxWidth = 60.0;
-
-    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
-    {
-        double level = value is float f ? f : 0.0;
-        // Amplify: typical speech RMS is 0.01–0.1, scale so 0.05 fills ~half the bar
-        level = Math.Min(level * 10.0, 1.0);
-        return Math.Max(level * MaxWidth, 0.0);
-    }
-
-    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
-        => throw new NotSupportedException();
-}
-
 [ValueConversion(typeof(bool), typeof(Brush))]
 internal sealed class BoolToGreenGrayBrushConverter : IValueConverter
 {
