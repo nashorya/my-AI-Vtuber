@@ -59,10 +59,11 @@ internal sealed class FakeCortico : ICorticoPerformance
             lock (_pieces) _pieces[id] = entry;
             Task previous;
             lock (_runs) previous = _runs.Count > 0 ? _runs[^1] : Task.CompletedTask;
+            // Upstream synthesizes pieces in performance order; only playback waits in the background.
+            if (!_cut.IsCancellationRequested) handler.Synth(id, text);  // a cut host requests nothing more
             var run = Task.Run(async () =>
             {
-                if (_cut.IsCancellationRequested) return;  // a cut host requests nothing more
-                handler.Synth(id, text);
+                if (_cut.IsCancellationRequested) return;
                 await entry.Item1.Task.WaitAsync(_cut.Token);
                 await previous;                       // upstream plays pieces one after another
                 // A holding host keeps the performance open until it is interrupted.
@@ -99,8 +100,14 @@ internal sealed class FakeCortico : ICorticoPerformance
 
 /// <summary>An LLM that streams the given raw chunks, optionally pausing after the first one.
 /// With protocol "v2" the chunks go through the real <see cref="ReplyProtocolV2Parser"/>.</summary>
-internal sealed class ChunkedLlm(string protocol, params string[] chunks) : ILlmClient, IReplyProtocolStream
+internal sealed class ChunkedLlm : ILlmClient, IReplyProtocolStream
 {
+    private readonly string protocol;
+    private readonly string[] chunks;
+    private readonly IEnumerable<string>? channels;
+    public ChunkedLlm(string protocol, string[] chunks, IEnumerable<string>? channels = null)
+    { this.protocol = protocol; this.chunks = chunks; this.channels = channels; }
+    public ChunkedLlm(string protocol, params string[] chunks) : this(protocol, chunks, null) { }
     public Task? HoldAfterFirst;
     public readonly TaskCompletionSource FirstChunkSent = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public bool Finished;
@@ -126,7 +133,7 @@ internal sealed class ChunkedLlm(string protocol, params string[] chunks) : ILlm
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         if (protocol != "v2") throw new InvalidOperationException("StreamEventsAsync 仅在 reply_protocol=v2 时可用。");
-        var parser = new ReplyProtocolV2Parser([]);
+        var parser = new ReplyProtocolV2Parser(channels ?? []);
         for (var i = 0; i < chunks.Length; i++)
         {
             foreach (var ev in parser.Feed(chunks[i])) yield return ev;
