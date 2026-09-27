@@ -1003,34 +1003,16 @@ public sealed class BotRuntime : IAsyncDisposable
 
         o.OnError += (_, msg) => PipelineError?.Invoke(this, msg);
 
-        o.OnUserTranscript += (_, text) =>
-        {
-            AIVTuber.Core.Diagnostics.DebugLog.Write($"[麦克风识别] 「{text}」");
-            _stateTracker.TranscriptReady(Environment.TickCount64);
-            UserTranscript?.Invoke(this, text);
-        };
         o.OnReplyCommitted += (_, reply) => CommitReply(reply);
         o.OnSentenceReady += (_, s) => SentenceReady?.Invoke(this, s);
         o.OnEmotionDetected += (_, e) => EmotionDetected?.Invoke(this, e);
         o.OnActionDetected += (_, a) => ActionDetected?.Invoke(this, a);
-        o.OnUserEmotionDetected += (_, e) => UserEmotionDetected?.Invoke(this, e);
-        o.OnLoopbackTranscript += (_, t) =>
-        {
-            AIVTuber.Core.Diagnostics.DebugLog.Write($"[内录识别→对面] 「{t}」");
-            if (CurrentPkOpponent is not null)
-                _pkBuffer.NoteOpponentSpeech(t, "loopback");
-            LoopbackTranscript?.Invoke(this, t);
-        };
 
         o.ConfigureOutputCommands(
             _obs is null
                 ? null
                 : (text, ct) => _obs.SetSubtitleTypewriterAsync(
-                    text, _config.Obs.AssistantTextComponent, ct),
-            _obs is null
-                ? null
-                : (text, ct) => _obs.SetSubtitleAsync(
-                    $"[用户] {text}", _config.Obs.UserTextComponent, ct));
+                    text, _config.Obs.AssistantTextComponent, ct));
 
         o.OnFirstSentenceToTts += (_, _) =>
             _stateTracker.LlmFirstSentenceReady(Environment.TickCount64);
@@ -1192,8 +1174,7 @@ public sealed class BotRuntime : IAsyncDisposable
                 _stateTracker.TextInputStarted(Environment.TickCount64);
             UserTranscript?.Invoke(this, formatted);
             await AwaitInterruptBarrierAsync().ConfigureAwait(false);
-            await orchestrator.ProcessTextAsync(formatted, history, bypassWake: true, canCommit: CanCommit,
-                requireStructuredReply: true).ConfigureAwait(false);
+            await orchestrator.ProcessTextAsync(formatted, history, bypassWake: true, canCommit: CanCommit).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -1311,8 +1292,7 @@ public sealed class BotRuntime : IAsyncDisposable
             _trace.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TurnCommitReady);
             UserTranscript?.Invoke(this, formatted);
             await AwaitInterruptBarrierAsync().ConfigureAwait(false);
-            await orchestrator.ProcessTextAsync(formatted, history, bypassWake: true, canCommit: CanCommit,
-                requireStructuredReply: true).ConfigureAwait(false);
+            await orchestrator.ProcessTextAsync(formatted, history, bypassWake: true, canCommit: CanCommit).ConfigureAwait(false);
         }
         catch (Exception ex)
         {

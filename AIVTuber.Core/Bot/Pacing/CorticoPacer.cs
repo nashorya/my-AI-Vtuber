@@ -234,6 +234,7 @@ internal sealed class CorticoPacer : ISpeechPacer, ICorticoAudioHandler
         await foreach (var chunk in piece.Audio!.ReadAllAsync(ct).ConfigureAwait(false))
         {
             if (first) { first = false; _ports.Commit(CorticoScript.Normalize(piece.Text)); }
+            if (ct.IsCancellationRequested) yield break;
             yield return chunk;
         }
     }

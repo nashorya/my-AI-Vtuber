@@ -1,19 +1,17 @@
 using System.Collections.Concurrent;
 using AIVTuber.Core.Cortico;
 using AIVTuber.Core.Avatar;
-using System.Threading.Channels;
 using AIVTuber.Core.Audio;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Pipeline;
 using AIVTuber.Core.Vts;
-using System.Text;
 
 namespace AIVTuber.Core.Bot;
 
 /// <summary>
-/// Coordinates the full pipeline: VAD -> ASR -> LLM -> TTS -> AudioPlayer -> VTS lip-sync.
-/// Uses a bounded channel (capacity 3) for sentence-level backpressure.
-/// Integrates with VTS for lip-sync (RMS -> ParamMouthOpenY) and expressions (emotion -> hotkey).
+/// Coordinates one reply at a time: LLM (protocol v2) → approved segments → a pacer → TTS →
+/// AudioPlayer. With Cortico present, Cortico decides when each piece starts and follows the
+/// app's playback on the rig; otherwise each piece plays as soon as its audio arrives.
 /// </summary>
 public sealed class BotOrchestrator : IDisposable
 {
@@ -22,59 +20,32 @@ public sealed class BotOrchestrator : IDisposable
     private readonly ITtsClient _tts;
     private readonly AudioPlayer _player;
     private IAvatarMotionSink? _motion;
-    private readonly ConcurrentDictionary<RequestGeneration, AvatarReplyPlan> _avatarPlans = new();
-    private EventHandler<AvatarReplyPlan>? _avatarPlanHandler;
-    private Func<IAsyncEnumerable<byte[]>, CancellationToken, Action, Task>? _playWithStart;
+    private Func<IAsyncEnumerable<byte[]>, CancellationToken, Action?, Task> _play;
     private static long _avatarSequence;
     private long _activeAvatarGeneration;
 
     public void ConfigureContinuousControl(IAvatarMotionSink motion,
-        Func<IAsyncEnumerable<byte[]>, CancellationToken, Action, Task>? playWithStart = null)
+        Func<IAsyncEnumerable<byte[]>, CancellationToken, Action?, Task>? play = null)
     {
         _motion = motion;
-        _playWithStart = playWithStart ?? ((chunks, ct, start) => _player.PlayChunksAsync(chunks, ct, start));
-        if (_llm is IAvatarReplySource source && _avatarPlanHandler is null)
-        {
-            _avatarPlanHandler = (_, plan) =>
-            {
-                var context = CurrentEventContext();
-                if (context is null) return;
-                _avatarPlans[context.Generation] = plan;
-                if (plan.Diagnostic is not null)
-                    AIVTuber.Core.Diagnostics.DebugLog.Write($"[Avatar/VTS] {plan.Diagnostic}");
-            };
-            source.OnAvatarPlanReady += _avatarPlanHandler;
-        }
+        if (play is not null) _play = play;
     }
 
     private readonly TtsConfig _ttsConfig;
     private readonly VtsClient? _vts;
     private readonly VtsConfig _vtsConfig;
-    private readonly EventHandler<string> _sentenceReadyHandler;
-    private readonly EventHandler<string> _emotionDetectedHandler;
-    private readonly EventHandler<string> _actionDetectedHandler;
-    private readonly EventHandler<string> _poseDetectedHandler;
     private readonly IReadOnlyDictionary<string, string> _ttsEmotionMap;
     private readonly EventHandler<float>? _rmsUpdatedHandler;
     private readonly EventHandler? _playbackFinishedHandler;
 
     private readonly RequestCoordinator _coordinator;
-    private readonly AsyncLocal<RequestContext?> _eventContext = new();
     private readonly ConcurrentDictionary<long, Task> _commandTasks = new();
     private readonly SemaphoreSlim _commandGate = new(1, 1);
-    private readonly Func<IAsyncEnumerable<byte[]>, CancellationToken, Task> _playChunksAsync;
     private readonly Action _stopPlayback;
     private readonly Func<string, CancellationToken, Task>? _triggerHotkeyAsync;
     private Func<string, CancellationToken, Task>? _assistantOutputCommand;
-    private Func<string, CancellationToken, Task>? _userOutputCommand;
     private long _nextCommandId;
     private volatile bool _disposed;
-    // Last emotion detected in the current LLM stream; reset each new turn.
-    private volatile string? _currentEmotion;
-    private volatile bool _deferLlmEvents;
-    private readonly List<string> _deferredEmotions = [];
-    private readonly List<string> _deferredActions = [];
-    private readonly List<string> _deferredPoses = [];
 
     public event EventHandler? OnAiStartSpeaking;
     public event EventHandler? OnAiStopSpeaking;
@@ -84,11 +55,6 @@ public sealed class BotOrchestrator : IDisposable
     public event EventHandler<string>? OnPoseDetected;
     public event EventHandler<string>? OnSentenceReady;
     internal event EventHandler<ClassifiedReply>? OnReplyCommitted;
-    public event EventHandler<string>? OnUserTranscript;
-    /// <summary>Fired when Qwen-ASR returns a non-neutral emotion for the user's speech.</summary>
-    public event EventHandler<string>? OnUserEmotionDetected;
-    /// <summary>Fired with the transcribed text from loopback (PC) audio.</summary>
-    public event EventHandler<string>? OnLoopbackTranscript;
     public event EventHandler<string>? OnError;
 
     /// <summary>
@@ -119,11 +85,12 @@ public sealed class BotOrchestrator : IDisposable
         IAsrClient asr, ILlmClient llm, ITtsClient tts,
         AudioPlayer player, TtsConfig ttsConfig,
         VtsClient? vts, VtsConfig? vtsConfig,
-        Func<IAsyncEnumerable<byte[]>, CancellationToken, Task> playChunksAsync,
+        Func<IAsyncEnumerable<byte[]>, CancellationToken, Action?, Task> play,
         Action stopPlayback,
         Func<string, CancellationToken, Task>? triggerHotkeyAsync,
         IReadOnlyDictionary<string, string>? ttsEmotionMap = null)
     {
+        if (llm is not IReplyProtocolStream) throw new InvalidOperationException("LLM 客户端必须支持回复协议 v2");
         _asr = asr;
         _llm = llm;
         _tts = tts;
@@ -134,57 +101,12 @@ public sealed class BotOrchestrator : IDisposable
         _ttsEmotionMap = ttsEmotionMap
             ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         _coordinator = new RequestCoordinator();
-        _playChunksAsync = playChunksAsync;
+        _play = play;
         _stopPlayback = stopPlayback;
         _triggerHotkeyAsync = triggerHotkeyAsync;
 
         // Keep publisher subscriptions as named delegates so Dispose can detach them
-        // symmetrically. The LLM and AudioPlayer may outlive this orchestrator during rewire.
-        _sentenceReadyHandler = (_, sentence) =>
-        {
-            var context = CurrentEventContext();
-            if (context is null || _deferLlmEvents) return;
-            PublishSpokenSentence(context, sentence);
-        };
-        _emotionDetectedHandler = (_, emotion) =>
-        {
-            var context = CurrentEventContext();
-            if (context is null) return;
-            if (_deferLlmEvents)
-            {
-                lock (_deferredEmotions) _deferredEmotions.Add(emotion);
-                return;
-            }
-            ApplyEmotion(context, emotion);
-        };
-        _actionDetectedHandler = (_, action) =>
-        {
-            var context = CurrentEventContext();
-            if (context is null) return;
-            if (_deferLlmEvents)
-            {
-                lock (_deferredActions) _deferredActions.Add(action);
-                return;
-            }
-            ApplyAction(context, action);
-        };
-        _poseDetectedHandler = (_, pose) =>
-        {
-            var context = CurrentEventContext();
-            if (context is null) return;
-            if (_deferLlmEvents)
-            {
-                lock (_deferredPoses) _deferredPoses.Add(pose);
-                return;
-            }
-            OnPoseDetected?.Invoke(this, pose);
-        };
-        _llm.OnSentenceReady += _sentenceReadyHandler;
-        _llm.OnEmotionDetected += _emotionDetectedHandler;
-        _llm.OnActionDetected += _actionDetectedHandler;
-        _llm.OnPoseDetected += _poseDetectedHandler;
-
-        // Wire up RMS -> VTS lip-sync
+        // symmetrically. The AudioPlayer may outlive this orchestrator during rewire.
         if (_vts is not null)
         {
             _rmsUpdatedHandler = (_, rms) =>
@@ -200,19 +122,8 @@ public sealed class BotOrchestrator : IDisposable
         }
     }
 
-    private RequestContext? CurrentEventContext()
-    {
-        var context = _eventContext.Value;
-        return context is not null && _coordinator.IsCurrent(context.Generation) ? context : null;
-    }
-
-    internal void ConfigureOutputCommands(
-        Func<string, CancellationToken, Task>? assistantOutputCommand,
-        Func<string, CancellationToken, Task>? userOutputCommand)
-    {
+    internal void ConfigureOutputCommands(Func<string, CancellationToken, Task>? assistantOutputCommand) =>
         _assistantOutputCommand = assistantOutputCommand;
-        _userOutputCommand = userOutputCommand;
-    }
 
     public void SetHold(bool hold) => _coordinator.SetHold(hold);
 
@@ -222,6 +133,26 @@ public sealed class BotOrchestrator : IDisposable
     public Task<AsrResult> TranscribeStreamAsync(
         IAsyncEnumerable<byte[]> audioStream, CancellationToken cancellationToken = default) =>
         CollectStreamedAsync(audioStream, cancellationToken);
+
+    /// <summary>
+    /// Drains a streaming ASR result and returns the final transcript + emotion.
+    /// DashScope streaming yields each finalized sentence separately; we concatenate them.
+    /// Emotion comes from the last non-null result (Qwen-ASR fills it).
+    /// </summary>
+    private async Task<AsrResult> CollectStreamedAsync(
+        IAsyncEnumerable<byte[]> audioStream, CancellationToken ct)
+    {
+        var transcript = new System.Text.StringBuilder();
+        string? emotion = null;
+        await foreach (var r in _asr.StreamRecognizeAsync(audioStream, ct).ConfigureAwait(false))
+        {
+            if (!string.IsNullOrEmpty(r.Text))
+                transcript.Append(r.Text);
+            if (r.Emotion is not null)
+                emotion = r.Emotion;
+        }
+        return new AsrResult(transcript.ToString(), emotion);
+    }
 
     private void PublishSpokenSentence(RequestContext context, string sentence)
     {
@@ -233,7 +164,6 @@ public sealed class BotOrchestrator : IDisposable
 
     private void ApplyEmotion(RequestContext context, string emotion)
     {
-        _currentEmotion = emotion;
         OnEmotionDetected?.Invoke(this, emotion);
         QueueMappedHotkey(context, _vtsConfig.EmotionMap, emotion, "emotion");
     }
@@ -242,54 +172,6 @@ public sealed class BotOrchestrator : IDisposable
     {
         OnActionDetected?.Invoke(this, action);
         QueueMappedHotkey(context, _vtsConfig.ActionMap, action, "action");
-    }
-
-    private void ApplyStagedControls(RequestContext context, IReadOnlyList<string> tags)
-    {
-        foreach (var tag in tags)
-        {
-            var body = tag.Trim('[', ']');
-            var colon = body.IndexOf(':');
-            if (colon <= 0 || colon >= body.Length - 1) continue;
-            var kind = body[..colon];
-            var value = body[(colon + 1)..].Trim();
-            if (kind.Equals("emotion", StringComparison.OrdinalIgnoreCase))
-                ApplyEmotion(context, value);
-            else if (kind.Equals("action", StringComparison.OrdinalIgnoreCase))
-                ApplyAction(context, value);
-            else if (kind.Equals("pose", StringComparison.OrdinalIgnoreCase))
-                OnPoseDetected?.Invoke(this, value);
-        }
-    }
-
-    private void FlushDeferredControls(RequestContext context)
-    {
-        string[] emotions, actions, poses;
-        lock (_deferredEmotions)
-        {
-            emotions = [.. _deferredEmotions];
-            _deferredEmotions.Clear();
-        }
-        lock (_deferredActions)
-        {
-            actions = [.. _deferredActions];
-            _deferredActions.Clear();
-        }
-        lock (_deferredPoses)
-        {
-            poses = [.. _deferredPoses];
-            _deferredPoses.Clear();
-        }
-        foreach (var e in emotions) ApplyEmotion(context, e);
-        foreach (var a in actions) ApplyAction(context, a);
-        foreach (var p in poses) OnPoseDetected?.Invoke(this, p);
-    }
-
-    private void ClearDeferredControls()
-    {
-        lock (_deferredEmotions) _deferredEmotions.Clear();
-        lock (_deferredActions) _deferredActions.Clear();
-        lock (_deferredPoses) _deferredPoses.Clear();
     }
 
     private void QueueMappedHotkey(
@@ -386,184 +268,21 @@ public sealed class BotOrchestrator : IDisposable
 
     private void TryCloseMouth() => _motion?.OnRms(0);
 
-    /// <summary>Process a speech segment from VAD. Interrupts any ongoing processing.</summary>
-    public Task ProcessSpeechAsync(SpeechSegment speech, List<Message> history, string micTemplate) =>
-        _coordinator.EnqueueAsync(InputSource.Microphone, async (envelope, ct) =>
-        {
-            _currentEmotion = null;
-            var pipelineStarted = false;
-            try
-            {
-                var result = await _asr.RecognizeAsync(speech.AudioData, ct).ConfigureAwait(false);
-                if (string.IsNullOrWhiteSpace(result.Text) || !IsCurrent(envelope, ct)) return;
-                OnUserTranscript?.Invoke(this, result.Text);
-                if (_userOutputCommand is not null)
-                    QueueCommand(new RequestContext(envelope.Generation, ct), "[OBS] user subtitle",
-                        commandCt => _userOutputCommand(result.Text, commandCt));
-                if (result.Emotion is not null && IsCurrent(envelope, ct))
-                    OnUserEmotionDetected?.Invoke(this, result.Emotion);
-                if (!AllowSpeak(result.Text)) return;
-                pipelineStarted = true;
-                var annotated = AnnotateWithUserEmotion(result.Text, result.Emotion);
-                await RunStreamingPipelineAsync(
-                    history, micTemplate.Replace("{text}", annotated), envelope, ct).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-            catch (Exception ex)
-            {
-                ReportCurrentError(envelope.Generation, $"[ASR/Pipeline] {ex.GetType().Name}: {ex.Message}");
-            }
-            finally
-            {
-                if (!pipelineStarted && IsCurrent(envelope, ct, allowCancellation: true))
-                    OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
-            }
-        });
-
-    /// <summary>
-    /// Process loopback (PC audio) speech. Lower priority than microphone:
-    /// skipped if the bot is already processing, and mic speech will cancel it via Interrupt().
-    /// Injects "对面说：xxx" context into the LLM without a full interrupt.
-    /// </summary>
-    public Task ProcessLoopbackSpeechAsync(SpeechSegment speech, List<Message> history, string loopbackTemplate) =>
-        _coordinator.EnqueueAsync(InputSource.Loopback, async (envelope, ct) =>
-        {
-            _currentEmotion = null;
-            var pipelineStarted = false;
-            try
-            {
-                var result = await _asr.RecognizeAsync(speech.AudioData, ct).ConfigureAwait(false);
-                if (string.IsNullOrWhiteSpace(result.Text) || !IsCurrent(envelope, ct)) return;
-                OnLoopbackTranscript?.Invoke(this, result.Text);
-                if (!AllowSpeak(result.Text)) return;
-                pipelineStarted = true;
-                await RunStreamingPipelineAsync(
-                    history, loopbackTemplate.Replace("{text}", result.Text), envelope, ct).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-            catch (Exception ex)
-            {
-                ReportCurrentError(envelope.Generation, $"[Loopback/ASR] {ex.GetType().Name}: {ex.Message}");
-            }
-            finally
-            {
-                if (!pipelineStarted && IsCurrent(envelope, ct, allowCancellation: true))
-                    OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
-            }
-        });
-
-    /// <summary>
-    /// Process a microphone speech segment with real-time streaming ASR: pushes audio chunks
-    /// to the ASR service as they arrive (via <see cref="IAsrClient.StreamRecognizeAsync"/>)
-    /// instead of waiting for the full VAD segment. <paramref name="meta"/> carries only
-    /// timestamps/source; audio comes from <paramref name="audioStream"/>.
-    /// </summary>
-    public Task ProcessSpeechStreamingAsync(
-        IAsyncEnumerable<byte[]> audioStream, SpeechSegment meta, List<Message> history, string micTemplate) =>
-        _coordinator.EnqueueAsync(InputSource.Microphone, async (envelope, ct) =>
-        {
-            _currentEmotion = null;
-            var pipelineStarted = false;
-            try
-            {
-                var result = await CollectStreamedAsync(audioStream, ct).ConfigureAwait(false);
-                if (string.IsNullOrWhiteSpace(result.Text) || !IsCurrent(envelope, ct)) return;
-                OnUserTranscript?.Invoke(this, result.Text);
-                if (_userOutputCommand is not null)
-                    QueueCommand(new RequestContext(envelope.Generation, ct), "[OBS] user subtitle",
-                        commandCt => _userOutputCommand(result.Text, commandCt));
-                if (result.Emotion is not null && IsCurrent(envelope, ct))
-                    OnUserEmotionDetected?.Invoke(this, result.Emotion);
-                if (!AllowSpeak(result.Text)) return;
-                pipelineStarted = true;
-                var annotated = AnnotateWithUserEmotion(result.Text, result.Emotion);
-                await RunStreamingPipelineAsync(
-                    history, micTemplate.Replace("{text}", annotated), envelope, ct).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-            catch (Exception ex)
-            {
-                ReportCurrentError(envelope.Generation, $"[ASR/Pipeline] {ex.GetType().Name}: {ex.Message}");
-            }
-            finally
-            {
-                if (!pipelineStarted && IsCurrent(envelope, ct, allowCancellation: true))
-                    OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
-            }
-        });
-
-    /// <summary>
-    /// Streaming variant of <see cref="ProcessLoopbackSpeechAsync"/>. Same priority semantics.
-    /// </summary>
-    public Task ProcessLoopbackSpeechStreamingAsync(
-        IAsyncEnumerable<byte[]> audioStream, SpeechSegment meta, List<Message> history, string loopbackTemplate) =>
-        _coordinator.EnqueueAsync(InputSource.Loopback, async (envelope, ct) =>
-        {
-            _currentEmotion = null;
-            var pipelineStarted = false;
-            try
-            {
-                var result = await CollectStreamedAsync(audioStream, ct).ConfigureAwait(false);
-                if (string.IsNullOrWhiteSpace(result.Text) || !IsCurrent(envelope, ct)) return;
-                OnLoopbackTranscript?.Invoke(this, result.Text);
-                if (!AllowSpeak(result.Text)) return;
-                pipelineStarted = true;
-                await RunStreamingPipelineAsync(
-                    history, loopbackTemplate.Replace("{text}", result.Text), envelope, ct).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-            catch (Exception ex)
-            {
-                ReportCurrentError(envelope.Generation, $"[Loopback/ASR] {ex.GetType().Name}: {ex.Message}");
-            }
-            finally
-            {
-                if (!pipelineStarted && IsCurrent(envelope, ct, allowCancellation: true))
-                    OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
-            }
-        });
-
-    /// <summary>
-    /// Drains a streaming ASR result and returns the final transcript + emotion.
-    /// DashScope streaming yields each finalized sentence separately; we concatenate them.
-    /// Emotion comes from the last non-null result (Qwen-ASR fills it).
-    /// </summary>
-    private async Task<AsrResult> CollectStreamedAsync(
-        IAsyncEnumerable<byte[]> audioStream, CancellationToken ct)
-    {
-        var transcript = new StringBuilder();
-        string? emotion = null;
-        await foreach (var r in _asr.StreamRecognizeAsync(audioStream, ct).ConfigureAwait(false))
-        {
-            if (!string.IsNullOrEmpty(r.Text))
-                transcript.Append(r.Text);
-            if (r.Emotion is not null)
-                emotion = r.Emotion;
-        }
-        return new AsrResult(transcript.ToString(), emotion);
-    }
-
-    /// <summary>Process text directly (e.g., from danmaku or a dual-silence turn).</summary>
+    /// <summary>Process text directly (a talk turn, danmaku, a dual-silence turn).</summary>
     /// <param name="wakeProbe">Text used for wake matching; defaults to <paramref name="text"/>.</param>
     /// <param name="bypassWake">When true, the model decides PASS / thought / speak.</param>
-    public Task ProcessTextAsync(
-        string text,
-        List<Message> history,
-        string? wakeProbe = null,
-        bool bypassWake = false,
-        Func<bool>? canCommit = null,
-        bool requireStructuredReply = false)
+    public Task ProcessTextAsync(string text, List<Message> history, string? wakeProbe = null,
+        bool bypassWake = false, Func<bool>? canCommit = null)
     {
         if (string.IsNullOrWhiteSpace(text)) return Task.CompletedTask;
         return _coordinator.EnqueueAsync(InputSource.Danmaku, async (envelope, ct) =>
         {
-            _currentEmotion = null;
             var pipelineStarted = false;
             try
             {
                 if (!bypassWake && !AllowSpeak(wakeProbe ?? text)) return;
                 pipelineStarted = true;
-                await RunStreamingPipelineAsync(history, text, envelope, ct, canCommit, requireStructuredReply).ConfigureAwait(false);
+                await RunReplyAsync(history, text, envelope, ct, canCommit).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
             catch (Exception ex)
@@ -597,12 +316,8 @@ public sealed class BotOrchestrator : IDisposable
         _motion?.OnRms(0);
         _coordinator.SetHold(false);
         var unwind = _coordinator.CancelCurrent();
-        _currentEmotion = null;
-        _deferLlmEvents = false;
-        ClearDeferredControls();
         _stopPlayback();
-        // With Cortico selected the audible output lives in the sidecar: stop it there too, now,
-        // rather than only when the in-flight request happens to unwind.
+        // The app player is already silent; stop the rig's performance too (fenced to earlier turns).
         var performanceStop = StopPerformance();
         Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.PlaybackStopped);
         return CompleteInterruptAsync(unwind, performanceStop);
@@ -663,157 +378,90 @@ public sealed class BotOrchestrator : IDisposable
         OnError?.Invoke(this, message);
     }
 
-    private async Task RunStreamingPipelineAsync(
-        List<Message> history,
-        string userInput,
-        InputEnvelope envelope,
-        CancellationToken ct,
-        Func<bool>? canCommit = null,
-        bool requireStructuredReply = false)
+    /// <summary>Per-reply state. Every request owns its own instance.</summary>
+    private sealed class ReplyTurn
     {
-        if (Cortico is not null)
+        public ReplyDecisionMode Decision;
+        public string Thought = "";
+        public string? ProtocolError;
+        public bool Interrupted;
+        public bool PlaybackStarted;
+        public bool SpokeAny;
+        public AvatarIntent? StagedMotion;
+        public bool MotionFlushed;
+        private readonly List<string> _emotions = [];
+        private readonly List<string> _controls = [];
+        private int _applied;
+
+        public void NoteEmotion(string emotion) { lock (_emotions) _emotions.Add(emotion); }
+        public void NoteControl(string tag) { lock (_controls) _controls.Add(tag); }
+        public string? LatestEmotion() { lock (_emotions) return _emotions.LastOrDefault(); }
+        public IReadOnlyList<string> DrainUnappliedEmotions()
         {
-            await RunCorticoAsync(history, userInput, envelope, ct, canCommit).ConfigureAwait(false);
-            return;
+            lock (_emotions) { var copy = _emotions.Skip(_applied).ToArray(); _applied = _emotions.Count; return copy; }
         }
-        if (_llm is IReplyProtocolStream { ReplyProtocol: "v2" } protocolStream)
+        public IReadOnlyList<string> DrainControls()
         {
-            await RunStreamingPipelineV2Async(
-                protocolStream, history, userInput, envelope, ct, canCommit).ConfigureAwait(false);
-            return;
+            lock (_controls) { var copy = _controls.ToArray(); _controls.Clear(); return copy; }
         }
+    }
+
+    /// <summary>
+    /// The one reply pipeline (protocol v2). Approved segments go to a pacer: Cortico decides when
+    /// each piece starts and the app plays it, or plain pacing plays as soon as audio arrives.
+    /// Segments are released while the model is still writing; a segment is committed (captions,
+    /// history) only when its audio is handed to the player, so an interrupted reply records only
+    /// what was actually heard. PASS and thoughts are never spoken.
+    /// </summary>
+    private async Task RunReplyAsync(List<Message> history, string userInput, InputEnvelope envelope,
+        CancellationToken ct, Func<bool>? canCommit)
+    {
+        var protocol = (IReplyProtocolStream)_llm;
         AIVTuber.Core.Diagnostics.DebugLog.Write($"[LLM输入] {userInput}");
         _coordinator.SetHold(true);
-        var sentenceChannel = Channel.CreateBounded<string>(3);
         var context = new RequestContext(envelope.Generation, ct);
         var avatarGeneration = Interlocked.Increment(ref _avatarSequence);
         var previousAvatar = Interlocked.Exchange(ref _activeAvatarGeneration, avatarGeneration);
         _motion?.Cancel(previousAvatar);
         _motion?.BeginTurn(avatarGeneration);
         using var cancelAvatar = ct.Register(() => _motion?.Cancel(avatarGeneration));
-        ClassifiedReply? pendingReply = null;
-        string pendingRaw = "";
+        var turn = new ReplyTurn();
+        // The prompt follows the configured layer: with Cortico configured the model writes Cortico
+        // script even when the sidecar is down, so segments are always read as script; a voice-only
+        // turn then speaks their clean text.
+        var scriptMarkup = Cortico is not null;
+        var cortico = Cortico is { IsAlive: true } live ? live : null;
+        if (Cortico is not null && cortico is null)
+            ReportCurrentError(envelope.Generation, "[Cortico] 皮套异常，本轮仅语音：皮套进程无响应");
 
-        var producerTask = Task.Run(async () =>
-        {
-            var rawAll = new StringBuilder();
-            var previousContext = _eventContext.Value;
-            _eventContext.Value = context;
-            _deferLlmEvents = true;
-            ClearDeferredControls();
-            bool llmFirstContentMarked = false;
-            try
-            {
-                Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmRequest);
-                await foreach (var token in _llm.StreamAsync(history, userInput, ct))
-                {
-                    if (!IsCurrent(envelope, ct)) break;
-                    if (!llmFirstContentMarked && token.Length > 0)
-                    {
-                        llmFirstContentMarked = true;
-                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmFirstContent);
-                    }
-                    rawAll.Append(token);
-                }
-                Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmDone);
+        var ports = new Pacing.SpeechTurnPorts(
+            Synthesize: (text, emotion, token) => _tts.StreamAsync(text, _ttsConfig.VoiceId, ResolveTtsEmotion(emotion), token),
+            Play: _play,
+            CanSpeak: () => IsCurrent(envelope, ct) && canCommit?.Invoke() != false,
+            Commit: text => CommitSpokenSegment(context, turn, text),
+            OnFirstPcm: () => FlushStagedMotion(envelope, ct, turn, avatarGeneration),
+            Warn: message => ReportCurrentError(envelope.Generation, message),
+            SampleRate: _player.SampleRate);
 
-                if (!IsCurrent(envelope, ct)) return;
-                _avatarPlans.TryRemove(context.Generation, out var avatarPlan);
-                var classified = ReplyClassifier.ClassifyTurn(rawAll.ToString(), avatarPlan, requireStructuredReply);
-                if (classified.Kind == ReplyKind.Speak && classified.AvatarIntent is null &&
-                    AvatarReplyProtocol.InferRequestedMotion(userInput) is { } inferred)
-                    classified = classified with { AvatarIntent = inferred };
-                _deferLlmEvents = false;
-                if (canCommit is not null && !canCommit()) return;
-                if (classified.Kind == ReplyKind.Speak)
-                {
-                    pendingReply = classified;
-                    pendingRaw = rawAll.ToString();
-                    await sentenceChannel.Writer.WriteAsync(classified.Spoken, ct);
-                }
-                else
-                {
-                    CommitClassifiedReply(context, classified, rawAll.ToString());
-                    if (classified.Kind == ReplyKind.InnerThought && classified.AvatarIntent is { } intent && IsCurrent(envelope, ct))
-                        _motion?.Submit(avatarGeneration, intent);
-                }
-            }
-            finally
-            {
-                _deferLlmEvents = false;
-                _eventContext.Value = previousContext;
-                sentenceChannel.Writer.TryComplete();
-            }
-        }, ct);
-
-        // Stream TTS for the (usually single) utterance. WaveOut stays open for the turn.
-        bool ttsStarted = false;
-        bool ttsFirstChunkMarked = false;
-        bool ttsFirstPcmMarked = false;
-        async IAsyncEnumerable<byte[]> TtsChunks([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken streamCt = default)
-        {
-            await foreach (var sentence in sentenceChannel.Reader.ReadAllAsync(streamCt))
-            {
-                if (!IsCurrent(envelope, streamCt)) yield break;
-                if (!LlmClient.IsSpeakableText(sentence)) continue;
-                Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TtsRequest);
-                await foreach (var chunk in _tts.StreamAsync(
-                                   sentence,
-                                   _ttsConfig.VoiceId,
-                                   ResolveTtsEmotion(PeekPendingEmotion(pendingReply)),
-                                   streamCt))
-                {
-                    if (!IsCurrent(envelope, streamCt)) yield break;
-                    if (!ttsFirstChunkMarked && chunk.Length > 0)
-                    {
-                        ttsFirstChunkMarked = true;
-                        // First vendor audio for this turn (encoded transport representation).
-                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TtsFirstEncodedAudio);
-                    }
-                    if (!ttsStarted)
-                    {
-                        // Recheck after synthesis too: people may have resumed while
-                        // the LLM or TTS was waiting on the network. No public effects yet.
-                        if (canCommit is not null && !canCommit()) yield break;
-                        ttsStarted = true;
-                        CommitClassifiedReply(context, pendingReply!.Value, pendingRaw);
-                        // First complete speakable segment handed to TTS. Note: the existing
-                        // OnFirstSentenceToTts actually fires on first synthesized audio, not
-                        // at request time (plan RT-00 caveat) — hence TtsRequest above.
-                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmFirstSpeechSegment);
-                        OnFirstSentenceToTts?.Invoke(this, EventArgs.Empty);
-                        OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
-                    }
-                    if (!ttsFirstPcmMarked && chunk.Length > 0)
-                    {
-                        ttsFirstPcmMarked = true;
-                        // Software playback estimate: the chunk is being handed to the player's
-                        // write path; actual soundcard output is not separately measured yet.
-                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.TtsFirstPcm);
-                        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.PlaybackFirst);
-                    }
-                    yield return chunk;
-                }
-            }
-        }
-
-        Exception? pipelineEx = null;
-        // RT-06: mark the turn on the bidi TTS session so audio attribution and the cancel
-        // barrier are turn-scoped. Non-bidi clients skip this entirely.
         var bidiTts = _tts as AIVTuber.Core.RealtimeTts.IBidiTtsController;
         if (bidiTts is not null && IsCurrent(envelope, ct))
             await bidiTts.BeginTurnAsync(ct).ConfigureAwait(false);
+        Exception? pipelineEx = null;
+        Pacing.ISpeechPacer pacer = cortico is not null
+            ? new Pacing.CorticoPacer(cortico, ports, ct)
+            : new Pacing.ImmediatePacer(ports, ct);
         try
         {
-            void FirstPcmRead()
+            Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmRequest);
+            await foreach (var ev in protocol.StreamEventsAsync(history, userInput, ct).ConfigureAwait(false))
             {
-                if (IsCurrent(envelope, ct) && pendingReply?.AvatarIntent is { } intent)
-                    _motion?.Submit(avatarGeneration, intent);
+                if (!IsCurrent(envelope, ct)) { turn.Interrupted = true; break; }
+                if (!await HandleReplyEventAsync(ev, turn, pacer, scriptMarkup, cortico is not null, ports.CanSpeak, userInput, avatarGeneration, ct).ConfigureAwait(false))
+                    break;
             }
-            var playbackTask = !IsCurrent(envelope, ct) ? Task.CompletedTask
-                : _playWithStart is not null ? _playWithStart(TtsChunks(ct), ct, FirstPcmRead)
-                : _playChunksAsync(TtsChunks(ct), ct);
-            await Task.WhenAll(playbackTask, producerTask).ConfigureAwait(false);
+            Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmDone);
+            // Fail closed on protocol errors: segments already released still finish, nothing more starts.
+            await pacer.CompleteAsync(ct).ConfigureAwait(false);
             Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.PlaybackEnd);
             await AwaitCommandsAsync(envelope.Generation).ConfigureAwait(false);
         }
@@ -825,286 +473,137 @@ public sealed class BotOrchestrator : IDisposable
         }
         finally
         {
-            _coordinator.SetHold(false);
-            _avatarPlans.TryRemove(context.Generation, out _);
-            if (ttsStarted || ct.IsCancellationRequested || pipelineEx is not null)
-            {
-                _motion?.Cancel(avatarGeneration);
-                _motion?.OnRms(0);
-            }
-            if (ttsStarted && IsCurrent(envelope, ct, allowCancellation: true))
-                OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
-        }
-
-        if (pipelineEx is not null) throw pipelineEx;
-    }
-
-    private enum ReplySegmentState { Generated, SubmittedToTts, Played }
-
-    /// <summary>Per-turn state for one approved speech segment (state ledger, plan 4.3).</summary>
-    private sealed class ReplySegment(int seq, string text)
-    {
-        public int Seq { get; } = seq;
-        public string Text { get; } = text;
-        public ReplySegmentState State { get; set; } = ReplySegmentState.Generated;
-        public int EmotionCursor { get; set; } // emotions noted before this segment was generated
-    }
-
-    /// <summary>
-    /// Per-turn staging and ledger for protocol v2. Deliberately NOT the shared
-    /// _deferLlmEvents/_deferred* fields: every async request owns its own instance, so
-    /// one turn's deferred controls can never leak into another request.
-    /// </summary>
-    private sealed class ReplyTurnV2
-    {
-        public ReplyDecisionMode Decision;
-        public string Thought = "";
-        public string? ProtocolError;
-        public bool Interrupted;
-        public bool PlaybackStarted;
-        public readonly List<ReplySegment> Segments = [];
-        private readonly List<string> _emotions = []; // ordered: control events + segment [emotion:x] tags
-        private readonly List<string> _otherControls = [];
-        private int _appliedEmotions;
-        public AvatarIntent? StagedMotion;
-        public bool MotionFlushed;
-
-        public ReplySegment AddSegment(string text)
-        {
-            var segment = new ReplySegment(Segments.Count, text) { EmotionCursor = _emotions.Count };
-            Segments.Add(segment);
-            return segment;
-        }
-
-        public void NoteEmotion(string emotion) { lock (_emotions) _emotions.Add(emotion); }
-        public void NoteControl(string tag) { lock (_otherControls) _otherControls.Add(tag); }
-        public string? PeekEmotion(ReplySegment segment)
-        {
-            lock (_emotions)
-                return _emotions.Take(segment.EmotionCursor).LastOrDefault();
-        }
-        /// <summary>Emotions not yet applied to VTS; consumed when a segment starts playing,
-        /// so expression changes ride with the voice they belong to.</summary>
-        public IReadOnlyList<string> DrainUnappliedEmotions()
-        {
-            lock (_emotions)
-            {
-                var copy = _emotions.Skip(_appliedEmotions).ToArray();
-                _appliedEmotions = _emotions.Count;
-                return copy;
-            }
-        }
-        public IReadOnlyList<string> DrainControls()
-        {
-            lock (_otherControls)
-            {
-                var copy = _otherControls.ToArray();
-                _otherControls.Clear();
-                return copy;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Protocol v2 pipeline (RT-05): consumes validated NDJSON events and releases each
-    /// approved speech segment to TTS as soon as it arrives — the first segment is spoken
-    /// while the LLM may still be generating the rest. No rawAll whole-reply buffering;
-    /// classification happens per segment, before any public side effect.
-    /// </summary>
-    private async Task RunStreamingPipelineV2Async(
-        IReplyProtocolStream protocolStream,
-        List<Message> history,
-        string userInput,
-        InputEnvelope envelope,
-        CancellationToken ct,
-        Func<bool>? canCommit)
-    {
-        AIVTuber.Core.Diagnostics.DebugLog.Write($"[LLM输入] {userInput}");
-        _coordinator.SetHold(true);
-        var sentenceChannel = Channel.CreateBounded<ReplySegment>(3);
-        var context = new RequestContext(envelope.Generation, ct);
-        var avatarGeneration = Interlocked.Increment(ref _avatarSequence);
-        var previousAvatar = Interlocked.Exchange(ref _activeAvatarGeneration, avatarGeneration);
-        _motion?.Cancel(previousAvatar);
-        _motion?.BeginTurn(avatarGeneration);
-        using var cancelAvatar = ct.Register(() => _motion?.Cancel(avatarGeneration));
-        var turn = new ReplyTurnV2();
-
-        var producerTask = Task.Run(async () =>
-        {
-            var previousContext = _eventContext.Value;
-            _eventContext.Value = context;
-            try
-            {
-                await foreach (var ev in protocolStream.StreamEventsAsync(history, userInput, ct))
-                {
-                    if (!IsCurrent(envelope, ct)) { turn.Interrupted = true; return; }
-                    switch (ev.Kind)
-                    {
-                        case ReplyStreamEventKind.ProtocolError:
-                            // Fail closed: already-submitted segments keep playing (played audio
-                            // cannot be recalled) but nothing further is released.
-                            turn.ProtocolError = ev.Error ?? "未知协议错误";
-                            return;
-                        case ReplyStreamEventKind.Decision:
-                            turn.Decision = ev.Decision;
-                            turn.Thought = ev.Text;
-                            break;
-                        case ReplyStreamEventKind.Control:
-                            if (ev.ControlKind == "emotion")
-                            {
-                                turn.NoteEmotion(ev.Text);
-                            }
-                            else if (ev.Motion is { } intent)
-                            {
-                                bool started;
-                                lock (turn) started = turn.PlaybackStarted;
-                                // Exactly-once: staged before playback, direct submit after.
-                                if (started) _motion?.Submit(avatarGeneration, intent);
-                                else turn.StagedMotion ??= intent;
-                            }
-                            break;
-                        case ReplyStreamEventKind.Speech:
-                            var classified = ReplyClassifier.Classify(ev.Text);
-                            if (classified.Kind == ReplyKind.Invalid)
-                            {
-                                turn.ProtocolError = "speech 段未通过内容隔离校验（括号/标记不完整）";
-                                return;
-                            }
-                            if (classified.Kind != ReplyKind.Speak) break; // thought/pass-only segment: no TTS, no caption
-                            if (canCommit is not null && !canCommit()) { turn.Interrupted = true; return; }
-                            foreach (var tag in classified.StagedControls)
-                            {
-                                if (tag.StartsWith("[emotion:", StringComparison.OrdinalIgnoreCase))
-                                    turn.NoteEmotion(tag[9..^1].Trim());
-                                else turn.NoteControl(tag);
-                            }
-                            var segment = turn.AddSegment(classified.Spoken);
-                            await sentenceChannel.Writer.WriteAsync(segment, ct);
-                            break;
-                        case ReplyStreamEventKind.End:
-                            if (turn.Decision == ReplyDecisionMode.Speak && turn.StagedMotion is null &&
-                                AvatarReplyProtocol.InferRequestedMotion(userInput) is { } inferred)
-                                turn.StagedMotion = inferred;
-                            break;
-                    }
-                }
-            }
-            finally
-            {
-                _eventContext.Value = previousContext;
-                sentenceChannel.Writer.TryComplete();
-            }
-        }, ct);
-
-        // Stream TTS per approved segment; each segment is committed to history/captions
-        // only when its own audio actually starts, so an interrupted turn never records
-        // segments that were generated but never played.
-        bool ttsStarted = false;
-        async IAsyncEnumerable<byte[]> TtsChunks([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken streamCt = default)
-        {
-            await foreach (var segment in sentenceChannel.Reader.ReadAllAsync(streamCt))
-            {
-                if (!IsCurrent(envelope, streamCt)) { turn.Interrupted = true; yield break; }
-                if (!LlmClient.IsSpeakableText(segment.Text)) continue;
-                segment.State = ReplySegmentState.SubmittedToTts;
-                await foreach (var chunk in _tts.StreamAsync(
-                                   segment.Text,
-                                   _ttsConfig.VoiceId,
-                                   ResolveTtsEmotion(turn.PeekEmotion(segment)),
-                                   streamCt))
-                {
-                    if (!IsCurrent(envelope, streamCt)) { turn.Interrupted = true; yield break; }
-                        if (segment.State != ReplySegmentState.Played)
-                        {
-                            // Recheck after synthesis: people may have resumed while the LLM or
-                            // TTS was waiting on the network. No public effects yet for this segment.
-                            if (canCommit is not null && !canCommit()) { turn.Interrupted = true; yield break; }
-                            segment.State = ReplySegmentState.Played;
-                            foreach (var emotion in turn.DrainUnappliedEmotions())
-                                ApplyEmotion(context, emotion);
-                            if (!ttsStarted)
-                        {
-                            ttsStarted = true;
-                            lock (turn) turn.PlaybackStarted = true;
-                            FlushTurnControls(context, turn);
-                            OnFirstSentenceToTts?.Invoke(this, EventArgs.Empty);
-                            OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
-                        }
-                        OnReplyCommitted?.Invoke(this, new ClassifiedReply(ReplyKind.Speak, segment.Text, "", []));
-                        PublishSpokenSentence(context, segment.Text);
-                    }
-                    yield return chunk;
-                }
-            }
-        }
-
-        Exception? pipelineEx = null;
-        // RT-06: mark the turn on the bidi TTS session so audio attribution and the cancel
-        // barrier are turn-scoped. Non-bidi clients skip this entirely.
-        var bidiTts = _tts as AIVTuber.Core.RealtimeTts.IBidiTtsController;
-        if (bidiTts is not null && IsCurrent(envelope, ct))
-            await bidiTts.BeginTurnAsync(ct).ConfigureAwait(false);
-        try
-        {
-            void FirstPcmRead()
-            {
-                // Motion follows voice, not network: the staged intent fires with the first
-                // real audio and is cancelled with the same avatar generation as the voice.
-                // Exactly-once via MotionFlushed (this callback runs per audio start).
-                if (IsCurrent(envelope, ct))
-                    lock (turn)
-                    {
-                        if (turn.StagedMotion is { } intent && !turn.MotionFlushed)
-                        {
-                            turn.MotionFlushed = true;
-                            _motion?.Submit(avatarGeneration, intent);
-                        }
-                    }
-            }
-            var playbackTask = !IsCurrent(envelope, ct) ? Task.CompletedTask
-                : _playWithStart is not null ? _playWithStart(TtsChunks(ct), ct, FirstPcmRead)
-                : _playChunksAsync(TtsChunks(ct), ct);
-            await Task.WhenAll(playbackTask, producerTask).ConfigureAwait(false);
-            await AwaitCommandsAsync(envelope.Generation).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception ex)
-        {
-            pipelineEx = ex;
-            ReportCurrentError(envelope.Generation, $"[LLM/TTS] {ex.GetType().Name}: {ex.Message}");
-        }
-        finally
-        {
+            await pacer.DisposeAsync().ConfigureAwait(false);
             bidiTts?.EndTurn();
             _coordinator.SetHold(false);
-            if (turn.Segments.Any(s => s.State == ReplySegmentState.Generated) &&
-                turn.Segments.Any(s => s.State == ReplySegmentState.Played))
-                AIVTuber.Core.Diagnostics.DebugLog.Write("[v2] 后续段落未播放即被中断（interrupted），不写入已说历史");
-            if (ttsStarted || ct.IsCancellationRequested || pipelineEx is not null)
+            if (turn.PlaybackStarted || ct.IsCancellationRequested || pipelineEx is not null)
             {
                 _motion?.Cancel(avatarGeneration);
                 _motion?.OnRms(0);
             }
-            if (ttsStarted && IsCurrent(envelope, ct, allowCancellation: true))
+            if (turn.PlaybackStarted && IsCurrent(envelope, ct, allowCancellation: true))
                 OnAiStopSpeaking?.Invoke(this, EventArgs.Empty);
         }
 
         if (turn.ProtocolError is { } violation)
         {
             if (IsCurrent(envelope, ct, allowCancellation: true))
-                ReportCurrentError(envelope.Generation, $"[LLM] 回复协议v2已终止（fail closed）：{violation}");
+                ReportCurrentError(envelope.Generation, turn.SpokeAny
+                    ? $"[LLM] 回复协议v2已终止（fail closed），已开始的部分照常说完：{violation}"
+                    : $"[LLM] 回复协议v2已终止（fail closed）：{violation}");
             return;
         }
-        if (turn.Interrupted || pipelineEx is not null || !IsCurrent(envelope, ct) ||
-            (canCommit is not null && !canCommit())) return;
+        if (turn.Interrupted || pipelineEx is not null || !IsCurrent(envelope, ct) || canCommit?.Invoke() == false) return;
         if (turn.Decision == ReplyDecisionMode.Pass)
-            CommitClassifiedReply(context, new ClassifiedReply(ReplyKind.Pass, "", "", []), "");
+        {
+            OnReplyCommitted?.Invoke(this, new ClassifiedReply(ReplyKind.Pass, "", "", []));
+            AIVTuber.Core.Diagnostics.DebugLog.Write("[PASS] 本轮不接话");
+        }
         else if (turn.Decision == ReplyDecisionMode.Thought)
-            CommitClassifiedReply(context, new ClassifiedReply(ReplyKind.InnerThought, "", turn.Thought, []), "");
+        {
+            OnReplyCommitted?.Invoke(this, new ClassifiedReply(ReplyKind.InnerThought, "", turn.Thought, []));
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[心里话] （{turn.Thought}）");
+        }
     }
 
-    private void FlushTurnControls(RequestContext context, ReplyTurnV2 turn)
+    /// <summary>Returns false when the reply must stop releasing segments.</summary>
+    private async Task<bool> HandleReplyEventAsync(ReplyStreamEvent ev, ReplyTurn turn, Pacing.ISpeechPacer pacer,
+        bool cortico, bool corticoPacing, Func<bool> canSpeak, string userInput, long avatarGeneration, CancellationToken ct)
+    {
+        switch (ev.Kind)
+        {
+            case ReplyStreamEventKind.ProtocolError:
+                turn.ProtocolError = ev.Error ?? "未知协议错误";
+                return false;
+            case ReplyStreamEventKind.Decision:
+                turn.Decision = ev.Decision;
+                turn.Thought = ev.Text;
+                return true;
+            case ReplyStreamEventKind.Control:
+                if (cortico)
+                {
+                    // Cortico is the only rig writer; actions arrive as script markup instead.
+                    AIVTuber.Core.Diagnostics.DebugLog.Write($"[Cortico] 忽略 v2 control 行（{ev.ControlKind}）：动作应写在台本标记里");
+                    return true;
+                }
+                if (ev.ControlKind == "emotion") turn.NoteEmotion(ev.Text);
+                else if (ev.Motion is { } intent)
+                {
+                    bool started;
+                    lock (turn) started = turn.PlaybackStarted;
+                    if (started) _motion?.Submit(avatarGeneration, intent);
+                    else turn.StagedMotion ??= intent;
+                }
+                return true;
+            case ReplyStreamEventKind.Speech:
+                string text;
+                if (cortico)
+                {
+                    var segment = CorticoReplyAdapter.Sanitize(ev.Text);
+                    if (segment is null or { Kind: CorticoReplyKind.Pass or CorticoReplyKind.Thought }) return true;
+                    if (segment.Value.Kind == CorticoReplyKind.Invalid) { turn.ProtocolError = segment.Value.Text; return false; }
+                    text = corticoPacing ? segment.Value.Text : CorticoScript.Clean(segment.Value.Text);
+                }
+                else
+                {
+                    var classified = ReplyClassifier.Classify(ev.Text);
+                    if (classified.Kind == ReplyKind.Invalid)
+                    {
+                        turn.ProtocolError = "speech 段未通过内容隔离校验（括号/标记不完整）";
+                        return false;
+                    }
+                    if (classified.Kind != ReplyKind.Speak) return true;
+                    foreach (var tag in classified.StagedControls)
+                    {
+                        if (tag.StartsWith("[emotion:", StringComparison.OrdinalIgnoreCase)) turn.NoteEmotion(tag[9..^1].Trim());
+                        else turn.NoteControl(tag);
+                    }
+                    text = classified.Spoken;
+                }
+                // People resumed (or the turn ended) before this segment: nothing new may start.
+                if (!canSpeak()) { turn.Interrupted = true; return false; }
+                turn.SpokeAny = true;
+                await pacer.SubmitAsync(new Pacing.SpeechItem(text, turn.LatestEmotion()), ct).ConfigureAwait(false);
+                return true;
+            case ReplyStreamEventKind.End:
+                if (turn.Decision == ReplyDecisionMode.Speak && turn.StagedMotion is null &&
+                    AvatarReplyProtocol.InferRequestedMotion(userInput) is { } inferred)
+                    turn.StagedMotion = inferred;
+                return true;
+            default:
+                return true;
+        }
+    }
+
+    private void CommitSpokenSegment(RequestContext context, ReplyTurn turn, string text)
+    {
+        foreach (var emotion in turn.DrainUnappliedEmotions()) ApplyEmotion(context, emotion);
+        bool first;
+        lock (turn) { first = !turn.PlaybackStarted; turn.PlaybackStarted = true; }
+        if (first)
+        {
+            FlushTurnControls(context, turn);
+            Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.LlmFirstSpeechSegment);
+            OnFirstSentenceToTts?.Invoke(this, EventArgs.Empty);
+            OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
+        }
+        OnReplyCommitted?.Invoke(this, new ClassifiedReply(ReplyKind.Speak, text, "", []));
+        PublishSpokenSentence(context, text);
+    }
+
+    private void FlushStagedMotion(InputEnvelope envelope, CancellationToken ct, ReplyTurn turn, long avatarGeneration)
+    {
+        Trace?.Mark(AIVTuber.Core.Diagnostics.RealtimeTrace.Events.PlaybackFirst);
+        if (!IsCurrent(envelope, ct)) return;
+        lock (turn)
+        {
+            if (turn.StagedMotion is not { } intent || turn.MotionFlushed) return;
+            turn.MotionFlushed = true;
+            _motion?.Submit(avatarGeneration, intent);
+        }
+    }
+
+    private void FlushTurnControls(RequestContext context, ReplyTurn turn)
     {
         foreach (var tag in turn.DrainControls())
         {
@@ -1116,54 +615,6 @@ public sealed class BotOrchestrator : IDisposable
             if (kind.Equals("action", StringComparison.OrdinalIgnoreCase)) ApplyAction(context, value);
             else if (kind.Equals("pose", StringComparison.OrdinalIgnoreCase)) OnPoseDetected?.Invoke(this, value);
         }
-    }
-
-    /// <summary>
-    /// Cortico is the one performance layer when selected: every reply — legacy script or
-    /// protocol v2 events — is adapted into Cortico script segments and performed there, never on
-    /// the app's own player or VTS writer. Segments are fed as they are approved, so the first
-    /// sentence is performed while the model is still writing the rest. PASS and thoughts never
-    /// reach Cortico. Each piece is committed (history, captions) with its own clean text right
-    /// before it becomes audible, so an interrupted reply records only what was actually heard.
-    /// </summary>
-    private Task RunCorticoAsync(List<Message> history, string userInput,
-        InputEnvelope envelope, CancellationToken ct, Func<bool>? canCommit) =>
-        throw new NotSupportedException("Cortico 管线在 Task 7 中迁移到 CorticoPacer");
-
-    private void CommitClassifiedReply(RequestContext context, ClassifiedReply classified, string raw)
-    {
-        OnReplyCommitted?.Invoke(this, classified);
-        switch (classified.Kind)
-        {
-            case ReplyKind.Speak:
-                FlushDeferredControls(context);
-                ApplyStagedControls(context, classified.StagedControls);
-                PublishSpokenSentence(context, classified.Spoken);
-                return;
-            case ReplyKind.InnerThought:
-                ClearDeferredControls();
-                AIVTuber.Core.Diagnostics.DebugLog.Write($"[心里话] （{classified.Thought}）");
-                return;
-            case ReplyKind.Pass:
-                ClearDeferredControls();
-                AIVTuber.Core.Diagnostics.DebugLog.Write("[PASS] 本轮不接话");
-                return;
-            default:
-                ClearDeferredControls();
-                var preview = raw.Trim();
-                if (preview.Length > 80) preview = preview[..80] + "…";
-                ReportCurrentError(context.Generation,
-                    $"[LLM] 回复不符合协议，已丢弃: {preview}");
-                return;
-        }
-    }
-    private string? PeekPendingEmotion(ClassifiedReply? reply)
-    {
-        // Synthesis needs the emotion before public commit. Reading the staged value
-        // must not fire the pixel avatar, hotkeys or subtitles while TTS is pending.
-        var tag = reply?.StagedControls.LastOrDefault(t => t.StartsWith("[emotion:", StringComparison.OrdinalIgnoreCase));
-        if (tag is not null) return tag[9..^1].Trim();
-        lock (_deferredEmotions) return _deferredEmotions.LastOrDefault() ?? _currentEmotion;
     }
 
     private string? ResolveTtsEmotion(string? emotion)
@@ -1192,12 +643,6 @@ public sealed class BotOrchestrator : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        if (_llm is IAvatarReplySource avatarSource && _avatarPlanHandler is not null)
-            avatarSource.OnAvatarPlanReady -= _avatarPlanHandler;
-        _llm.OnSentenceReady -= _sentenceReadyHandler;
-        _llm.OnEmotionDetected -= _emotionDetectedHandler;
-        _llm.OnActionDetected -= _actionDetectedHandler;
-        _llm.OnPoseDetected -= _poseDetectedHandler;
         if (_rmsUpdatedHandler is not null)
             _player.RmsUpdated -= _rmsUpdatedHandler;
         if (_playbackFinishedHandler is not null)

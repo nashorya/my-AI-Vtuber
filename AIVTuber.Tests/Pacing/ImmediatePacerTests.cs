@@ -82,6 +82,30 @@ public sealed class ImmediatePacerTests
         Assert.Empty(kit.Synthesized);
     }
 
+    [Fact]
+    public async Task CancelledTurn_ChunksArrivingAfterwardAreNotPlayed()
+    {
+        var kit = new PacingTestKit();
+        using var turn = new CancellationTokenSource();
+        var release = new TaskCompletionSource();
+        var ports = kit.Ports with { Synthesize = (text, _, _) => IgnoresCancellation(release.Task) };
+        await using var pacer = new ImmediatePacer(ports, turn.Token);
+        await pacer.SubmitAsync(new SpeechItem("一二"), default);
+        await TestWait.Until(() => kit.FirstPcm == 1);
+        turn.Cancel();
+        release.SetResult();
+        await pacer.CompleteAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(["一"], kit.Played);
+    }
+
+    /// <summary>A TTS stream that does not observe cancellation (vendor sockets often don't).</summary>
+    private static async IAsyncEnumerable<byte[]> IgnoresCancellation(Task release)
+    {
+        yield return System.Text.Encoding.UTF8.GetBytes("一");
+        await release;
+        yield return System.Text.Encoding.UTF8.GetBytes("二");
+    }
+
     private static async IAsyncEnumerable<byte[]> Endless(
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct, TaskCompletionSource cancelled)
     {

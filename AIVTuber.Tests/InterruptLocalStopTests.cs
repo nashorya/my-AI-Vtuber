@@ -20,7 +20,7 @@ public sealed class InterruptLocalStopTests
         using var player = new AudioPlayer();
         using var orchestrator = new BotOrchestrator(
             new NoAsr(), new OneLineLlm("你好。"), new StallingTts(release.Task), player, new TtsConfig(), null, null,
-            async (chunks, ct) =>
+            async (chunks, ct, firstPcm) =>
             {
                 await foreach (var _ in chunks.WithCancellation(ct))
                 {
@@ -64,8 +64,12 @@ public sealed class InterruptLocalStopTests
         }
     }
 
-    private sealed class OneLineLlm(string text) : ILlmClient
+    private sealed class OneLineLlm(string text) : ILlmClient, IReplyProtocolStream
     {
+    public string ReplyProtocol => "v2";
+    public IAsyncEnumerable<ReplyStreamEvent> StreamEventsAsync(List<Message> history, string userInput,
+        CancellationToken cancellationToken = default) =>
+        AIVTuber.Tests.Cortico.LegacyAsV2.Events(StreamAsync(history, userInput, cancellationToken), cancellationToken);
         public event EventHandler<string>? OnSentenceReady;
         public event EventHandler<string>? OnEmotionDetected { add { } remove { } }
         public event EventHandler<string>? OnActionDetected { add { } remove { } }

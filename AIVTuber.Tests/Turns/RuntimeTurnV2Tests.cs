@@ -63,7 +63,7 @@ public sealed class RuntimeTurnV2Tests
             h.Tts.StallAfterFirstChunk = stallTts;
             h.Orchestrator = new BotOrchestrator(
                 new RuntimeCloudGateTests.CountingAsr(), h.Llm, h.Tts, h._player, new TtsConfig(), null, null,
-                async (chunks, ct) =>
+                async (chunks, ct, firstPcm) =>
                 {
                     await foreach (var _ in chunks.WithCancellation(ct))
                     {

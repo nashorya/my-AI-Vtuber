@@ -10,19 +10,23 @@ namespace AIVTuber.Tests;
 public sealed class BotOrchestratorReplyTests
 {
     [Theory]
-    [InlineData("{\"respond\":false,\"speech\":\"你好[emotion:happy]\"}", false)]
-    [InlineData("{\"respond\":true,\"speech\":\"我觉得可以。\"}", true)]
-    [InlineData("{\"respond\":true,\"speech\":\"没说完", false)]
-    [InlineData("PASS", false)]
-    [InlineData("[PASS]", false)]
-    public async Task StructuredDecision_ControlsAllPublicEffects(string raw, bool speaks)
+    [InlineData("speak", true)]
+    [InlineData("pass", false)]
+    [InlineData("truncated", false)]
+    public async Task StructuredDecision_ControlsAllPublicEffects(string reply, bool speaks)
     {
+        var llm = reply switch
+        {
+            "speak" => AIVTuber.Tests.Cortico.V2.Say("我觉得可以。"),
+            "pass" => new AIVTuber.Tests.Cortico.ChunkedLlm("v2", AIVTuber.Tests.Cortico.V2.Pass, AIVTuber.Tests.Cortico.V2.End),
+            _ => new AIVTuber.Tests.Cortico.ChunkedLlm("v2", AIVTuber.Tests.Cortico.V2.Speak, "{\"v\":2,\"type\":\"speech\""),
+        };
         var tts = new CountingTts();
         using var player = new AudioPlayer();
         var audio = new List<byte>();
         using var orchestrator = new BotOrchestrator(
-            new UnusedAsr(), new FixedLlm(raw), tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) =>
+            new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
+            async (chunks, ct, firstPcm) =>
             {
                 await foreach (var chunk in chunks.WithCancellation(ct)) audio.AddRange(chunk);
             }, () => { }, triggerHotkeyAsync: null);
@@ -32,7 +36,7 @@ public sealed class BotOrchestratorReplyTests
         orchestrator.OnSentenceReady += (_, text) => captions.Add(text);
         orchestrator.OnAiStartSpeaking += (_, _) => starts++;
         orchestrator.OnEmotionDetected += (_, _) => emotions++;
-        await orchestrator.ProcessTextAsync("大肥鱼，你觉得呢？", [], bypassWake: true, requireStructuredReply: true);
+        await orchestrator.ProcessTextAsync("大肥鱼，你觉得呢？", [], bypassWake: true);
         Assert.Equal(speaks ? 1 : 0, tts.CallCount);
         Assert.Equal(speaks ? 1 : 0, starts);
         Assert.Equal(0, emotions);
@@ -46,22 +50,6 @@ public sealed class BotOrchestratorReplyTests
             Assert.Empty(audio);
             Assert.Empty(captions);
         }
-    }
-
-    [Fact]
-    public async Task StructuredDecision_KeepsSpeakableProse()
-    {
-        var tts = new CountingTts();
-        using var player = new AudioPlayer();
-        using var orchestrator = new BotOrchestrator(
-            new UnusedAsr(), new FixedLlm("你好"), tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
-            () => { }, triggerHotkeyAsync: null);
-        var captions = new List<string>();
-        orchestrator.OnSentenceReady += (_, text) => captions.Add(text);
-        await orchestrator.ProcessTextAsync("大肥鱼，你觉得呢？", [], bypassWake: true, requireStructuredReply: true);
-        Assert.Equal(1, tts.CallCount);
-        Assert.Equal("你好", Assert.Single(captions));
     }
 
     [Fact]
@@ -81,10 +69,10 @@ public sealed class BotOrchestratorReplyTests
         using var orchestrator = new BotOrchestrator(
             new UnusedAsr(), new FixedLlm("{\"respond\":true,\"speech\":\"我觉得可以。\"}"),
             tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) played++; },
+            async (chunks, ct, firstPcm) => { await foreach (var _ in chunks.WithCancellation(ct)) played++; },
             () => { }, triggerHotkeyAsync: null);
         await orchestrator.ProcessTextAsync("大肥鱼，你觉得呢？", [], bypassWake: true,
-            canCommit: () => gate.CanCommit(revision), requireStructuredReply: true);
+            canCommit: () => gate.CanCommit(revision));
         Assert.Equal(1, played);
         Assert.Single(turns);
         gate.CompleteTurn(revision);
@@ -101,10 +89,10 @@ public sealed class BotOrchestratorReplyTests
         using var player = new AudioPlayer();
         using var orchestrator = new BotOrchestrator(
             new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
+            async (chunks, ct, firstPcm) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
             () => { }, triggerHotkeyAsync: null);
         orchestrator.ConfigureContinuousControl(motion, PlayAndStart);
-        await orchestrator.ProcessTextAsync("摇摇头呗", [], bypassWake: true, requireStructuredReply: true);
+        await orchestrator.ProcessTextAsync("摇摇头呗", [], bypassWake: true);
         Assert.Equal(1, tts.CallCount);
         Assert.Equal(.5f, motion.Last!.Targets["headYaw"]);
     }
@@ -118,10 +106,10 @@ public sealed class BotOrchestratorReplyTests
         using var player = new AudioPlayer();
         using var orchestrator = new BotOrchestrator(
             new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
+            async (chunks, ct, firstPcm) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
             () => { }, triggerHotkeyAsync: null);
         orchestrator.ConfigureContinuousControl(motion, PlayAndStart);
-        await orchestrator.ProcessTextAsync("大肥鱼，摇摇头呗", [], bypassWake: true, requireStructuredReply: true);
+        await orchestrator.ProcessTextAsync("大肥鱼，摇摇头呗", [], bypassWake: true);
         Assert.Equal(1, tts.CallCount);
         Assert.Equal(.5f, motion.Last!.Targets["headYaw"]);
     }
@@ -134,7 +122,7 @@ public sealed class BotOrchestratorReplyTests
         using var player = new AudioPlayer();
         using var orchestrator = new BotOrchestrator(
             new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) =>
+            async (chunks, ct, firstPcm) =>
             {
                 await foreach (var _ in chunks.WithCancellation(ct)) { }
             },
@@ -163,7 +151,7 @@ public sealed class BotOrchestratorReplyTests
         using var player = new AudioPlayer();
         using var orchestrator = new BotOrchestrator(
             new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) =>
+            async (chunks, ct, firstPcm) =>
             {
                 await foreach (var _ in chunks.WithCancellation(ct)) { }
             },
@@ -187,7 +175,7 @@ public sealed class BotOrchestratorReplyTests
         using var player = new AudioPlayer();
         using var orchestrator = new BotOrchestrator(
             new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) =>
+            async (chunks, ct, firstPcm) =>
             {
                 await foreach (var _ in chunks.WithCancellation(ct)) { }
             },
@@ -218,7 +206,7 @@ public sealed class BotOrchestratorReplyTests
         var played = 0;
         using var orchestrator = new BotOrchestrator(
             new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) =>
+            async (chunks, ct, firstPcm) =>
             {
                 await foreach (var _ in chunks.WithCancellation(ct)) played++;
             }, () => { }, triggerHotkeyAsync: null);
@@ -246,7 +234,7 @@ public sealed class BotOrchestratorReplyTests
         var played = 0;
         using var orchestrator = new BotOrchestrator(
             new UnusedAsr(), new FixedLlm("你好"), tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) =>
+            async (chunks, ct, firstPcm) =>
             {
                 await foreach (var _ in chunks.WithCancellation(ct)) played++;
             }, () => { }, triggerHotkeyAsync: null);
@@ -257,8 +245,12 @@ public sealed class BotOrchestratorReplyTests
         Assert.Equal(1, committed);
     }
 
-    private sealed class PlannedLlm(string text, AvatarReplyPlan plan) : ILlmClient, IAvatarReplySource
+    private sealed class PlannedLlm(string text, AvatarReplyPlan plan) : ILlmClient, IReplyProtocolStream, IAvatarReplySource
     {
+    public string ReplyProtocol => "v2";
+    public IAsyncEnumerable<ReplyStreamEvent> StreamEventsAsync(List<Message> history, string userInput,
+        CancellationToken cancellationToken = default) =>
+        AIVTuber.Tests.Cortico.LegacyAsV2.Events(StreamAsync(history, userInput, cancellationToken), cancellationToken);
         public event EventHandler<string>? OnSentenceReady;
         public event EventHandler<string>? OnEmotionDetected;
         public event EventHandler<string>? OnActionDetected;
@@ -277,7 +269,7 @@ public sealed class BotOrchestratorReplyTests
         }
     }
 
-    private static async Task PlayAndStart(IAsyncEnumerable<byte[]> chunks, CancellationToken ct, Action start)
+    private static async Task PlayAndStart(IAsyncEnumerable<byte[]> chunks, CancellationToken ct, Action? start)
     {
         await foreach (var _ in chunks.WithCancellation(ct)) start();
     }
@@ -290,8 +282,12 @@ public sealed class BotOrchestratorReplyTests
         public void OnRms(float rms) { }
     }
 
-    private sealed class FixedLlm(string text) : ILlmClient
+    private sealed class FixedLlm(string text) : ILlmClient, IReplyProtocolStream
     {
+    public string ReplyProtocol => "v2";
+    public IAsyncEnumerable<ReplyStreamEvent> StreamEventsAsync(List<Message> history, string userInput,
+        CancellationToken cancellationToken = default) =>
+        AIVTuber.Tests.Cortico.LegacyAsV2.Events(StreamAsync(history, userInput, cancellationToken), cancellationToken);
         public event EventHandler<string>? OnSentenceReady;
         public event EventHandler<string>? OnEmotionDetected;
         public event EventHandler<string>? OnActionDetected;

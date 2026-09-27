@@ -65,7 +65,7 @@ public sealed class RuntimeAsrHealthTests
             h.Runtime.UserTranscript += (_, t) => { lock (h.Transcripts) h.Transcripts.Add(t); };
             h._player = new AudioPlayer();
             var orchestrator = new BotOrchestrator(h.Asr, h.Llm, new SilentTts(), h._player, new TtsConfig(), null, null,
-                async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
+                async (chunks, ct, firstPcm) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
                 () => { }, triggerHotkeyAsync: null);
             Set(h.Runtime, "_orchestrator", orchestrator);
             Set(h.Runtime, "_conversation", new ConversationManager(config.Llm));

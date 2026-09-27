@@ -6,6 +6,8 @@ using AIVTuber.Core.Bot;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Pipeline;
 
+using AIVTuber.Tests.Cortico;
+
 namespace AIVTuber.Tests;
 
 public class ContinuousReplyPipelineTests
@@ -18,8 +20,12 @@ public class ContinuousReplyPipelineTests
         public void Cancel(long generation) { if (generation == LastGeneration) Cancels++; }
         public void OnRms(float rms) { if (rms > 0) AudioSamples++; }
     }
-    private sealed class Llm(string reply) : ILlmClient, IAvatarReplySource
+    private sealed class Llm(string reply) : ILlmClient, IReplyProtocolStream, IAvatarReplySource
     {
+    public string ReplyProtocol => "v2";
+    public IAsyncEnumerable<ReplyStreamEvent> StreamEventsAsync(List<Message> history, string userInput,
+        CancellationToken cancellationToken = default) =>
+        AIVTuber.Tests.Cortico.LegacyAsV2.Events(StreamAsync(history, userInput, cancellationToken), cancellationToken);
         public int Subscriptions;
         private EventHandler<AvatarReplyPlan>? _plan;
         public event EventHandler<AvatarReplyPlan>? OnAvatarPlanReady { add { _plan += value; Subscriptions++; } remove { _plan -= value; Subscriptions--; } }
@@ -63,16 +69,22 @@ public class ContinuousReplyPipelineTests
         { await Task.CompletedTask; yield break; }
     }
     [Theory]
-    [InlineData("你好", 1, 1)]
-    [InlineData("（想吃蛋糕）", 1, 0)]
-    [InlineData("【PASS】", 0, 0)]
+    [InlineData("speak", 1, 1)]
+    [InlineData("thought", 0, 0)]
+    [InlineData("pass", 0, 0)]
     public async Task ReplyKindControlsSpeechAndAvatarIndependently(string reply, int expectedMoves, int expectedTts)
     {
-        var llm = new Llm(reply); var tts = new Tts(); var sink = new Sink();
+        var llm = reply switch
+        {
+            "speak" => new ChunkedLlm("v2", [V2.Speak, V2.Emotion("happy"), V2.Avatar("headRoll", .4f), V2.Seg(0, "你好"), V2.End], ["headRoll"]),
+            "thought" => new ChunkedLlm("v2", V2.Thought("想吃蛋糕"), V2.End),
+            _ => new ChunkedLlm("v2", V2.Pass, V2.End),
+        };
+        var tts = new Tts(); var sink = new Sink();
         using var player = new AudioPlayer(); var hotkeys = 0;
         using var orchestrator = new BotOrchestrator(new Asr(), llm, tts, player, new(), null,
             new VtsConfig { EmotionMap = new() { ["happy"] = "one" }, ActionMap = new() { ["wave"] = "two" } },
-            async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } }, () => { },
+            async (chunks, ct, firstPcm) => { await foreach (var _ in chunks.WithCancellation(ct)) { } }, () => { },
             (_, _) => { hotkeys++; return Task.CompletedTask; });
         var subtitles = new List<string>(); ClassifiedReply? committed = null;
         orchestrator.OnSentenceReady += (_, text) => subtitles.Add(text);
@@ -82,7 +94,7 @@ public class ContinuousReplyPipelineTests
             await foreach (var _ in chunks.WithCancellation(ct))
             {
                 Assert.Equal(0, sink.Submits); // TTS network data does not start motion.
-                firstRead();
+                firstRead?.Invoke();
             }
         });
         await orchestrator.ProcessTextAsync("hello", [], bypassWake: true);
@@ -90,7 +102,7 @@ public class ContinuousReplyPipelineTests
         if (expectedTts > 0) Assert.Equal("happy", Assert.Single(tts.Emotions));
         Assert.All(tts.Texts.Concat(subtitles), text => { Assert.DoesNotContain("avatar", text); Assert.DoesNotContain("targets", text); });
         if (expectedTts == 0) Assert.Empty(subtitles);
-        if (reply == "【PASS】") Assert.Equal(ReplyKind.Pass, committed!.Value.Kind);
+        if (reply == "pass") Assert.Equal(ReplyKind.Pass, committed!.Value.Kind);
     }
     [Theory]
     [InlineData(true)]
@@ -100,8 +112,8 @@ public class ContinuousReplyPipelineTests
         var llm = new Llm("你好"); var tts = new Tts { Fail = ttsFails }; var sink = new Sink();
         using var player = new AudioPlayer();
         using var orchestrator = new BotOrchestrator(new Asr(), llm, tts, player, new(), null, null,
-            async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } }, () => { }, null);
-        orchestrator.ConfigureContinuousControl(sink, async (chunks, ct, start) => { await foreach (var _ in chunks.WithCancellation(ct)) start(); });
+            async (chunks, ct, firstPcm) => { await foreach (var _ in chunks.WithCancellation(ct)) { } }, () => { }, null);
+        orchestrator.ConfigureContinuousControl(sink, async (chunks, ct, start) => { await foreach (var _ in chunks.WithCancellation(ct)) start?.Invoke(); });
         await orchestrator.ProcessTextAsync("hello", [], bypassWake: true, canCommit: () => ttsFails);
         Assert.Equal(0, sink.Submits);
     }
@@ -118,28 +130,12 @@ public class ContinuousReplyPipelineTests
         for (var i = 0; i < 20; i++)
         {
             using var orchestrator = new BotOrchestrator(new Asr(), llm, new Tts(), player, new(), vts, null,
-                async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } }, () => { }, null);
-            orchestrator.ConfigureContinuousControl(sink, async (chunks, ct, start) => { await foreach (var _ in chunks.WithCancellation(ct)) start(); });
-            Assert.Equal(1, llm.Subscriptions);
+                async (chunks, ct, firstPcm) => { await foreach (var _ in chunks.WithCancellation(ct)) { } }, () => { }, null);
+            orchestrator.ConfigureContinuousControl(sink, async (chunks, ct, start) => { await foreach (var _ in chunks.WithCancellation(ct)) start?.Invoke(); });
             EmitAudio();
             Assert.Equal(i + 1, sink.AudioSamples);
             await orchestrator.ProcessTextAsync("hello", [], bypassWake: true);
         }
-        Assert.Equal(0, llm.Subscriptions); Assert.Equal(20, sink.Submits);
         EmitAudio(); Assert.Equal(20, sink.AudioSamples);
-    }
-    [Fact]
-    public async Task CancelledLateLlmEventCannotMove()
-    {
-        var llm = new Llm("（想吃蛋糕）"); var sink = new Sink(); using var player = new AudioPlayer();
-        using var orchestrator = new BotOrchestrator(new Asr(), llm, new Tts(), player, new(), null, null,
-            async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } }, () => { }, null);
-        orchestrator.ConfigureContinuousControl(sink, async (chunks, ct, start) => { await foreach (var _ in chunks.WithCancellation(ct)) start(); });
-        llm.EmitAfterCancellation = true;
-        var processing = orchestrator.ProcessTextAsync("hello", [], bypassWake: true);
-        await llm.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await Task.Run(orchestrator.Interrupt).WaitAsync(TimeSpan.FromSeconds(3));
-        await processing;
-        Assert.Equal(0, sink.Submits);
     }
 }

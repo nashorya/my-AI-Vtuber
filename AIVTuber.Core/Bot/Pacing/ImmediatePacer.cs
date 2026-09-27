@@ -65,6 +65,8 @@ internal sealed class ImmediatePacer(SpeechTurnPorts ports, CancellationToken tu
                     if (!ports.CanSpeak()) { item.Audio?.Cancel(); Drain(); yield break; }
                     ports.Commit(item.Text);
                 }
+                // A stopped turn plays nothing more, even from a TTS stream that ignores cancellation.
+                if (ct.IsCancellationRequested) { item.Audio?.Cancel(); Drain(); yield break; }
                 yield return chunk;
             }
         }

@@ -396,7 +396,7 @@ public sealed class ReplyProtocolV2OrchestratorTests
     {
         var orchestrator = new BotOrchestrator(
             new UnusedAsr(), llm, tts, new AudioPlayer(), new TtsConfig(), null, null,
-            async (chunks, ct) =>
+            async (chunks, ct, firstPcm) =>
             {
                 await foreach (var chunk in chunks.WithCancellation(ct))
                 {
@@ -606,7 +606,7 @@ public sealed class ReplyProtocolV2OrchestratorTests
         var vtsConfig = new VtsConfig { EmotionMap = new Dictionary<string, string> { ["happy"] = "one" } };
         using var orchestrator = new BotOrchestrator(
             new UnusedAsr(), llm, tts, new AudioPlayer(), new TtsConfig(), null, vtsConfig,
-            async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
+            async (chunks, ct, firstPcm) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
             () => { }, (_, _) => { hotkeys++; return Task.CompletedTask; },
             new Dictionary<string, string> { ["happy"] = "happy" });
         await orchestrator.ProcessTextAsync("你说呢", [], bypassWake: true);

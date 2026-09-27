@@ -42,7 +42,7 @@ public sealed class RuntimeCloudGateTests
             var orchestrator = new BotOrchestrator(
                 h.Asr, h.Llm, new StallingTts(h.Release.Task),
                 h._player, new TtsConfig(), null, null,
-                async (chunks, ct) =>
+                async (chunks, ct, firstPcm) =>
                 {
                     await foreach (var _ in chunks.WithCancellation(ct))
                     {
@@ -239,8 +239,12 @@ public sealed class RuntimeCloudGateTests
     }
 
     /// <summary>Structured reply; optionally stalls before answering and ignores cancellation.</summary>
-    internal sealed class ScriptedLlm(string speech, Task? stallUntil) : ILlmClient
+    internal sealed class ScriptedLlm(string speech, Task? stallUntil) : ILlmClient, IReplyProtocolStream
     {
+    public string ReplyProtocol => "v2";
+    public IAsyncEnumerable<ReplyStreamEvent> StreamEventsAsync(List<Message> history, string userInput,
+        CancellationToken cancellationToken = default) =>
+        AIVTuber.Tests.Cortico.LegacyAsV2.Events(StreamAsync(history, userInput, cancellationToken), cancellationToken);
         private int _calls;
         public int Calls => Volatile.Read(ref _calls);
         public readonly TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);

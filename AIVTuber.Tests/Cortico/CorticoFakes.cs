@@ -144,3 +144,87 @@ internal sealed class ChunkedLlm : ILlmClient, IReplyProtocolStream
         Finished = true;
     }
 }
+
+/// <summary>Protocol v2 lines for scripted LLM replies.</summary>
+internal static class V2
+{
+    public static string Speak => Line(new { v = 2, type = "decision", mode = "speak" });
+    public static string Pass => Line(new { v = 2, type = "decision", mode = "pass" });
+    public static string Thought(string text) => Line(new { v = 2, type = "decision", mode = "thought", text });
+    public static string End => Line(new { v = 2, type = "end" });
+    public static string Seg(int seq, string text) => Line(new { v = 2, type = "speech", seq, text });
+    public static string Emotion(string value) => Line(new { v = 2, type = "control", kind = "emotion", value });
+    public static string Avatar(string channel, float value) =>
+        Line(new { v = 2, type = "control", kind = "avatar", targets = new Dictionary<string, float> { [channel] = value } });
+    public static ChunkedLlm Say(params string[] segments) =>
+        new("v2", [Speak, .. segments.Select((s, i) => Seg(i, s)), End]);
+    private static string Line(object o) => System.Text.Json.JsonSerializer.Serialize(o, new System.Text.Json.JsonSerializerOptions
+        { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }) + "\n";
+}
+
+/// <summary>Player stand-ins: drain the audio and fire the first-PCM callback like the real player.</summary>
+internal static class TestPlay
+{
+    public static Func<IAsyncEnumerable<byte[]>, CancellationToken, Action?, Task> Into(
+        List<byte>? sink = null, Action<byte[]>? each = null, Func<Task>? hold = null) =>
+        async (chunks, ct, first) =>
+        {
+            var started = false;
+            try
+            {
+                await foreach (var chunk in chunks.WithCancellation(ct))
+                {
+                    if (!started) { started = true; first?.Invoke(); }
+                    each?.Invoke(chunk);
+                    if (sink is not null) lock (sink) sink.AddRange(chunk);
+                }
+                if (hold is not null) await hold().WaitAsync(ct);
+            }
+            catch (OperationCanceledException) { }
+        };
+}
+
+/// <summary>TTS whose "audio" is the UTF-8 of the text, so played bytes read back as speech.</summary>
+internal sealed class TextTts : ITtsClient
+{
+    public readonly List<string> Texts = [];
+    public async IAsyncEnumerable<byte[]> StreamAsync(string text, string voiceId, string? emotion,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        lock (Texts) Texts.Add(text);
+        await Task.Yield();
+        yield return System.Text.Encoding.UTF8.GetBytes(text);
+    }
+}
+
+/// <summary>
+/// Test-only bridge for scripted LLM fakes written as whole plain-text replies: the reply is
+/// classified like a v2 turn — 【PASS】 → decision pass, a lone full-width note → thought,
+/// anything else → decision speak with that text as its one speech segment (the orchestrator's
+/// own content isolation still judges it). Keeps those tests' intent after legacy removal.
+/// </summary>
+internal static class LegacyAsV2
+{
+    public static async IAsyncEnumerable<ReplyStreamEvent> Events(IAsyncEnumerable<string> tokens,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var raw = new System.Text.StringBuilder();
+        await foreach (var token in tokens.WithCancellation(ct)) raw.Append(token);
+        var text = raw.ToString().Trim();
+        var classified = AIVTuber.Core.Bot.ReplyClassifier.Classify(text);
+        switch (classified.Kind)
+        {
+            case AIVTuber.Core.Bot.ReplyKind.Pass:
+                yield return ReplyStreamEvent.DecisionEvent(ReplyDecisionMode.Pass);
+                break;
+            case AIVTuber.Core.Bot.ReplyKind.InnerThought:
+                yield return ReplyStreamEvent.DecisionEvent(ReplyDecisionMode.Thought, classified.Thought);
+                break;
+            default:
+                yield return ReplyStreamEvent.DecisionEvent(ReplyDecisionMode.Speak);
+                yield return ReplyStreamEvent.SpeechEvent(0, text);
+                break;
+        }
+        yield return ReplyStreamEvent.EndEvent();
+    }
+}

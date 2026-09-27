@@ -157,7 +157,7 @@ public sealed class RuntimeCorticoAcceptanceTests
             h._player = new AudioPlayer();
             h.Orchestrator = new BotOrchestrator(new RuntimeCloudGateTests.CountingAsr(), h.Llm, new ThrowingTts(), h._player,
                 new TtsConfig(), null, null,
-                (_, _) => throw new InvalidOperationException("the app player must not play in Cortico mode"),
+                (_, _, _) => throw new InvalidOperationException("the app player must not play in Cortico mode"),
                 () => { }, triggerHotkeyAsync: null) { Cortico = h.Cortico };
             h.Orchestrator.OnSentenceReady += (_, t) => { lock (h.Captions) h.Captions.Add(t); };
             h.Orchestrator.OnError += (_, e) => { lock (h.Errors) h.Errors.Add(e); };
