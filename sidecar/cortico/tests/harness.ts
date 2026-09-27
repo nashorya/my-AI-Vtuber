@@ -75,6 +75,8 @@ export class Host {
  readonly temp = mkdtempSync(join(tmpdir(), 'cortico-host-'));
  readonly ttsTexts: string[] = [];
  readonly statuses: any[] = [];
+ /** Every status line, heartbeats included (statuses keeps only model/profile reports). */
+ readonly allStatuses: any[] = [];
  starts = 0;
  holdTts = false;
  onTts?: (text: string) => void;
@@ -96,6 +98,7 @@ export class Host {
    const m = JSON.parse(line);
    if (m.kind === 'result') { this.pending.get(m.id)?.(m); this.pending.delete(m.id); }
    if (m.kind === 'ready') this.ready.get(m.requestId)?.();
+   if (m.kind === 'status') this.allStatuses.push(m);
    if (m.kind === 'status' && m.profile) this.statuses.push(m);
    if (m.kind === 'synth') {
     this.ttsTexts.push(m.text); this.texts.set(m.pieceId, m.text); this.onTts?.(m.text);

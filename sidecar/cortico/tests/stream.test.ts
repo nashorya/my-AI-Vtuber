@@ -182,3 +182,25 @@ test('a stop fenced to an earlier turn never cuts the next one', { timeout: 3000
   assert.deepEqual(host.played, ['这一轮不受影响。']);
  }, (live2d) => writeModel(live2d, 'Fake', PACK_PARAMS));
 });
+
+test('each fired beat sends cue; status carries maxHoldMs', { timeout: 30000 }, async () => {
+ await withHost(async (_vts, host) => {
+  const perf = await host.begin();
+  await perf.feed('【点头】你好。【摇头】再见。');
+  await perf.end(); await perf.result;
+  assert.ok(host.controls.filter(c => c.kind === 'cue' && c.requestId === perf.id).length >= 2);
+  await until(() => host.allStatuses.some(s => typeof s.maxHoldMs === 'number' && s.maxHoldMs > 0));
+ });
+});
+
+test('a model switch mid-piece sends aborted and no stop for the playing piece', { timeout: 30000 }, async () => {
+ await withHost(async (vts, host) => {
+  host.playMs = 1500;
+  const perf = await host.begin();
+  await perf.feed('这一句会被切皮套打断。');
+  await until(() => host.played.length === 1);
+  vts.loadModel({ name: 'Other', inputs: PACK_PARAMS });
+  await until(() => host.controls.some(c => c.kind === 'aborted' && c.requestId === perf.id));
+  assert.ok(!host.controls.some(c => c.kind === 'stop' && c.requestId === perf.id));
+ });
+});

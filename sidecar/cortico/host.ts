@@ -10,6 +10,7 @@ import { VtsClient } from './upstream/vts-client.ts';
 import { loadPack, EXAMPLE_PACK_DIR, vocabTableRows } from './upstream/pack.ts';
 import { loadProfiles, resolveProfile, DEFAULT_PROFILE } from './upstream/models/index.ts';
 import { adapt } from './adapt.ts';
+import { maxHoldMs } from './timing.ts';
 import { AppAudioBridge } from './app-audio.ts';
 
 const send = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
@@ -152,7 +153,7 @@ async function initialize(config: any) {
    // start every model from its own resting expressions (keeping only its outfit files).
    try { await client.clearActiveExpressions({ keepFiles: [...profile.keepExpressions] }); }
    catch (e) { log.warn('clearing leftover expressions failed', { error: String(e) }); }
-   send({ kind: 'status', connected: true, model: modelName, profile: profile.id, mode: adaptation.mode,
+   send({ kind: 'status', connected: true, maxHoldMs: maxHoldMs(pack), model: modelName, profile: profile.id, mode: adaptation.mode,
     modelFile: adaptation.modelFile, driven: adaptation.driven, skipped: adaptation.skipped,
     warnings: [...registry.errors.map(x => x.message), ...(selected.source?.warnings || []), ...adaptation.warnings] });
   } catch (e) {
@@ -168,13 +169,16 @@ async function initialize(config: any) {
  },
   onError: error => log.warn(error.message) });
  client.onModelLoaded(() => {
-  // A different rig: old rounds, held states and mappings must not reach it.
+  // A different rig: old rounds, held states and mappings must not reach it. The app keeps the
+  // piece it is already playing and finishes the turn voice-only, so no stop for that piece.
+  if (active) { send({ kind: 'aborted', requestId: active.id, reason: 'model-changed' }); bridge.suppressStop = true; }
   syncing = true; backend?.beginParameterSync();
   void interrupt().then(sync).catch(e => log.error(String(e)));
  });
  mixer = new StoppableMixer({ pack: () => pack, idleBlinks: () => profile.idleBlinks });
  performer = new Performer({ pack: () => pack, mixer, backend, log,
   audio: bridge.audio, tts: bridge.tts,
+  onCue: () => { if (active) send({ kind: 'cue', requestId: active.id }); },
   // App TTS streams; upstream forced alignment (a VoxCPM server feature) is not available.
   streamEnabled: () => true, alignEnabled: () => false,
   trace: (area, message, opts) => { log.debug(message, { area, ...opts });
@@ -184,7 +188,7 @@ async function initialize(config: any) {
  backend.beginParameterSync();
  await client.connect(); await sync();
  performer.start(); initialized = true;
- statusTimer = setInterval(() => send({ kind: 'status', connected: client.connected }), 1000);
+ statusTimer = setInterval(() => send({ kind: 'status', connected: client.connected, maxHoldMs: maxHoldMs(pack) }), 1000);
  statusTimer.unref();
  // Grammar and vocabulary only. The reply envelope (legacy script or v2 events), PASS and
  // thought rules are composed by the app so the prompt always matches the parser in use.
