@@ -88,10 +88,15 @@ internal sealed class CorticoPacer : ISpeechPacer, ICorticoAudioHandler
         }
         var script = _pendingActions + item.Text;
         _pendingActions.Clear();
-        lock (_sync) _segments.Add(clean);
+        lock (_sync)
+        {
+            // Fallback may have won while BeginAsync or script preparation was in progress.
+            if (_fallback is not null) { _fallback.Enqueue(new SpeechItem(clean)); return; }
+            _segments.Add(clean);
+        }
         try
         {
-            await _stage.FeedAsync(script, ct).ConfigureAwait(false);
+            await UntilFallbackAsync(_stage.FeedAsync(script, ct), ct).ConfigureAwait(false);
             _fedSpeech = true;
         }
         catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -100,11 +105,21 @@ internal sealed class CorticoPacer : ISpeechPacer, ICorticoAudioHandler
         }
     }
 
+    private async Task UntilFallbackAsync(Task operation, CancellationToken ct)
+    {
+        // A host that stopped reading stdin can leave FeedAsync blocked behind PCM writes.
+        // Observe a late failure, but let the local reply continue once ownership has moved.
+        _ = operation.ContinueWith(t => { _ = t.Exception; }, CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        if (await Task.WhenAny(operation, _fellBack.Task).WaitAsync(ct).ConfigureAwait(false) == operation)
+            await operation.ConfigureAwait(false);
+    }
+
     public async Task CompleteAsync(CancellationToken ct)
     {
         if (_stage is not null && _pendingActions.Length > 0 && _fedSpeech && FallbackOrNull() is null && _ports.CanSpeak())
         {
-            try { await _stage.FeedAsync(_pendingActions.ToString(), ct).ConfigureAwait(false); }
+            try { await UntilFallbackAsync(_stage.FeedAsync(_pendingActions.ToString(), ct), ct).ConfigureAwait(false); }
             catch (Exception) when (!ct.IsCancellationRequested) { /* trailing actions only */ }
         }
         if (_stage is not null)
@@ -159,21 +174,23 @@ internal sealed class CorticoPacer : ISpeechPacer, ICorticoAudioHandler
 
     void ICorticoAudioHandler.Play(long pieceId)
     {
-        Piece? piece;
+        // The gate can call external code. Revalidate ownership after it returns, then reserve
+        // playback and its completion task under the same lock as the fallback handoff.
+        var canSpeak = _ports.CanSpeak();
         lock (_sync)
         {
-            if (_fallback is not null || _denied.Task.IsCompleted || !_pieces.TryGetValue(pieceId, out piece) || piece.Played) return;
+            if (_fallback is not null || _denied.Task.IsCompleted || !_pieces.TryGetValue(pieceId, out var piece) || piece.Played) return;
+            if (!canSpeak)
+            {
+                piece.Audio?.Cancel();
+                _pieces.Remove(pieceId);
+                _ = _stage!.StoppedAsync(pieceId);
+                _denied.TrySetResult();
+                return;
+            }
             piece.Played = true;
+            StartPlayback(piece);
         }
-        if (!_ports.CanSpeak())
-        {
-            piece.Audio?.Cancel();
-            lock (_sync) _pieces.Remove(pieceId);
-            _ = _stage!.StoppedAsync(pieceId);
-            _denied.TrySetResult();
-            return;
-        }
-        StartPlayback(piece);
     }
 
     void ICorticoAudioHandler.Stop(long pieceId)
@@ -280,12 +297,19 @@ internal sealed class CorticoPacer : ISpeechPacer, ICorticoAudioHandler
             foreach (var p in replay) _pieces.Remove(p.Id);
             remaining = RemainingText();
             // The piece that is audible now finishes first: the player stops whatever plays when it starts.
-            fallback = _fallback = new ImmediatePacer(_ports, _turn, after: _playing?.Playback);
+            _playing?.Audio?.StopForwarding();
+            fallback = new ImmediatePacer(_ports, _turn, after: _playing?.Playback);
+            foreach (var p in replay)
+            {
+                p.Audio?.StopForwarding();
+                fallback.Enqueue(new SpeechItem(CorticoScript.Normalize(p.Text), Audio: p.Audio));
+            }
+            if (LlmClient.IsSpeakableText(remaining)) fallback.Enqueue(new SpeechItem(remaining));
+            // Publish only after the older items are queued. Submit/Complete must never overtake them.
+            _fallback = fallback;
+            _fellBack.TrySetResult();
         }
         _ports.Warn($"[Cortico] 皮套异常，本轮仅语音：{reason}");
-        foreach (var p in replay) fallback.Enqueue(new SpeechItem(CorticoScript.Normalize(p.Text), Audio: p.Audio));
-        if (LlmClient.IsSpeakableText(remaining)) fallback.Enqueue(new SpeechItem(remaining));
-        _fellBack.TrySetResult();
         _ = Task.Run(async () =>
         {
             try { await _cortico.InterruptAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); }

@@ -16,6 +16,7 @@ internal sealed class FakeCortico : ICorticoPerformance
     public bool IsAlive { get; set; } = true;
     /// <summary>When set, pieces are synthesized but never asked to play.</summary>
     public bool HoldPlay;
+    public Task? FeedAcknowledgement;
     public readonly List<string> Feeds = [], Log = [];
     public int Begins, Interrupts;
     public Stage? Current;
@@ -74,7 +75,7 @@ internal sealed class FakeCortico : ICorticoPerformance
                 await entry.Item2.Task.WaitAsync(_cut.Token);
             });
             lock (_runs) _runs.Add(run);
-            return Task.CompletedTask;
+            return owner.FeedAcknowledgement ?? Task.CompletedTask;
         }
 
         public async Task CompleteAsync(CancellationToken ct)
