@@ -216,4 +216,17 @@ public sealed class RealtimeConfigTests
             dir = dir.Parent;
         return dir?.FullName ?? AppContext.BaseDirectory;
     }
+
+    [Theory]
+    [InlineData("legacy")]
+    [InlineData("")]
+    [InlineData("V2")]
+    public void ReplyProtocol_IsAlwaysV2_AndRemembersALegacyRequest(string configured)
+    {
+        var config = System.Text.Json.JsonSerializer.Deserialize<AppConfig>(
+            $"{{\"llm\":{{\"reply_protocol\":\"{configured}\"}}}}", ConfigManager.JsonOptions)!;
+        Assert.Equal("v2", config.Llm.ReplyProtocol);
+        Assert.Equal(configured.Equals("v2", StringComparison.OrdinalIgnoreCase) ? null : configured,
+            config.Llm.RequestedReplyProtocol);
+    }
 }

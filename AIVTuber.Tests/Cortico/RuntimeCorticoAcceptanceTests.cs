@@ -118,6 +118,8 @@ public sealed class RuntimeCorticoAcceptanceTests
         public readonly List<string> Errors = [];
         public readonly List<string> Diagnostics = [];
         public int Starts, Stops;
+        /// <summary>Byte counts of every chunk the app player received, in order.</summary>
+        public readonly List<int> Audio = [];
         public BotRuntime Runtime = null!;
         public BotOrchestrator Orchestrator = null!;
         public CorticoProcess Cortico = null!;
@@ -154,11 +156,10 @@ public sealed class RuntimeCorticoAcceptanceTests
             var systemPrompt = (string)typeof(BotRuntime).GetMethod("BuildLlmSystemPrompt", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .Invoke(h.Runtime, null)!;
             h.Llm = new LlmClient(systemPrompt, null, h.Http, "v2", scriptMarkup: true);
-            h._player = new AudioPlayer();
-            h.Orchestrator = new BotOrchestrator(new RuntimeCloudGateTests.CountingAsr(), h.Llm, new ThrowingTts(), h._player,
-                new TtsConfig(), null, null,
-                (_, _, _) => throw new InvalidOperationException("the app player must not play in Cortico mode"),
-                () => { }, triggerHotkeyAsync: null) { Cortico = h.Cortico };
+            h._player = new AudioPlayer(sampleRate: 16000);
+            h.Orchestrator = new BotOrchestrator(new RuntimeCloudGateTests.CountingAsr(), h.Llm, h.Tts, h._player,
+                new TtsConfig { SampleRate = 16000 }, null, null, h.PlayInRealTime, () => { }, triggerHotkeyAsync: null)
+                { Cortico = h.Cortico };
             h.Orchestrator.OnSentenceReady += (_, t) => { lock (h.Captions) h.Captions.Add(t); };
             h.Orchestrator.OnError += (_, e) => { lock (h.Errors) h.Errors.Add(e); };
             h.Orchestrator.OnAiStartSpeaking += (_, _) => Interlocked.Increment(ref h.Starts);
@@ -169,6 +170,24 @@ public sealed class RuntimeCorticoAcceptanceTests
             h.Runtime.WireOrchestrator(h.Orchestrator);
             return h;
         }
+
+        /// <summary>The app player stand-in: takes as long as the PCM16 16 kHz audio lasts.</summary>
+        private async Task PlayInRealTime(IAsyncEnumerable<byte[]> chunks, CancellationToken ct, Action? first)
+        {
+            var started = false;
+            try
+            {
+                await foreach (var chunk in chunks.WithCancellation(ct))
+                {
+                    if (!started) { started = true; first?.Invoke(); }
+                    lock (Audio) Audio.Add(chunk.Length);
+                    await Task.Delay(chunk.Length / 32, ct);
+                }
+            }
+            catch (OperationCanceledException) { }
+        }
+
+        public int AudioChunks { get { lock (Audio) return Audio.Count; } }
 
         public void Say(string text) => Runtime.AcceptTalkLine(new TalkLine(TalkIdentity.Self, "小明", text, null));
 
@@ -186,12 +205,6 @@ public sealed class RuntimeCorticoAcceptanceTests
             _player.Dispose();
             try { Directory.Delete(_temp, true); } catch (IOException) { }
         }
-    }
-
-    private sealed class ThrowingTts : ITtsClient
-    {
-        public IAsyncEnumerable<byte[]> StreamAsync(string text, string voiceId, string? emotion, CancellationToken ct = default) =>
-            throw new InvalidOperationException("the orchestrator must not synthesize in Cortico mode");
     }
 
     private static void Set(BotRuntime runtime, string name, object value) =>
@@ -247,7 +260,7 @@ public sealed class RuntimeCorticoAcceptanceTests
     private static double Max(JsonNode stats, string id) => stats["range"]?[id]?[1]?.GetValue<double>() ?? 0;
     private static double Min(JsonNode stats, string id) => stats["range"]?[id]?[0]?.GetValue<double>() ?? 0;
 
-    [SkippableFact(Skip = "rewired in Task 8")]
+    [SkippableFact]
     public async Task V2Reply_FromTheRuntimeEntry_IsPerformedByCortico_OnceWithMatchingMouthAndAction()
     {
         var sidecar = Sidecar();
@@ -273,6 +286,7 @@ public sealed class RuntimeCorticoAcceptanceTests
         Assert.Equal(["你好呀，我是可缇。", "很高兴见到你。"], h.Tts.Texts);
         Assert.Equal(["你好呀，我是可缇。", "很高兴见到你。"], h.Captions);
         Assert.Equal(1, h.Starts);
+        Assert.True(h.AudioChunks >= 2, "the voice comes from the app player");
         Assert.Empty(h.Errors);
 
         // Mouth and action reached the loaded rig through its own mapping (inverted, half-strength nod).
@@ -282,7 +296,7 @@ public sealed class RuntimeCorticoAcceptanceTests
         Assert.True(Max(stats, "FaceAngleY") > 8 && Min(stats, "FaceAngleY") > -5, stats.ToJsonString());
     }
 
-    [SkippableFact(Skip = "rewired in Task 8")]
+    [SkippableFact]
     public async Task StopDuringThePerformance_StopsVoiceAndAction_AndTheNextTurnWorks()
     {
         var sidecar = Sidecar();
@@ -304,6 +318,7 @@ public sealed class RuntimeCorticoAcceptanceTests
         await h.DrainAsync();
 
         await Task.Delay(300); // a gesture under way fades out (200 ms) instead of snapping
+        var audioAfterStop = h.AudioChunks;
         var afterStop = (int)(await h.Vts.StatsAsync())["total"]!;
         await Task.Delay(800);
         var quiet = await h.Vts.StatsAsync(afterStop);
@@ -313,6 +328,7 @@ public sealed class RuntimeCorticoAcceptanceTests
             "head shake continued after stop: " + quiet.ToJsonString());
         Assert.True(Peak(quiet, "MouthOpen") < 0.05, "mouth moved after stop: " + quiet.ToJsonString());
         Assert.DoesNotContain("这句不该被听到。", h.Captions);
+        Assert.Equal(audioAfterStop, h.AudioChunks); // no voice after stop
         Assert.True(h.Starts <= 1);
         Assert.Empty(h.Errors);
 
@@ -323,30 +339,31 @@ public sealed class RuntimeCorticoAcceptanceTests
         await Until(() => h.Captions.Contains("好，换个话题。"));
     }
 
-    [SkippableFact(Skip = "rewired in Task 8")]
+    [SkippableFact]
     public async Task SwitchingToARigWithoutProfileOrBodyAxes_CutsTheOldTurn_AndOnlyItsWiredInputsAreDriven()
     {
         var sidecar = Sidecar();
         Skip.If(sidecar is null, "Run npm ci in sidecar/cortico first (Node.js 22+)");
         await using var h = await Harness.CreateAsync(sidecar!);
 
-        // A turn in flight on RigFull when the streamer loads another rig in VTS.
-        h.Tts.HoldText = "说到一半。";
-        h.Http.Replies.Enqueue(Speak + Seg(0, "【用力点头】说到一半。") + End);
+        // A piece is audible on RigFull when the streamer loads another rig in VTS: that piece is
+        // finished by the app (voice-only), the rest of the reply is spoken without the rig.
+        h.Http.Replies.Enqueue(Speak + Seg(0, "【用力点头】说到一半。") + Seg(1, "后面这句只有声音。") + End);
         h.Say("可缇，你在吗");
-        await h.Tts.Held.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        await Until(() => h.AudioChunks > 0);
         await h.Vts.LoadAsync("RigLite", PackParams); // VTS lists every default input; the model file wires four
         await Until(() => { lock (h.Diagnostics) return h.Diagnostics.Any(d => d.Contains("\"model\":\"RigLite\"")); });
+        await Until(() => h.Captions.Contains("后面这句只有声音。"));
         await h.DrainAsync();
-        Assert.Empty(h.Errors); // a turn cut by a model switch is not a failure
-        Assert.DoesNotContain("说到一半。", h.Captions);
+        Assert.Contains("说到一半。", h.Captions); // the audible piece was not cut
+        Assert.Contains(h.Errors, e => e.Contains("皮套切换"));
+        lock (h.Errors) h.Errors.Clear();
 
         string status;
         lock (h.Diagnostics) status = h.Diagnostics.Last(d => d.Contains("\"model\":\"RigLite\""));
         Assert.Contains("\"mode\":\"conservative\"", status);
         var before = (int)(await h.Vts.StatsAsync())["total"]!;
 
-        h.Tts.HoldText = null;
         h.Http.Replies.Enqueue(Speak + Seg(0, "【用力点头,拼命摇头】换好了。") + End);
         h.Say("可缇，换好了吗");
         await Until(() => h.Captions.Contains("换好了。"));

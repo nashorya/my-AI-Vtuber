@@ -523,6 +523,8 @@ public sealed class BotRuntime : IAsyncDisposable
 
     internal BotRuntime(AppConfig config, string baseDir, Func<RuntimeChange, Task>? applyChangesOverride)
     {
+        if (config.Llm.RequestedReplyProtocol is { } requested)
+            AIVTuber.Core.Diagnostics.DebugLog.Write($"[配置] reply_protocol=\"{requested}\" 已不再支持，按 v2 运行");
         _config = ConfigManager.Clone(config);
         _activeConfig = ConfigManager.Clone(_config);
         _lastKnownGoodConfig = ConfigManager.Clone(_config);
@@ -1074,7 +1076,7 @@ public sealed class BotRuntime : IAsyncDisposable
             : "\n" + _config.Identity.ExtraNotes.Trim();
         if (_cortico is not null)
             return _config.Llm.SystemPrompt + "\n\n" + protocol + extra + "\n\n" +
-                   CorticoPrompt.For(_config.Llm.ReplyProtocol, _cortico.ScriptGrammar);
+                   CorticoPrompt.For(_cortico.ScriptGrammar);
         return string.IsNullOrWhiteSpace(basePrompt) ? protocol + extra : basePrompt + "\n\n" + protocol + extra;
     }
 
@@ -1243,7 +1245,7 @@ public sealed class BotRuntime : IAsyncDisposable
             history.RemoveAll(_queuedInputs.Contains);
             foreach (var line in lines)
                 if (line.HistoryMessage is { } message) _queuedInputs.Remove(message);
-            history.Add(new Message { Role = MessageRole.System, Content = IdentityPrompt.InvitationPolicyFor(_config.Llm.ReplyProtocol, cortico: _orchestrator?.Cortico is not null) });
+            history.Add(new Message { Role = MessageRole.System, Content = IdentityPrompt.InvitationPolicyFor(cortico: _orchestrator?.Cortico is not null) });
             // VIS-02: synchronous read of the in-memory observation snapshot. Never awaits the
             // VLM; when no (valid) snapshot exists the turn proceeds exactly as before.
             if (_vision is { Enabled: true })
