@@ -18,6 +18,10 @@ public static class AdminCli
           disable | enable  --username U                         （disable 同时注销会话）
           extend            --username U (--days N | --valid-until ISO)
           set-min-revision  --username U --revision N            （拒绝更旧的凭据修订包）
+          set-default-daily --minutes N                          （所有账号的默认每日时长）
+          set-daily         --username U (--minutes N | --default)
+          add-today         --username U --minutes N             （今天临时加时，明早 6 点作废）
+          usage             --username U [--days 7]
           list
         """;
 
@@ -80,11 +84,54 @@ public static class AdminCli
                     stdout.WriteLine($"{username} min_credential_revision={revision}");
                     return 0;
                 }
+                case "set-default-daily":
+                {
+                    var minutes = ParseMinutes(opts);
+                    service.SetDefaultDailyQuota(minutes * 60);
+                    stdout.WriteLine($"default daily quota = {minutes} min");
+                    return 0;
+                }
+                case "set-daily":
+                {
+                    var username = Required(opts, "username");
+                    if (opts.ContainsKey("default"))
+                    {
+                        service.SetDailyQuota(username, null);
+                        stdout.WriteLine($"{username} daily quota = default");
+                    }
+                    else
+                    {
+                        var minutes = ParseMinutes(opts);
+                        service.SetDailyQuota(username, minutes * 60);
+                        stdout.WriteLine($"{username} daily quota = {minutes} min");
+                    }
+                    return 0;
+                }
+                case "add-today":
+                {
+                    var username = Required(opts, "username");
+                    var minutes = ParseMinutes(opts);
+                    service.AddTodayBonus(username, minutes * 60);
+                    stdout.WriteLine($"{username} +{minutes} min for today");
+                    return 0;
+                }
+                case "usage":
+                {
+                    var username = Required(opts, "username");
+                    var days = int.Parse(opts.GetValueOrDefault("days") ?? "7", CultureInfo.InvariantCulture);
+                    foreach (var (day, used) in service.Usage(username, days))
+                        stdout.WriteLine($"{day}\t{used / 60.0:F1} min");
+                    return 0;
+                }
                 case "list":
                     foreach (var a in store.ListAccounts())
+                    {
+                        var (quota, remaining, _) = service.QuotaFor(a, now);
                         stdout.WriteLine(
                             $"{a.Id}\t{a.Username}\tprofile={a.ProfileId}\tenabled={a.Enabled}\t" +
-                            $"valid_until={a.ValidUntil:O}\tmin_rev={a.MinCredentialRevision}\t{a.Note}");
+                            $"valid_until={a.ValidUntil:O}\tmin_rev={a.MinCredentialRevision}\t" +
+                            $"today_used_min={(quota - remaining) / 60.0:F1}\ttoday_quota_min={quota / 60.0:F1}\t{a.Note}");
+                    }
                     return 0;
                 default:
                     stderr.WriteLine(Usage);
@@ -108,7 +155,7 @@ public static class AdminCli
             if (arg.StartsWith("--", StringComparison.Ordinal))
             {
                 var name = arg[2..];
-                if (name == "password-stdin") { opts[name] = "true"; continue; }
+                if (name is "password-stdin" or "default") { opts[name] = "true"; continue; }
                 if (i + 1 >= args.Length) throw new ArgumentException($"缺少 {arg} 的值。");
                 opts[name] = args[++i];
             }
@@ -116,6 +163,13 @@ public static class AdminCli
             else throw new ArgumentException($"多余的参数: {arg}");
         }
         return (command, opts);
+    }
+
+    private static int ParseMinutes(Dictionary<string, string> opts)
+    {
+        var minutes = int.Parse(Required(opts, "minutes"), CultureInfo.InvariantCulture);
+        if (minutes <= 0) throw new ArgumentException("--minutes 必须大于 0。");
+        return minutes;
     }
 
     private static string Required(Dictionary<string, string> opts, string name) =>
