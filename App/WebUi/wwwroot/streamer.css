@@ -65,6 +65,9 @@ main { flex: 1; min-height: 0; overflow: auto; padding: 16px; }
 .hero-status { display: grid; grid-template-columns: auto 1fr; column-gap: 14px; align-items: center; }
 .hero h1 { margin: 0; font-size: 26px; }
 .hero .sub { grid-column: 2; margin: 2px 0 0; color: var(--mute); font-size: 13px; }
+.quota { grid-column: 2; justify-self: start; margin-top: 6px; font-size: 12px; padding: 3px 10px; border-radius: 999px; background: rgba(122, 108, 240, .14); color: #5b3fc4; border: 1px solid rgba(122, 108, 240, .3); }
+.quota.low { background: rgba(255, 240, 214, .9); color: var(--warn); border-color: #f0d3a0; }
+.quota.out { background: rgba(253, 227, 232, .9); color: var(--bad); border-color: #f4b3c0; }
 .hero-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .dot { width: 16px; height: 16px; border-radius: 50%; background: #b5abc9; }
 .dot.on { background: #1fb58a; box-shadow: 0 0 0 6px rgba(31, 181, 138, .18); }

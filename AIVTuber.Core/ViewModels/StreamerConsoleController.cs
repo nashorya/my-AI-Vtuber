@@ -39,6 +39,7 @@ public sealed class StreamerConsoleController : IDisposable
     private readonly List<UserFacingError> _extraIssues = [];
     private readonly object _issuesSync = new();
     private string _dismissedError = "";
+    private bool _quotaLowDismissed;
     private UserFacingError? _voiceListError;
 
     public StreamerConsoleController(
@@ -64,6 +65,7 @@ public sealed class StreamerConsoleController : IDisposable
 
         _runtime.AsrHealthChanged += OnRuntimeChanged;
         _runtime.CompanionPausedChanged += OnRuntimeChangedPlain;
+        if (_runtime.Quota is { } quota) quota.QuotaChanged += OnQuotaChanged;
         _runtime.CloudAccessRevoked += OnRevoked;
         if (_account is not null) _account.PropertyChanged += OnAccountChanged;
         _preview.StatusChanged += OnPreviewStatus;
@@ -120,6 +122,7 @@ public sealed class StreamerConsoleController : IDisposable
                 break;
             case "dismissIssue":
                 _dismissedError = _monitor.LastError;
+                _quotaLowDismissed = true;
                 lock (_issuesSync) _extraIssues.Clear();
                 _voiceListError = null;
                 PushState();
@@ -248,6 +251,20 @@ public sealed class StreamerConsoleController : IDisposable
                 .ToList(),
             issues = BuildIssues(signedIn),
             account = BuildAccount(),
+            quota = BuildQuota(),
+        };
+    }
+
+    private object BuildQuota()
+    {
+        if (_runtime.Quota is not { QuotaManaged: true } quota) return new { managed = false };
+        return new
+        {
+            managed = true,
+            totalSeconds = quota.QuotaSeconds,
+            remainingSeconds = quota.QuotaRemainingSeconds,
+            exhausted = _runtime.QuotaExhausted,
+            resetsAt = quota.QuotaResetsAt?.ToString("O") ?? "",
         };
     }
 
@@ -280,6 +297,18 @@ public sealed class StreamerConsoleController : IDisposable
             issues.Add(Shape(UserErrorMapper.FromPipelineMessage(raw)));
         if (_voiceListError is not null) issues.Add(Shape(_voiceListError));
         lock (_issuesSync) issues.AddRange(_extraIssues.Select(Shape));
+        if (signedIn && _runtime.Quota is { QuotaManaged: true } q)
+        {
+            var left = q.QuotaRemainingSeconds;
+            if (left > 600) _quotaLowDismissed = false;
+            else if (left > 0 && !_quotaLowDismissed)
+                issues.Add(new
+                {
+                    area = ErrorArea.Account, code = "quota_low",
+                    message = $"今天的陪播时长只剩约 {Math.Max(1, (left + 59) / 60)} 分钟了，用完后会自动暂停，明早 6:00 恢复。",
+                    action = "知道了", diagnosticId = "",
+                });
+        }
         return issues;
     }
 
@@ -324,6 +353,8 @@ public sealed class StreamerConsoleController : IDisposable
     private void OnRuntimeChanged(object? sender, AsrHealth _) => StateInvalidated?.Invoke(this, EventArgs.Empty);
     private void OnRuntimeChangedPlain(object? sender, EventArgs _) => StateInvalidated?.Invoke(this, EventArgs.Empty);
 
+    private void OnQuotaChanged() => StateInvalidated?.Invoke(this, EventArgs.Empty);
+
     private void OnRevoked(object? sender, string _)
     {
         _preview.Stop();
@@ -362,6 +393,7 @@ public sealed class StreamerConsoleController : IDisposable
     {
         _runtime.AsrHealthChanged -= OnRuntimeChanged;
         _runtime.CompanionPausedChanged -= OnRuntimeChangedPlain;
+        if (_runtime.Quota is { } quota) quota.QuotaChanged -= OnQuotaChanged;
         _runtime.CloudAccessRevoked -= OnRevoked;
         if (_account is not null) _account.PropertyChanged -= OnAccountChanged;
         _preview.StatusChanged -= OnPreviewStatus;

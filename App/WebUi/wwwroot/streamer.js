@@ -53,6 +53,27 @@
     notConnected: "未连接",
   };
 
+  let quotaTimer = null;
+  function renderQuota(q, c) {
+    const tag = $("quotaTag");
+    clearInterval(quotaTimer);
+    if (!q || !q.managed || !c.signedIn) { tag.hidden = true; return; }
+    let remaining = q.remainingSeconds;
+    const paint = () => {
+      const out = q.exhausted || remaining <= 0;
+      const minutes = Math.ceil(remaining / 60);
+      tag.hidden = false;
+      tag.className = "quota" + (out ? " out" : remaining <= 600 ? " low" : "");
+      tag.textContent = out ? "今日时长已用完 · 明早 6:00 恢复"
+        : remaining < 60 ? "今日剩余不到 1 分钟"
+        : remaining <= 600 ? `今日剩余 ${minutes} 分钟，快用完了`
+        : `今日剩余 ${minutes} 分钟`;
+    };
+    paint();
+    // Between pushes the page counts down on its own while the companion runs; every push re-syncs it.
+    if (c.running && !q.exhausted) quotaTimer = setInterval(() => { remaining = Math.max(0, remaining - 1); paint(); }, 1000);
+  }
+
   function renderState(s) {
     state = s;
     const c = s.companion || {};
@@ -67,6 +88,14 @@
     btn.classList.toggle("primary", !!c.paused);
     $("btnStop").disabled = !c.canStop;
     $("btnSignIn").hidden = !!c.signedIn;
+    const q = s.quota || {};
+    renderQuota(q, c);
+    if (q.managed && q.exhausted) {
+      btn.disabled = true;
+      text($("activitySub"), "今天的陪播时长用完了，明早 6:00 恢复。");
+    } else {
+      btn.disabled = false;
+    }
 
     const l = s.listening || {};
     text($("micName"), l.micName || "");
@@ -89,7 +118,7 @@
       });
 
     text($("homeVoice"), (s.voice && s.voice.name) || "—");
-    renderAccount(s.account || {});
+    renderAccount(s.account || {}, s.quota || {});
     renderIssues(s.issues || []);
     renderConversation(s.conversation || []);
   }
@@ -148,10 +177,13 @@
     });
   }
 
-  function renderAccount(a) {
+  function renderAccount(a, aq) {
     text($("homeAccount"), a.managed ? (a.signedIn ? `${a.username} · ${a.validUntil || "已登录"}` : "未登录") : "公开版");
     text($("accName"), a.username || "—");
     text($("accValid"), a.validUntil || "—");
+    text($("accQuota"), aq.managed
+      ? `${Math.floor((aq.totalSeconds - aq.remainingSeconds) / 60)} 分钟 / 共 ${Math.round(aq.totalSeconds / 60)} 分钟`
+      : "—");
     const msg = $("accMessage");
     msg.hidden = !a.message;
     text(msg, a.message);

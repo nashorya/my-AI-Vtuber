@@ -78,6 +78,65 @@ public sealed class StreamerConsoleTests : IAsyncDisposable
         await _account.LoginAsync("pw");
     }
 
+    private async Task SignInWithQuotaAsync(int remaining)
+    {
+        _api.Login = (_, _) => Task.FromResult(new AuthReply(AuthCode.Ok, "tok", "acc", ServerStart,
+            ServerStart.AddSeconds(180), ServerStart.AddDays(30), 60,
+            new QuotaReply(3600, remaining, ServerStart.AddHours(14))));
+        await _account.LoginAsync("pw");
+    }
+
+    [Fact]
+    public async Task State_CarriesTheDailyQuota()
+    {
+        await SignInWithQuotaAsync(3000);
+
+        var state = Serialize(_controller.BuildState());
+
+        Assert.Contains("\"quota\":{\"managed\":true", state);
+        Assert.Contains("\"totalSeconds\":3600", state);
+        Assert.Contains("\"remainingSeconds\":3000", state);
+        Assert.Contains("\"exhausted\":false", state);
+    }
+
+    [Fact]
+    public async Task State_WithoutAQuota_SaysNotManaged()
+    {
+        await SignInAsync();
+
+        Assert.Contains("\"quota\":{\"managed\":false}", Serialize(_controller.BuildState()));
+    }
+
+    [Fact]
+    public async Task LowQuota_RaisesADismissibleNotice_AndRefillClearsIt()
+    {
+        await SignInWithQuotaAsync(500);
+        Assert.Contains("quota_low", Serialize(_controller.BuildState()));
+
+        await _controller.HandleAsync("dismissIssue", Json("{}"));
+        Assert.DoesNotContain("quota_low", Serialize(_controller.BuildState()));
+    }
+
+    [Fact]
+    public async Task PlentyOfQuota_RaisesNoNotice()
+    {
+        await SignInWithQuotaAsync(3000);
+
+        Assert.DoesNotContain("quota_low", Serialize(_controller.BuildState()));
+    }
+
+    [Fact]
+    public void Page_HasTheQuotaTagAndTheAccountRows()
+    {
+        var html = File.ReadAllText(Path.Combine(Wwwroot(), "streamer.html"));
+        var js = File.ReadAllText(Path.Combine(Wwwroot(), "streamer.js"));
+
+        Assert.Contains("id=\"quotaTag\"", html);
+        Assert.Contains("id=\"accQuota\"", html);
+        Assert.Contains("今日时长已用完 · 明早 6:00 恢复", js);
+        Assert.Contains("今日剩余不到 1 分钟", js);
+    }
+
     // ── Page contract ──────────────────────────────────────────────────────
 
     private static string Wwwroot()
