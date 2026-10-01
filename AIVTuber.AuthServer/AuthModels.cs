@@ -50,4 +50,8 @@ public sealed class AuthServerOptions
     public int HeartbeatSeconds { get; set; } = 60;
     public int MaxFailedLogins { get; set; } = 5;
     public int FailedLoginWindowMinutes { get; set; } = 15;
+    /// <summary>Daily companion time when neither the account nor the global setting says otherwise.</summary>
+    public int DefaultDailyQuotaSeconds { get; set; } = 3600;
+    /// <summary>Slack added to the elapsed time when capping what one heartbeat may credit.</summary>
+    public int MaxCatchUpSeconds { get; set; } = 30;
 }
