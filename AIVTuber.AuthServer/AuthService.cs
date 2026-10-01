@@ -83,7 +83,7 @@ public sealed class AuthService(AuthStore store, TimeProvider clock, AuthServerO
         return Granted(account, now) with { SessionToken = token };
     }
 
-    public AuthResult Heartbeat(string token, string profileId)
+    public AuthResult Heartbeat(string token, string profileId, long activeSeconds = 0)
     {
         var now = clock.GetUtcNow();
         if (string.IsNullOrEmpty(token)) return AuthResult.Denied(AuthStatus.InvalidSession, now);
@@ -104,7 +104,20 @@ public sealed class AuthService(AuthStore store, TimeProvider clock, AuthServerO
 
         var denied = Check(account, profileId, now);
         if (denied is not null) return AuthResult.Denied(denied.Value, now);
-        store.TouchSession(tokenHash, now);
+
+        var delta = activeSeconds - session.ReportedActiveSeconds;
+        if (delta > 0)
+        {
+            // What one report may credit is bounded by real elapsed time (+ a little slack for
+            // timer jitter), so a buggy or tampered counter cannot burn or invent hours.
+            var elapsed = (long)Math.Max(0, (now - session.LastSeenAt).TotalSeconds);
+            var credited = (int)Math.Min(delta, elapsed + options.MaxCatchUpSeconds);
+            store.RecordReport(tokenHash, account.Id, QuotaCalendar.DayOf(now), activeSeconds, credited, now);
+        }
+        else
+        {
+            store.TouchSession(tokenHash, now);
+        }
         return Granted(account, now);
     }
 
@@ -126,10 +139,51 @@ public sealed class AuthService(AuthStore store, TimeProvider clock, AuthServerO
     {
         var lease = now.AddSeconds(options.LeaseSeconds);
         if (lease > account.ValidUntil) lease = account.ValidUntil;
+        var (quota, remaining, resetsAt) = QuotaFor(account, now);
         return new AuthResult(AuthStatus.Ok, AccountId: account.Id, ServerTime: now,
             LeaseValidUntil: lease, AccountValidUntil: account.ValidUntil,
-            HeartbeatSeconds: options.HeartbeatSeconds);
+            HeartbeatSeconds: options.HeartbeatSeconds,
+            QuotaSeconds: quota, QuotaRemainingSeconds: remaining, QuotaResetsAt: resetsAt);
     }
+
+    public int DefaultDailyQuotaSeconds =>
+        int.TryParse(store.GetSetting("daily_quota_seconds"), out var seconds) && seconds > 0
+            ? seconds
+            : options.DefaultDailyQuotaSeconds;
+
+    public (int Quota, int Remaining, DateTimeOffset ResetsAt) QuotaFor(AccountRow account, DateTimeOffset now)
+    {
+        var day = QuotaCalendar.DayOf(now);
+        var quota = (account.DailyQuotaSeconds ?? DefaultDailyQuotaSeconds)
+            + (account.BonusDay == day ? account.BonusSeconds : 0);
+        var used = store.GetUsedSeconds(account.Id, day);
+        return (quota, Math.Max(0, quota - used), QuotaCalendar.ResetsAfter(now));
+    }
+
+    public void SetDefaultDailyQuota(int seconds)
+    {
+        if (seconds <= 0) throw new ArgumentException("每日时长必须大于 0。");
+        store.SetSetting("daily_quota_seconds", seconds.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    public void SetDailyQuota(string username, int? seconds)
+    {
+        if (seconds is <= 0) throw new ArgumentException("每日时长必须大于 0。");
+        store.UpdateAccount(RequireAccount(username).Username, "daily_quota_seconds", seconds!);
+    }
+
+    public void AddTodayBonus(string username, int seconds)
+    {
+        if (seconds <= 0) throw new ArgumentException("加时必须大于 0。");
+        var account = RequireAccount(username);
+        var today = QuotaCalendar.DayOf(clock.GetUtcNow());
+        var total = (account.BonusDay == today ? account.BonusSeconds : 0) + seconds;
+        store.UpdateAccount(account.Username, "bonus_seconds", total);
+        store.UpdateAccount(account.Username, "bonus_day", today);
+    }
+
+    public IReadOnlyList<(string Day, int UsedSeconds)> Usage(string username, int days) =>
+        store.ListUsage(RequireAccount(username).Id, days);
 
     private bool IsRateLimited(string username, DateTimeOffset now)
     {

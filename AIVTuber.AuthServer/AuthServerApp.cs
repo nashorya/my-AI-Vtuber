@@ -41,7 +41,7 @@ public static class AuthServerApp
 
         app.MapPost("/v1/auth/heartbeat", (HeartbeatRequest request, HttpContext http, AuthService auth) =>
         {
-            var result = auth.Heartbeat(BearerToken(http), request.ProfileId);
+            var result = auth.Heartbeat(BearerToken(http), request.ProfileId, request.ActiveSeconds);
             if (result.Status != AuthStatus.Ok)
                 log.LogInformation("heartbeat denied status={Status} profile={Profile}", result.Status, request.ProfileId);
             return Respond(result);
