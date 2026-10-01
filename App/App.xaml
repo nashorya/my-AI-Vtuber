@@ -8,6 +8,7 @@
                 <ui:ThemesDictionary Theme="Dark" />
                 <ui:ControlsDictionary />
                 <ResourceDictionary Source="Resources/Tokens.xaml" />
+                <ResourceDictionary Source="Resources/StreamerSkin.xaml" />
             </ResourceDictionary.MergedDictionaries>
         </ResourceDictionary>
     </Application.Resources>

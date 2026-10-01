@@ -1,0 +1,139 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- Distribution (streamer) skin for the WPF parts: window shell, account strip and login page.
+         Mirrors App/WebUi/wwwroot/streamer.css so the native chrome and the web console read as one
+         product. Keyed only — nothing here restyles controls implicitly. -->
+    <SolidColorBrush x:Key="StreamerGroundBrush" Color="#F6F0FF" />
+    <SolidColorBrush x:Key="StreamerInkBrush" Color="#2A2440" />
+    <SolidColorBrush x:Key="StreamerMuteBrush" Color="#5A4F78" />
+
+    <Style x:Key="StreamerFocusVisual">
+        <Setter Property="Control.Template">
+            <Setter.Value>
+                <ControlTemplate>
+                    <Rectangle Margin="-3" RadiusX="24" RadiusY="24" Stroke="#F25C9E" StrokeThickness="2" />
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <!-- Tinted inset field; pink ring on focus. Shared by the account and password inputs. -->
+    <ControlTemplate x:Key="StreamerFieldTemplate" TargetType="Control">
+        <Border x:Name="Glow" CornerRadius="17" BorderThickness="3" BorderBrush="Transparent">
+            <Border x:Name="Bd" CornerRadius="14" BorderThickness="1" BorderBrush="#B3D6C4F0" Padding="12,9">
+                <Border.Background>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                        <GradientStop Color="#F7F2FF" Offset="0" />
+                        <GradientStop Color="#FDFBFF" Offset="1" />
+                    </LinearGradientBrush>
+                </Border.Background>
+                <ScrollViewer x:Name="PART_ContentHost" Focusable="False"
+                              HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Hidden" />
+            </Border>
+        </Border>
+        <ControlTemplate.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="BorderBrush" Value="#E8B6D6" />
+            </Trigger>
+            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                <Setter TargetName="Bd" Property="BorderBrush" Value="#F25C9E" />
+                <Setter TargetName="Bd" Property="Background" Value="White" />
+                <Setter TargetName="Glow" Property="BorderBrush" Value="#29F25C9E" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.55" />
+            </Trigger>
+        </ControlTemplate.Triggers>
+    </ControlTemplate>
+
+    <Style x:Key="StreamerTextBox" TargetType="TextBox">
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Foreground" Value="{StaticResource StreamerInkBrush}" />
+        <Setter Property="CaretBrush" Value="#D63E85" />
+        <Setter Property="SelectionBrush" Value="#F25C9E" />
+        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        <Setter Property="Template" Value="{StaticResource StreamerFieldTemplate}" />
+    </Style>
+    <Style x:Key="StreamerPasswordBox" TargetType="PasswordBox">
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="Foreground" Value="{StaticResource StreamerInkBrush}" />
+        <Setter Property="CaretBrush" Value="#D63E85" />
+        <Setter Property="SelectionBrush" Value="#F25C9E" />
+        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+        <Setter Property="Template" Value="{StaticResource StreamerFieldTemplate}" />
+    </Style>
+
+    <!-- Pill buttons: sakura pink primary, glass secondary. -->
+    <Style x:Key="StreamerPrimaryButton" TargetType="Button">
+        <Setter Property="Foreground" Value="White" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="FontWeight" Value="Bold" />
+        <Setter Property="MinHeight" Value="44" />
+        <Setter Property="Padding" Value="24,0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource StreamerFocusVisual}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" CornerRadius="22" BorderThickness="1" BorderBrush="#99FFFFFF"
+                            Padding="{TemplateBinding Padding}">
+                        <Border.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                <GradientStop Color="#F25C9E" Offset="0" />
+                                <GradientStop Color="#D63E85" Offset="1" />
+                            </LinearGradientBrush>
+                        </Border.Background>
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background">
+                                <Setter.Value>
+                                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                        <GradientStop Color="#F46AA7" Offset="0" />
+                                        <GradientStop Color="#CC3A7E" Offset="1" />
+                                    </LinearGradientBrush>
+                                </Setter.Value>
+                            </Setter>
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#C2357A" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.5" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style x:Key="StreamerGlassButton" TargetType="Button">
+        <Setter Property="Foreground" Value="{StaticResource StreamerInkBrush}" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="MinHeight" Value="44" />
+        <Setter Property="Padding" Value="20,0" />
+        <Setter Property="Cursor" Value="Hand" />
+        <Setter Property="FocusVisualStyle" Value="{StaticResource StreamerFocusVisual}" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border x:Name="Bd" CornerRadius="22" BorderThickness="1" BorderBrush="#D9FFFFFF"
+                            Background="#B3FFFFFF" Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#E6FFFFFF" />
+                        </Trigger>
+                        <Trigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Bd" Property="Background" Value="#FFF5F0FF" />
+                        </Trigger>
+                        <Trigger Property="IsEnabled" Value="False">
+                            <Setter Property="Opacity" Value="0.5" />
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>
