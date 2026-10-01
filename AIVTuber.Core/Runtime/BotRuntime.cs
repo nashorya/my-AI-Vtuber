@@ -187,13 +187,28 @@ public sealed class BotRuntime : IAsyncDisposable
     public ICompanionQuota? Quota => _quota;
     /// <summary>True from the moment today's time ran out until the service reports time again.
     /// While set, the streamer cannot resume the companion.</summary>
-    public bool QuotaExhausted => _quotaExhausted;
+    public bool QuotaExhausted
+    {
+        get
+        {
+            if (!_quotaExhausted) return false;
+            // The flag is only a latch. A new login (or an operator adding time) can leave the
+            // license with time left without ever raising QuotaRestored, so the live remaining
+            // time is the authority and clears the latch.
+            if (_quota is { QuotaManaged: true } quota && quota.QuotaRemainingSeconds > 0)
+            {
+                _quotaExhausted = false;
+                return false;
+            }
+            return true;
+        }
+    }
     /// <summary>How long a reply in progress may keep going after the quota ran out.</summary>
     internal TimeSpan QuotaWindDownMax { get; set; } = TimeSpan.FromSeconds(30);
 
     public void SetCompanionPaused(bool paused)
     {
-        if (!paused && _quotaExhausted) return; // today's time is gone: resuming is refused
+        if (!paused && QuotaExhausted) return; // today's time is gone: resuming is refused
         if (_companionPaused == paused) return;
         _companionPaused = paused;
         _quota?.SetCompanionActive(!paused);

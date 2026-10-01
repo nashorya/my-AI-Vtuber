@@ -121,8 +121,13 @@ public sealed class StreamerConsoleController : IDisposable
                 _post(new { type = "result", data = new { kind = "diagnostics", ok = true, message = "诊断信息已复制（已去除密钥和个人凭据）" } });
                 break;
             case "dismissIssue":
+                if (ReadString(data, "code") == "quota_low")
+                {
+                    _quotaLowDismissed = true; // only the notice the streamer clicked
+                    PushState();
+                    break;
+                }
                 _dismissedError = _monitor.LastError;
-                _quotaLowDismissed = true;
                 lock (_issuesSync) _extraIssues.Clear();
                 _voiceListError = null;
                 PushState();
@@ -304,7 +309,7 @@ public sealed class StreamerConsoleController : IDisposable
             else if (left > 0 && !_quotaLowDismissed)
                 issues.Add(new
                 {
-                    area = ErrorArea.Account, code = "quota_low",
+                    area = "quota", code = "quota_low",
                     message = $"今天的陪播时长只剩约 {Math.Max(1, (left + 59) / 60)} 分钟了，用完后会自动暂停，明早 6:00 恢复。",
                     action = "知道了", diagnosticId = "",
                 });

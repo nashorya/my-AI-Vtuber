@@ -144,7 +144,7 @@
       } else {
         const b = document.createElement("button");
         b.type = "button"; b.className = "btn sm ghost"; b.textContent = "知道了";
-        b.addEventListener("click", () => send("dismissIssue"));
+        b.addEventListener("click", () => send("dismissIssue", { code: i.code }));
         div.appendChild(b);
       }
       box.appendChild(div);

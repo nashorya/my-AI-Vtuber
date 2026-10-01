@@ -111,10 +111,22 @@ public sealed class StreamerConsoleTests : IAsyncDisposable
     public async Task LowQuota_RaisesADismissibleNotice_AndRefillClearsIt()
     {
         await SignInWithQuotaAsync(500);
-        Assert.Contains("quota_low", Serialize(_controller.BuildState()));
+        var state = Serialize(_controller.BuildState());
+        Assert.Contains("quota_low", state);
+        Assert.DoesNotContain("\"area\":\"account\",\"code\":\"quota_low\"", state); // account issues get a 登录 button
+
+        await _controller.HandleAsync("dismissIssue", Json("{\"code\":\"quota_low\"}"));
+        Assert.DoesNotContain("quota_low", Serialize(_controller.BuildState()));
+    }
+
+    [Fact]
+    public async Task DismissingAnotherIssue_DoesNotHideTheQuotaNotice()
+    {
+        await SignInWithQuotaAsync(500);
 
         await _controller.HandleAsync("dismissIssue", Json("{}"));
-        Assert.DoesNotContain("quota_low", Serialize(_controller.BuildState()));
+
+        Assert.Contains("quota_low", Serialize(_controller.BuildState()));
     }
 
     [Fact]
@@ -135,6 +147,7 @@ public sealed class StreamerConsoleTests : IAsyncDisposable
         Assert.Contains("id=\"accQuota\"", html);
         Assert.Contains("今日时长已用完 · 明早 6:00 恢复", js);
         Assert.Contains("今日剩余不到 1 分钟", js);
+        Assert.Contains("send(\"dismissIssue\", { code: i.code })", js);
     }
 
     // ── Page contract ──────────────────────────────────────────────────────

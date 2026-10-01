@@ -20,8 +20,8 @@ public sealed class RuntimeQuotaTests
         public event Action? QuotaChanged { add { } remove { } }
         public event Action? QuotaExhausted;
         public event Action? QuotaRestored;
-        public void RaiseExhausted() => QuotaExhausted?.Invoke();
-        public void RaiseRestored() => QuotaRestored?.Invoke();
+        public void RaiseExhausted() { QuotaRemainingSeconds = 0; QuotaExhausted?.Invoke(); }
+        public void RaiseRestored() { QuotaRemainingSeconds = 3600; QuotaRestored?.Invoke(); }
     }
 
     private static (BotRuntime Runtime, FakeQuotaAccess Access) NewRuntime()
@@ -115,5 +115,42 @@ public sealed class RuntimeQuotaTests
         Assert.True(runtime.QuotaExhausted);
         runtime.SetCompanionPaused(false);
         Assert.True(runtime.CompanionPaused);
+    }
+
+    [Fact]
+    public async Task AfterRelogin_WithTimeLeft_ExhaustedClearsWithoutARestoredEvent()
+    {
+        // Logout/revoke resets the license's own edge flag, so a later login with time left
+        // never raises QuotaRestored; the runtime must notice the remaining time itself.
+        var (runtime, access) = NewRuntime();
+        await using var _ = runtime;
+        access.RaiseExhausted();
+        await WaitUntil(() => runtime.CompanionPaused);
+        Assert.True(runtime.QuotaExhausted);
+
+        access.QuotaRemainingSeconds = 3600; // new login after 06:00, no event
+
+        Assert.False(runtime.QuotaExhausted);
+        runtime.SetCompanionPaused(false);
+        Assert.False(runtime.CompanionPaused);
+    }
+
+    [Fact]
+    public async Task RestoredDuringWindDown_IsNotOverwrittenWhenTheReplyEnds()
+    {
+        var (runtime, access) = NewRuntime();
+        await using var _ = runtime;
+        runtime.StateTracker.SpeakingStarted(Environment.TickCount64);
+        access.RaiseExhausted();
+        await Task.Delay(300);
+
+        access.RaiseRestored(); // operator added time while the last reply is still playing
+        runtime.StateTracker.SpeakingStopped();
+        await WaitUntil(() => runtime.CompanionPaused);
+
+        Assert.True(runtime.CompanionPaused);
+        Assert.False(runtime.QuotaExhausted);
+        runtime.SetCompanionPaused(false);
+        Assert.False(runtime.CompanionPaused);
     }
 }
