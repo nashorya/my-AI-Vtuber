@@ -23,6 +23,9 @@ public sealed record AuthLoginRequest(
     string AppVersion,
     int CredentialRevision);
 
+/// <summary>Today's companion-time allowance as reported by the account service.</summary>
+public sealed record QuotaReply(int QuotaSeconds, int RemainingSeconds, DateTimeOffset ResetsAt);
+
 /// <summary>Login/heartbeat answer. Times are server UTC; the client only uses their
 /// difference, measured on its own monotonic clock.</summary>
 public sealed record AuthReply(
@@ -32,7 +35,8 @@ public sealed record AuthReply(
     DateTimeOffset? ServerTime = null,
     DateTimeOffset? LeaseValidUntil = null,
     DateTimeOffset? AccountValidUntil = null,
-    int HeartbeatSeconds = 0);
+    int HeartbeatSeconds = 0,
+    QuotaReply? Quota = null);
 
 /// <summary>The account service could not be reached or answered unintelligibly. Distinct
 /// from an explicit denial: only this case may keep using an unexpired lease.</summary>
@@ -41,7 +45,7 @@ public sealed class AuthTransportException(string message, Exception? inner = nu
 public interface IAuthApi
 {
     Task<AuthReply> LoginAsync(AuthLoginRequest request, CancellationToken ct = default);
-    Task<AuthReply> HeartbeatAsync(string token, string profileId, CancellationToken ct = default);
+    Task<AuthReply> HeartbeatAsync(string token, string profileId, long activeSeconds, CancellationToken ct = default);
     Task LogoutAsync(string token, CancellationToken ct = default);
 }
 
@@ -57,6 +61,25 @@ public interface ICloudAccess
     long Epoch { get; }
     /// <summary>Raised once per revocation with a user-facing reason.</summary>
     event Action<string>? Revoked;
+}
+
+/// <summary>Daily companion-time quota as the runtime sees it. Reads are in-memory.</summary>
+public interface ICompanionQuota
+{
+    /// <summary>False when the service does not enforce a quota (the quota members then carry no meaning).</summary>
+    bool QuotaManaged { get; }
+    int QuotaSeconds { get; }
+    /// <summary>Server's remaining seconds minus what this client has used since the last report;
+    /// <see cref="int.MaxValue"/> when not managed.</summary>
+    int QuotaRemainingSeconds { get; }
+    DateTimeOffset? QuotaResetsAt { get; }
+    /// <summary>Tells the license whether the companion is running (not paused); only that time is billed.</summary>
+    void SetCompanionActive(bool active);
+    event Action? QuotaChanged;
+    /// <summary>Remaining time reached zero.</summary>
+    event Action? QuotaExhausted;
+    /// <summary>Remaining time became positive again after having been exhausted.</summary>
+    event Action? QuotaRestored;
 }
 
 /// <summary>Public (non-distribution) builds: the user brings their own keys, no account.</summary>

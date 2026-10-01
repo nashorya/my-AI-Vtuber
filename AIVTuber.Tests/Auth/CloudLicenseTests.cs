@@ -274,6 +274,114 @@ public sealed class CloudLicenseTests
         Assert.True(license.IsAllowed);
         Assert.Equal(3, license.Epoch);
     }
+
+    private AuthReply OkWithQuota(int quota = 3600, int remaining = 3600, DateTimeOffset? serverNow = null)
+    {
+        var now = serverNow ?? ServerStart;
+        return new AuthReply(AuthCode.Ok, "tok-1", "acc_1", now, now.AddSeconds(180), now.AddDays(1), 60,
+            new QuotaReply(quota, remaining, now.AddHours(14)));
+    }
+
+    private async Task<CloudLicense> LoginWithQuotaAsync(int remaining = 3600)
+    {
+        var license = NewLicense();
+        _api.Login = (_, _) => Task.FromResult(OkWithQuota(remaining: remaining));
+        await license.LoginAsync("alice", "pw");
+        return license;
+    }
+
+    [Fact]
+    public async Task ActiveSeconds_CountOnlyWhileTheCompanionIsActive()
+    {
+        var license = await LoginWithQuotaAsync();
+
+        _clock.Advance(TimeSpan.FromSeconds(90));
+        license.SetCompanionActive(false);
+        _clock.Advance(TimeSpan.FromSeconds(600));
+        license.SetCompanionActive(true);
+        _clock.Advance(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(100, license.ActiveSeconds);
+    }
+
+    [Fact]
+    public async Task ActiveSeconds_IgnoreSystemClockChanges()
+    {
+        var license = await LoginWithQuotaAsync();
+
+        _clock.SetWall(ServerStart.AddDays(-3));
+        _clock.AdvanceMonotonicOnly(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(30, license.ActiveSeconds);
+    }
+
+    [Fact]
+    public async Task Heartbeat_ReportsTheCumulativeActiveSeconds()
+    {
+        var license = await LoginWithQuotaAsync();
+        _api.Heartbeat = (_, _) => Task.FromResult(OkWithQuota(remaining: 3540, serverNow: ServerStart.AddSeconds(60)));
+        _clock.Advance(TimeSpan.FromSeconds(60));
+
+        await license.HeartbeatOnceAsync();
+
+        Assert.Equal(60, _api.LastHeartbeatActiveSeconds);
+    }
+
+    [Fact]
+    public async Task LocalRemaining_CountsDownOnlyWhileActive()
+    {
+        var license = await LoginWithQuotaAsync(remaining: 100);
+
+        _clock.Advance(TimeSpan.FromSeconds(30));
+        Assert.Equal(70, license.QuotaRemainingSeconds);
+
+        license.SetCompanionActive(false);
+        _clock.Advance(TimeSpan.FromSeconds(500));
+        Assert.Equal(70, license.QuotaRemainingSeconds);
+    }
+
+    [Fact]
+    public async Task Exhausted_FiresOnce_ThenRestoredWhenTheServerRefills()
+    {
+        var license = await LoginWithQuotaAsync(remaining: 50);
+        var exhausted = 0;
+        var restored = 0;
+        license.QuotaExhausted += () => exhausted++;
+        license.QuotaRestored += () => restored++;
+
+        _clock.Advance(TimeSpan.FromSeconds(50));
+        license.CheckQuota();
+        license.CheckQuota();
+        Assert.Equal(1, exhausted);
+
+        license.SetCompanionActive(false);
+        _api.Heartbeat = (_, _) => Task.FromResult(OkWithQuota(remaining: 3600, serverNow: ServerStart.AddHours(14)));
+        await license.HeartbeatOnceAsync();
+
+        Assert.Equal(1, restored);
+        Assert.Equal(3600, license.QuotaRemainingSeconds);
+    }
+
+    [Fact]
+    public async Task ExhaustedQuota_DoesNotRevokeTheLicense()
+    {
+        var license = await LoginWithQuotaAsync(remaining: 0);
+        license.CheckQuota();
+
+        Assert.True(license.IsAllowed);
+        Assert.Empty(_revocations);
+    }
+
+    [Fact]
+    public async Task ReplyWithoutQuota_MeansNoQuotaIsEnforced()
+    {
+        var license = NewLicense();
+        _api.Login = (_, _) => Task.FromResult(Ok());
+        await license.LoginAsync("alice", "pw");
+
+        Assert.False(license.QuotaManaged);
+        Assert.Equal(int.MaxValue, license.QuotaRemainingSeconds);
+    }
 }
 
 internal sealed class FakeAuthApi : IAuthApi
@@ -293,9 +401,12 @@ internal sealed class FakeAuthApi : IAuthApi
         return Login(request, ct);
     }
 
-    Task<AuthReply> IAuthApi.HeartbeatAsync(string token, string profileId, CancellationToken ct)
+    public long LastHeartbeatActiveSeconds { get; private set; }
+
+    Task<AuthReply> IAuthApi.HeartbeatAsync(string token, string profileId, long activeSeconds, CancellationToken ct)
     {
         LastHeartbeatToken = token;
+        LastHeartbeatActiveSeconds = activeSeconds;
         return Heartbeat(token, ct);
     }
 
