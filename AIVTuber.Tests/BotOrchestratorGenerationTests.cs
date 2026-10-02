@@ -17,7 +17,7 @@ public sealed class BotOrchestratorGenerationTests
         var played = new List<string>();
         using var orchestrator = new BotOrchestrator(
             new FakeAsr(), llm, tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) =>
+            async (chunks, ct, firstPcm) =>
             {
                 await foreach (var chunk in chunks.WithCancellation(ct))
                     played.Add(System.Text.Encoding.UTF8.GetString(chunk));
@@ -48,7 +48,7 @@ public sealed class BotOrchestratorGenerationTests
         using var player = new AudioPlayer();
         using var orchestrator = new BotOrchestrator(
             new FakeAsr(), llm, tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) =>
+            async (chunks, ct, firstPcm) =>
             {
                 await foreach (var _ in chunks.WithCancellation(ct)) { }
             },
@@ -67,8 +67,12 @@ public sealed class BotOrchestratorGenerationTests
     private static TaskCompletionSource NewSignal() =>
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    private sealed class ControlledLlm : ILlmClient
+    private sealed class ControlledLlm : ILlmClient, IReplyProtocolStream
     {
+    public string ReplyProtocol => "v2";
+    public IAsyncEnumerable<ReplyStreamEvent> StreamEventsAsync(List<Message> history, string userInput,
+        CancellationToken cancellationToken = default) =>
+        AIVTuber.Tests.Cortico.LegacyAsV2.Events(StreamAsync(history, userInput, cancellationToken), cancellationToken);
         public event EventHandler<string>? OnSentenceReady;
         public event EventHandler<string>? OnEmotionDetected;
         public event EventHandler<string>? OnActionDetected;

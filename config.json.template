@@ -59,7 +59,7 @@
     "models": {},
     "system_prompt": "你是一个VTuber...",
     "max_history_tokens": 4096,
-    "reply_protocol": "legacy"
+    "reply_protocol": "v2"
   },
   "tts": {
     "provider": "fish-audio",

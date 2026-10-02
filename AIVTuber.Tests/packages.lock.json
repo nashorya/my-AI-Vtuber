@@ -277,6 +277,13 @@
           "xunit.extensibility.core": "[2.9.3]"
         }
       },
+      "aivtuber.authserver": {
+        "type": "Project",
+        "dependencies": {
+          "Microsoft.Data.Sqlite": "[10.0.9, )",
+          "SQLitePCLRaw.bundle_e_sqlite3": "[3.0.3, )"
+        }
+      },
       "aivtuber.core": {
         "type": "Project",
         "dependencies": {
@@ -287,6 +294,12 @@
           "System.Drawing.Common": "[10.0.12, )",
           "WebRtcVadSharp": "[1.1.0, )",
           "Websocket.Client": "[3.0.15, )"
+        }
+      },
+      "aivtuber.packager": {
+        "type": "Project",
+        "dependencies": {
+          "AIVTuber.Core": "[0.36.0, )"
         }
       }
     }

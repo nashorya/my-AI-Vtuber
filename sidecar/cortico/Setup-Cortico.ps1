@@ -11,9 +11,7 @@ if ($major -lt 22) { throw 'Cortico requires Node.js 22 or newer.' }
 Push-Location $PSScriptRoot
 try {
     & npm.cmd ci
-    if ($LASTEXITCODE -ne 0) { throw 'npm ci failed; the native audify module must install successfully.' }
-    & $node -e "require('audify')"
-    if ($LASTEXITCODE -ne 0) { throw 'Native audio preflight failed.' }
+    if ($LASTEXITCODE -ne 0) { throw 'npm ci failed.' }
 } finally { Pop-Location }
 $destination = Join-Path $AppDirectory 'cortico.json'
 if (Test-Path $destination) {

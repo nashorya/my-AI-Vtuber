@@ -392,8 +392,12 @@ public sealed class VisionObservationTests
 
     // --- voice-path independence (fake VLM latency 10s) ---
 
-    private sealed class ImmediateLlm : ILlmClient
+    private sealed class ImmediateLlm : ILlmClient, IReplyProtocolStream
     {
+    public string ReplyProtocol => "v2";
+    public IAsyncEnumerable<ReplyStreamEvent> StreamEventsAsync(List<Message> history, string userInput,
+        CancellationToken cancellationToken = default) =>
+        AIVTuber.Tests.Cortico.LegacyAsV2.Events(StreamAsync(history, userInput, cancellationToken), cancellationToken);
 #pragma warning disable CS0067
         public event EventHandler<string>? OnSentenceReady;
         public event EventHandler<string>? OnEmotionDetected;
@@ -450,7 +454,7 @@ public sealed class VisionObservationTests
             new TtsConfig());
         var sw = System.Diagnostics.Stopwatch.StartNew();
         await orchestrator.ProcessTextAsync("正常说话", new List<Message>(), bypassWake: true,
-            canCommit: () => true, requireStructuredReply: false);
+            canCommit: () => true);
         sw.Stop();
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(5),
             $"voice turn waited on vision ({sw.Elapsed.TotalMilliseconds:F0}ms)");

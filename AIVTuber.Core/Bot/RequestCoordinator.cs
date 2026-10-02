@@ -147,12 +147,17 @@ internal sealed class RequestCoordinator : IAsyncDisposable
         return request.Completion.Task;
     }
 
-    public async Task CancelCurrentAsync()
+    public Task CancelCurrentAsync() => CancelCurrent();
+
+    /// <summary>Synchronously invalidates the current generation and signals cancellation;
+    /// the returned task completes when the in-flight request has actually unwound. Callers
+    /// that must silence output immediately act between the two.</summary>
+    public Task CancelCurrent()
     {
         Task activeTask;
         lock (_sync)
         {
-            if (_disposed) return;
+            if (_disposed) return Task.CompletedTask;
             Interlocked.Increment(ref _currentGeneration);
             _activeCts?.Cancel();
             _pending?.Completion.TrySetResult(false);
@@ -160,8 +165,13 @@ internal sealed class RequestCoordinator : IAsyncDisposable
             activeTask = _activeTask;
         }
 
-        try { await activeTask.ConfigureAwait(false); }
-        catch (OperationCanceledException) { }
+        return AwaitUnwind(activeTask);
+
+        static async Task AwaitUnwind(Task task)
+        {
+            try { await task.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+        }
     }
 
     private async Task ConsumeAsync()

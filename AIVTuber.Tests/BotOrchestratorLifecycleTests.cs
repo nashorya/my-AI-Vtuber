@@ -11,13 +11,14 @@ namespace AIVTuber.Tests;
 public sealed class BotOrchestratorLifecycleTests
 {
     [Fact]
-    public void Dispose_detaches_all_llm_handlers_and_is_idempotent()
+    public void Orchestrator_never_subscribes_to_llm_events_and_dispose_is_idempotent()
     {
+        // Protocol v2 replies arrive as a stream; the legacy per-sentence LLM events are not used.
         var llm = new RecordingLlmClient();
         using var player = new AudioPlayer();
         var orchestrator = CreateOrchestrator(llm, player);
 
-        Assert.Equal((1, 1, 1), llm.HandlerCounts);
+        Assert.Equal((0, 0, 0), llm.HandlerCounts);
 
         orchestrator.Dispose();
         orchestrator.Dispose();
@@ -42,34 +43,6 @@ public sealed class BotOrchestratorLifecycleTests
 
         Assert.Equal(rmsBefore, HandlerCount(player, "RmsUpdated"));
         Assert.Equal(finishedBefore, HandlerCount(player, "PlaybackFinished"));
-    }
-
-    [Fact]
-    public void Rewire_twenty_times_leaves_only_the_live_orchestrator_subscribed()
-    {
-        var llm = new RecordingLlmClient();
-        using var player = new AudioPlayer();
-
-        for (var i = 0; i < 20; i++)
-            CreateOrchestrator(llm, player).Dispose();
-
-        using var live = CreateOrchestrator(llm, player);
-        Assert.Equal((1, 1, 1), llm.HandlerCounts);
-    }
-
-    [Fact]
-    public void Disposed_orchestrator_no_longer_forwards_publisher_events()
-    {
-        var llm = new RecordingLlmClient();
-        using var player = new AudioPlayer();
-        var orchestrator = CreateOrchestrator(llm, player);
-        var forwarded = 0;
-        orchestrator.OnSentenceReady += (_, _) => forwarded++;
-
-        orchestrator.Dispose();
-        llm.RaiseSentence("late");
-
-        Assert.Equal(0, forwarded);
     }
 
     [Fact]
@@ -141,8 +114,12 @@ public sealed class BotOrchestratorLifecycleTests
         }
     }
 
-    private sealed class RecordingLlmClient : ILlmClient
+    private sealed class RecordingLlmClient : ILlmClient, IReplyProtocolStream
     {
+        public string ReplyProtocol => "v2";
+        public IAsyncEnumerable<ReplyStreamEvent> StreamEventsAsync(List<Message> history, string userInput,
+            CancellationToken cancellationToken = default) =>
+            AIVTuber.Tests.Cortico.LegacyAsV2.Events(StreamAsync(history, userInput, cancellationToken), cancellationToken);
         private EventHandler<string>? _sentenceReady;
         private EventHandler<string>? _emotionDetected;
         private EventHandler<string>? _actionDetected;

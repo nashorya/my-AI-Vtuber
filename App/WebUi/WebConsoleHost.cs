@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AIVTuber.Core.Diagnostics;
 using AIVTuber.Core.LiveStream;
 using AIVTuber.Core.ViewModels;
 using Microsoft.Web.WebView2.Core;
@@ -13,6 +14,9 @@ namespace AIVTuber.App.WebUi;
 /// <summary>
 /// Bridges Monitor + Config + Memory view-models to the WebView2 SPA.
 /// Hot path stays in .NET; only UI state and click commands cross this bridge.
+/// <para>Distribution builds load the streamer page instead and route every command through
+/// <see cref="StreamerConsoleController"/>; the developer console's commands are not reachable
+/// from there.</para>
 /// </summary>
 public sealed class WebConsoleHost : IDisposable
 {
@@ -28,6 +32,7 @@ public sealed class WebConsoleHost : IDisposable
     private readonly MonitorViewModel _monitor;
     private readonly ConfigViewModel _config;
     private readonly MemoryViewModel _memory;
+    private readonly StreamerConsoleController? _streamer;
     private readonly string _wwwroot;
     private readonly NotifyCollectionChangedEventHandler _eventsChanged;
     private readonly NotifyCollectionChangedEventHandler _memoryFactsChanged;
@@ -44,8 +49,10 @@ public sealed class WebConsoleHost : IDisposable
         MonitorViewModel monitor,
         ConfigViewModel config,
         MemoryViewModel memory,
-        string wwwroot)
+        string wwwroot,
+        StreamerConsoleController? streamer = null)
     {
+        _streamer = streamer;
         _webView = webView;
         _monitor = monitor;
         _config = config;
@@ -62,7 +69,20 @@ public sealed class WebConsoleHost : IDisposable
         _memory.Facts.CollectionChanged += _memoryFactsChanged;
         _memory.Viewers.CollectionChanged += _memoryViewersChanged;
         _memory.PkTurns.CollectionChanged += _memoryPkChanged;
+        if (_streamer is not null) _streamer.StateInvalidated += OnStreamerStateInvalidated;
     }
+
+    /// <summary>Page the host loads: the streamer console in distribution builds.</summary>
+    public string StartPage => _streamer is null ? "index.html" : "streamer.html";
+
+    /// <summary>Posts from any thread; used by <see cref="StreamerConsoleController"/>.</summary>
+    public void PostFromController(object payload)
+    {
+        if (_disposed || !_ready) return;
+        Post(payload);
+    }
+
+    private void OnStreamerStateInvalidated(object? sender, EventArgs e) => PushMonitorState();
 
     public async Task InitializeAsync()
     {
@@ -83,7 +103,7 @@ public sealed class WebConsoleHost : IDisposable
             PushConfig();
             PushMemory();
         };
-        _webView.Source = new Uri($"https://{VirtualHost}/index.html");
+        _webView.Source = new Uri($"https://{VirtualHost}/{StartPage}");
     }
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -112,6 +132,17 @@ public sealed class WebConsoleHost : IDisposable
             if (type != "command") return;
             var name = root.TryGetProperty("name", out var n) ? n.GetString() : null;
             var data = root.TryGetProperty("data", out var d) ? d : default;
+
+            if (_streamer is not null)
+            {
+                switch (name)
+                {
+                    case "startBiliQrLogin": _ = RunBiliQrLoginAsync(); break;
+                    case "cancelBiliQrLogin": StopBiliQrLogin(notify: true); break;
+                    default: await _streamer.HandleAsync(name, data); break;
+                }
+                return;
+            }
 
             switch (name)
             {
@@ -271,8 +302,18 @@ public sealed class WebConsoleHost : IDisposable
         }
         catch (Exception ex)
         {
-            AIVTuber.Core.Diagnostics.DebugLog.Write($"[WebConsole] 消息处理失败: {ex.Message}");
-            PushResult("error", ex.Message, false);
+            // The raw exception goes to the redacted diagnostic log only (U06).
+            var error = UserErrorMapper.FromException(ex, ErrorArea.App);
+            if (error is null) return; // a normal cancellation
+            if (_streamer is not null)
+            {
+                _streamer.ReportIssue(error);
+                Post(new { type = "result", data = new { kind = "error", area = error.Area, message = error.UserMessage, action = error.SuggestedAction, diagnosticId = error.DiagnosticId, ok = false } });
+            }
+            else
+            {
+                PushResult("error", $"{error.UserMessage}（诊断编号 {error.DiagnosticId}）", false);
+            }
         }
     }
 
@@ -336,10 +377,41 @@ public sealed class WebConsoleHost : IDisposable
             PushMemory();
     }
 
+    /// <summary>
+    /// Every push may be called from a background thread (runtime events, ASR, account
+    /// timers). WebView2 objects — including the <c>CoreWebView2</c> property — are
+    /// UI-thread-affine, so the readiness check and the push body both run on the
+    /// dispatcher, and a failure there is logged and contained: a UI update must never
+    /// surface as an exception on the caller's thread (e.g. be taken for an ASR failure).
+    /// </summary>
+    private void OnUi(string what, Action push)
+    {
+        if (_disposed) return;
+        try
+        {
+            _webView.Dispatcher.BeginInvoke(() =>
+            {
+                if (_disposed || !_ready || _webView.CoreWebView2 is null) return;
+                try { push(); }
+                catch (Exception ex) { DebugLog.Write($"[WebConsole] {what}失败: {DiagnosticRedactor.Redact(ex.Message)}"); }
+            });
+        }
+        catch (Exception ex)
+        {
+            // Dispatcher shut down (app exiting): nothing to show any more.
+            DebugLog.Write($"[WebConsole] {what}未投递: {DiagnosticRedactor.Redact(ex.Message)}");
+        }
+    }
+
     public void PushMonitorState()
     {
-        if (_disposed || !_ready || _webView.CoreWebView2 is null) return;
-        try
+        if (_streamer is not null)
+        {
+            // Built on the UI thread: it reads view-model collections owned by the dispatcher.
+            OnUi("推送主播状态", () => _streamer.PushState());
+            return;
+        }
+        OnUi("推送状态", () =>
         {
             var payload = new
             {
@@ -378,46 +450,27 @@ public sealed class WebConsoleHost : IDisposable
                     }).ToList(),
                 },
             };
-            Post(payload);
-        }
-        catch (Exception ex)
-        {
-            AIVTuber.Core.Diagnostics.DebugLog.Write($"[WebConsole] 推送状态失败: {ex.Message}");
-        }
+            PostNow(payload);
+        });
     }
 
     public void PushConfig()
     {
-        if (_disposed || !_ready || _webView.CoreWebView2 is null) return;
-        try
-        {
-            Post(new { type = "config", data = _config.BuildWebDraft() });
-        }
-        catch (Exception ex)
-        {
-            AIVTuber.Core.Diagnostics.DebugLog.Write($"[WebConsole] 推送配置失败: {ex.Message}");
-        }
+        if (_streamer is not null) { OnUi("推送主播设置", () => _streamer.PushSettings()); return; }
+        OnUi("推送配置", () => PostNow(new { type = "config", data = _config.BuildWebDraft() }));
     }
 
     public void PushMemory()
     {
-        if (_disposed || !_ready || _webView.CoreWebView2 is null) return;
-        try
-        {
-            Post(new { type = "memory", data = _memory.BuildWebSnapshot() });
-        }
-        catch (Exception ex)
-        {
-            AIVTuber.Core.Diagnostics.DebugLog.Write($"[WebConsole] 推送记忆失败: {ex.Message}");
-        }
+        if (_streamer is not null) return;
+        OnUi("推送记忆", () => PostNow(new { type = "memory", data = _memory.BuildWebSnapshot() }));
     }
 
     private void PushConfigMeta()
     {
-        if (_disposed || !_ready || _webView.CoreWebView2 is null) return;
-        try
-        {
-            Post(new
+        if (_streamer is not null) return;
+        OnUi("推送配置状态", () =>
+            PostNow(new
             {
                 type = "result",
                 data = new
@@ -430,9 +483,7 @@ public sealed class WebConsoleHost : IDisposable
                     validationMessage = _config.ValidationMessage,
                     ok = !_config.HasValidationErrors,
                 },
-            });
-        }
-        catch { /* ignore */ }
+            }));
     }
 
     private async Task RunBiliQrLoginAsync()
@@ -466,8 +517,9 @@ public sealed class WebConsoleHost : IDisposable
         catch (Exception ex)
         {
             if (_biliQrCts != cts) return;
-            AIVTuber.Core.Diagnostics.DebugLog.Write($"[WebConsole] B站扫码登录失败: {ex.Message}");
-            PushBiliQr(new BiliQrProgress(BiliQrPollStatus.Failed, Error: ex.Message));
+            var error = UserErrorMapper.FromException(ex, ErrorArea.Settings);
+            PushBiliQr(new BiliQrProgress(BiliQrPollStatus.Failed,
+                Error: error is null ? null : $"{error.UserMessage}（诊断编号 {error.DiagnosticId}）"));
         }
     }
 
@@ -484,8 +536,7 @@ public sealed class WebConsoleHost : IDisposable
 
     private void PushBiliQr(BiliQrProgress progress)
     {
-        if (_disposed || !_ready || _webView.CoreWebView2 is null) return;
-        Post(new
+        OnUi("推送扫码状态", () => PostNow(new
         {
             type = "biliQr",
             data = new
@@ -494,28 +545,33 @@ public sealed class WebConsoleHost : IDisposable
                 qrUrl = progress.QrUrl,
                 roomId = progress.RoomId,
                 error = progress.Error,
-                sessdata = progress.Credentials?.Sessdata,
-                biliJct = progress.Credentials?.BiliJct,
-                buvid3 = progress.Credentials?.Buvid3,
+                // The streamer page never receives the B 站 cookies; the developer console
+                // keeps showing them as before.
+                sessdata = _streamer is null ? progress.Credentials?.Sessdata : null,
+                biliJct = _streamer is null ? progress.Credentials?.BiliJct : null,
+                buvid3 = _streamer is null ? progress.Credentials?.Buvid3 : null,
             },
-        });
+        }));
     }
 
     private void PushResult(string kind, string message, bool ok)
     {
-        if (_disposed || !_ready || _webView.CoreWebView2 is null) return;
-        Post(new { type = "result", data = new { kind, message, ok, saveStateText = _config.SaveStateText, status = _config.Status } });
+        OnUi("推送结果", () =>
+            PostNow(new { type = "result", data = new { kind, message, ok, saveStateText = _config.SaveStateText, status = _config.Status } }));
     }
 
     private void Post(object payload)
     {
-        var json = JsonSerializer.Serialize(payload, JsonOptions);
-        _webView.Dispatcher.BeginInvoke(() =>
-        {
-            try { _webView.CoreWebView2?.PostWebMessageAsJson(json); }
-            catch { /* disposed */ }
-        });
+        if (_disposed) return;
+        string json;
+        try { json = JsonSerializer.Serialize(payload, JsonOptions); }
+        catch (Exception ex) { DebugLog.Write($"[WebConsole] 消息序列化失败: {DiagnosticRedactor.Redact(ex.Message)}"); return; }
+        OnUi("推送消息", () => _webView.CoreWebView2!.PostWebMessageAsJson(json));
     }
+
+    /// <summary>UI thread only (inside <see cref="OnUi"/>).</summary>
+    private void PostNow(object payload) =>
+        _webView.CoreWebView2?.PostWebMessageAsJson(JsonSerializer.Serialize(payload, JsonOptions));
 
     private static string StateLabel(AIVTuber.Core.Runtime.PipelineState state) => state switch
     {
@@ -552,6 +608,7 @@ public sealed class WebConsoleHost : IDisposable
         if (_disposed) return;
         _disposed = true;
         StopBiliQrLogin(notify: false);
+        if (_streamer is not null) _streamer.StateInvalidated -= OnStreamerStateInvalidated;
         _monitor.PropertyChanged -= OnMonitorPropertyChanged;
         _monitor.OperationalEvents.CollectionChanged -= _eventsChanged;
         _config.PropertyChanged -= OnConfigPropertyChanged;

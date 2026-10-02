@@ -47,6 +47,14 @@ public sealed class ConfigManager
 
     private readonly string _configPath;
 
+    /// <summary>Private-package provider settings. When set, they override config.json on load
+    /// and their secrets are stripped on save.</summary>
+    public AIVTuber.Core.Auth.DistributionProfile? Profile { get; init; }
+
+    /// <summary>User-facing notice from the last <see cref="Load"/> (e.g. a saved voice this
+    /// package no longer offers). Null when there is nothing to tell the streamer.</summary>
+    public string? LastLoadNotice { get; private set; }
+
     public ConfigManager(string configPath)
     {
         _configPath = configPath;
@@ -61,6 +69,7 @@ public sealed class ConfigManager
         {
             var defaultConfig = new AppConfig();
             Save(defaultConfig);
+            LastLoadNotice = Profile?.ApplyTo(defaultConfig);
             return defaultConfig;
         }
 
@@ -71,6 +80,7 @@ public sealed class ConfigManager
         HydrateProviderKeys(config);
         if (config.Interaction.IsPkMode && config.Bilibili.Enable)
             config.Bilibili.PkNotice = true;
+        LastLoadNotice = Profile?.ApplyTo(config);
         return config;
     }
 
@@ -79,6 +89,11 @@ public sealed class ConfigManager
     /// </summary>
     public void Save(AppConfig config)
     {
+        if (Profile is not null)
+        {
+            config = Clone(config);
+            AIVTuber.Core.Auth.DistributionProfile.StripManagedSecrets(config);
+        }
         var json = JsonSerializer.Serialize(config, JsonOptions);
         var directory = Path.GetDirectoryName(Path.GetFullPath(_configPath))!;
         Directory.CreateDirectory(directory);

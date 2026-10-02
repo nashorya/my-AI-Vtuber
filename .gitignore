@@ -51,3 +51,12 @@ models/WebRtcVad.dll
 sidecar/cortico/node_modules/
 .cortico-vts-token
 cortico.json
+
+# Private distribution material: profiles, generated streamer packages and auth databases
+# never belong in this public repository (DIST-03).
+/distribution/
+distribution-state.json
+AIVTuber-v*-streamer-*.zip*
+AIVTuber-credentials-*.zip*
+auth.db
+auth.db-*

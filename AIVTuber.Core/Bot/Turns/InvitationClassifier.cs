@@ -38,12 +38,22 @@ internal static class InvitationClassifier
         string? lastAssistantMessage,
         long nowMs,
         long aiSpokeAtMs,
-        long conversationWindowMs)
+        long conversationWindowMs) =>
+        Classify(lines, new ClassifierContext(selfNames, lastAssistantMessage, nowMs, aiSpokeAtMs, conversationWindowMs));
+
+    /// <summary>
+    /// Grades the pending input. Being named is neither required nor sufficient: a vocative name
+    /// is strong evidence, a third-person mention is not, and an ambiguous or continuing input
+    /// inside an active exchange is handed to the main model's speak/pass decision instead of
+    /// being dropped by a keyword list.
+    /// </summary>
+    public static TurnDecision Classify(IReadOnlyList<(TalkLine Line, TurnSource Source)> lines, ClassifierContext ctx)
     {
         if (lines.Count == 0)
             return TurnDecision.Silence(InvitationLevel.None, "empty_input");
 
         var latest = lines[^1].Line.Text ?? "";
+        var source = lines[^1].Source;
         var text = latest.Trim();
 
         // Retraction check first: it can neutralise an otherwise strong invitation.
@@ -51,10 +61,19 @@ internal static class InvitationClassifier
             return TurnDecision.Silence(InvitationLevel.None, "invitation_retracted",
                 $"retraction_phrase_in_latest");
 
-        var (nameHit, vocative) = FindNameUsage(text, selfNames);
-        var name = nameHit;
+        var (name, vocative) = FindNameUsage(text, ctx.SelfNames);
+        var inConversation = ctx.AiSpokeAtMs > 0 && ctx.NowMs - ctx.AiSpokeAtMs <= ctx.ConversationWindowMs;
+        // The AI was talking with this party last. With no record of whom it answered, only the
+        // streamer / chat count; the opponent's talk is addressed to the streamer by default.
+        var sameParty = ctx.LastAiTurnSources is { Count: > 0 } sources
+            ? sources.Contains(source)
+            : source != TurnSource.Loopback;
+        // The streamer has been talking with the opponent more recently than with the AI.
+        var talkingWithOpponent = source == TurnSource.Microphone && ctx.LastOpponentFinalMs >= 0 &&
+            ctx.LastOpponentFinalMs > ctx.AiSpokeAtMs &&
+            ctx.NowMs - ctx.LastOpponentFinalMs <= ctx.ConversationWindowMs;
 
-        // 1) 点名: the name is used as a vocative (start of sentence + separator, or adjacent to a question).
+        // 1) 点名: the name is used as a vocative — with or without punctuation.
         if (name is not null && vocative)
         {
             if (LooksLikeQuestion(text))
@@ -63,15 +82,21 @@ internal static class InvitationClassifier
             return TurnDecision.RespondAt(InvitationLevel.NameCall, "name_call_vocative", $"name={name}");
         }
 
-        // 2) 明确提问 toward the AI, no name required (无名字也不一律沉默).
+        // 2) 明确提问, no name. "你觉得…" right after the opponent spoke may be addressed to the
+        //    opponent: it is not dropped, but the model decides instead of forcing an answer.
         var questionMarker = DirectQuestionMarkers.FirstOrDefault(m => text.Contains(m, StringComparison.Ordinal));
         if (questionMarker is not null && LooksLikeQuestion(text))
+        {
+            if (talkingWithOpponent)
+                return TurnDecision.RespondAt(InvitationLevel.SemanticDecision, "ambiguous_addressee",
+                    $"marker={questionMarker};opponent_spoke_last");
             return TurnDecision.RespondAt(InvitationLevel.DirectQuestion, "direct_question",
                 $"marker={questionMarker}");
+        }
 
-        // 3) 上一轮 AI 发问后的回应: the AI's last message ended with a question and the
-        //    latest input is a short bare acknowledgement from the same conversation window.
-        if (IsResponseAfterAiQuestion(text, lastAssistantMessage, nowMs, aiSpokeAtMs, conversationWindowMs))
+        // 3) 上一轮 AI 发问后的回应 from the party the AI was talking to.
+        if (sameParty &&
+            IsResponseAfterAiQuestion(text, ctx.LastAssistantMessage, ctx.NowMs, ctx.AiSpokeAtMs, ctx.ConversationWindowMs))
             return TurnDecision.RespondAt(InvitationLevel.ResponseToAiQuestion, "response_after_ai_question",
                 $"short_reply={Truncate(text)}");
 
@@ -85,9 +110,15 @@ internal static class InvitationClassifier
             return TurnDecision.Silence(InvitationLevel.WeakMention, "weak_name_mention", $"name={name}");
         }
 
-        if (IsContinuousDialogue(nowMs, aiSpokeAtMs, conversationWindowMs) && LooksLikeFollowUp(text))
+        if (inConversation && sameParty && LooksLikeFollowUp(text))
             return TurnDecision.RespondAt(InvitationLevel.ContinuousDialogue, "continuous_dialogue_followup",
                 "recent_exchange+followup_marker");
+
+        // 4) Possibly continuing the exchange with the AI, but no marker: the model decides.
+        //    The opponent's unaddressed talk is not handed over this way.
+        if (inConversation && sameParty && source != TurnSource.Loopback && !talkingWithOpponent)
+            return TurnDecision.RespondAt(InvitationLevel.SemanticDecision, "possible_continuation",
+                "recent_exchange_same_party");
 
         return TurnDecision.Silence(InvitationLevel.None, "no_invitation_evidence");
     }
@@ -102,22 +133,37 @@ internal static class InvitationClassifier
         return false;
     }
 
+    // Characters that may directly follow a vocative name without punctuation ("可缇你觉得呢").
+    private const string VocativeFollowers = "你您呀啊啦在快来帮说听";
+    // Characters that make a trailing name third-person ("我跟可缇" / "他叫可缇").
+    private const string ThirdPersonLeaders = "他她它跟和对叫给让被";
+    private const string TrailingPunctuation = "。，,！!？?～~…. ";
+
     private static (string? Name, bool Vocative) FindNameUsage(string text, IReadOnlyList<string> selfNames)
     {
+        var core = text.TrimEnd(TrailingPunctuation.ToCharArray());
         foreach (var raw in selfNames)
         {
             var name = raw?.Trim();
             if (string.IsNullOrEmpty(name)) continue;
             var idx = text.IndexOf(name, StringComparison.OrdinalIgnoreCase);
             if (idx < 0) continue;
-
-            // Vocative: name at utterance start followed by a separator ("可缇，你怎么看").
-            if (idx == 0 && name.Length < text.Length &&
-                VocativeSeparators.Contains(text[name.Length]))
-                return (name, true);
-            // Vocative: name immediately before a question mark ("你觉得呢，可缇？").
             var after = idx + name.Length;
+
+            if (idx == 0)
+            {
+                // The bare name on its own is a call, punctuation or not ("可缇").
+                if (core.Length == name.Length) return (name, true);
+                // Name at utterance start followed by a separator or a second-person follower.
+                if (after < text.Length &&
+                    (VocativeSeparators.Contains(text[after]) || VocativeFollowers.Contains(text[after])))
+                    return (name, true);
+            }
+            // Name immediately before a question mark ("你觉得呢，可缇？").
             if (after < text.Length && text[after] is '？' or '?')
+                return (name, true);
+            // Name closing the sentence ("你觉得呢可缇"), unless a third-person cue precedes it.
+            if (idx > 0 && after == core.Length && !ThirdPersonLeaders.Contains(text[idx - 1]))
                 return (name, true);
             return (name, false);
         }
@@ -157,9 +203,6 @@ internal static class InvitationClassifier
         return false;
     }
 
-    private static bool IsContinuousDialogue(long nowMs, long aiSpokeAtMs, long windowMs) =>
-        aiSpokeAtMs > 0 && nowMs - aiSpokeAtMs <= windowMs;
-
     private static bool LooksLikeFollowUp(string text) =>
         text.Contains("那", StringComparison.Ordinal) ||
         text.Contains("为什么", StringComparison.Ordinal) ||
@@ -168,3 +211,13 @@ internal static class InvitationClassifier
 
     private static string Truncate(string s) => s.Length <= 20 ? s : s[..20] + "…";
 }
+
+/// <summary>Everything the classifier may use besides the text itself.</summary>
+internal sealed record ClassifierContext(
+    IReadOnlyList<string> SelfNames,
+    string? LastAssistantMessage,
+    long NowMs,
+    long AiSpokeAtMs,
+    long ConversationWindowMs,
+    IReadOnlyCollection<TurnSource>? LastAiTurnSources = null,
+    long LastOpponentFinalMs = -1);

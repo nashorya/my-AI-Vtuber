@@ -60,6 +60,11 @@
           "System.Numerics.Tensors": "9.0.0"
         }
       },
+      "Microsoft.Win32.SystemEvents": {
+        "type": "Transitive",
+        "resolved": "10.0.12",
+        "contentHash": "kdj5cqOwgZCMltEhQ4+WVUoFkMHG08EJfy1MDyS9H+FBg66vTTFyX8YcNl8IQh5wRQv79P+iduQgDGY8ucBR+w=="
+      },
       "NAudio": {
         "type": "Transitive",
         "resolved": "2.2.1",
@@ -153,6 +158,14 @@
           "SQLitePCLRaw.core": "3.0.3"
         }
       },
+      "System.Drawing.Common": {
+        "type": "Transitive",
+        "resolved": "10.0.12",
+        "contentHash": "FBUxiucg2gsnyItbpGgyXI5u8FYLcqdLKS1XJkHHTj3RK1c6kpsJr/Y9i4edUNF7LqCYFrHqpHEvpt8/lNBe9w==",
+        "dependencies": {
+          "Microsoft.Win32.SystemEvents": "10.0.12"
+        }
+      },
       "System.Numerics.Tensors": {
         "type": "Transitive",
         "resolved": "9.0.0",
@@ -186,6 +199,7 @@
           "Microsoft.ML.OnnxRuntime": "[1.21.0, )",
           "NAudio": "[2.2.1, )",
           "SQLitePCLRaw.bundle_e_sqlite3": "[3.0.3, )",
+          "System.Drawing.Common": "[10.0.12, )",
           "WebRtcVadSharp": "[1.1.0, )",
           "Websocket.Client": "[3.0.15, )"
         }
@@ -205,6 +219,11 @@
         "dependencies": {
           "Microsoft.ML.OnnxRuntime.Managed": "1.21.0"
         }
+      },
+      "Microsoft.Win32.SystemEvents": {
+        "type": "Transitive",
+        "resolved": "10.0.12",
+        "contentHash": "kdj5cqOwgZCMltEhQ4+WVUoFkMHG08EJfy1MDyS9H+FBg66vTTFyX8YcNl8IQh5wRQv79P+iduQgDGY8ucBR+w=="
       },
       "SourceGear.sqlite3": {
         "type": "Transitive",

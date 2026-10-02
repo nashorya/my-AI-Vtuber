@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { WebSocketServer } from 'ws';
 import { loadPack, EXAMPLE_PACK_DIR } from '../upstream/pack.ts';
+import { writeModel } from './harness.ts';
 
 const root = new URL('../', import.meta.url);
 test('vendored upstream files exactly match the pinned source hashes', () => {
@@ -19,6 +20,8 @@ test('vendored upstream files exactly match the pinned source hashes', () => {
 
 test('real host + original Performer: clean speech, VTS frames, authorization and cancellation', { timeout: 20000 }, async () => {
  const temp = mkdtempSync(join(tmpdir(), 'cortico-host-'));
+ // The fake model's file wires every pack input, so the conservative adaptation may drive them.
+ writeModel(temp, 'Fake', loadPack(EXAMPLE_PACK_DIR).paramIds);
  const server = new WebSocketServer({ port: 0 }); await once(server, 'listening');
  const frames: any[] = [];
  const names = loadPack(EXAMPLE_PACK_DIR).paramIds;
@@ -36,8 +39,9 @@ test('real host + original Performer: clean speech, VTS frames, authorization an
  const child = spawn(process.execPath, ['--import','tsx','host.ts'], { cwd: root, stdio: ['pipe','pipe','pipe'] });
  let errors = ''; child.stderr.on('data', x => errors += x);
  const pending = new Map<number, (m: any) => void>(); let seq = 0;
- const spoken: string[] = []; let allowed = true; let starts = 0; let holdTts = false;
+ const spoken: string[] = []; const played: string[] = []; let allowed = true; let starts = 0; let holdTts = false;
  let sawTts: (()=>void) | undefined;
+ const texts = new Map<number, string>();
  const send = (m: any) => child.stdin.write(JSON.stringify(m)+'\n');
  const command = (name: string, rest: any = {}) => new Promise<any>(resolve => {
   const id = ++seq; pending.set(id, resolve); send({ id, command: name, ...rest });
@@ -45,37 +49,46 @@ test('real host + original Performer: clean speech, VTS frames, authorization an
  createInterface({ input: child.stdout }).on('line', line => {
   const m = JSON.parse(line);
   if (m.kind === 'result') { pending.get(m.id)?.(m); pending.delete(m.id); }
-  if (m.kind === 'started') starts++;
-  if (m.kind === 'authorize') send({ kind: 'reply', id: m.id, allowed });
-  if (m.kind === 'tts') {
-   spoken.push(m.text); sawTts?.();
+  if (m.kind === 'synth') {
+   spoken.push(m.text); texts.set(m.pieceId, m.text); sawTts?.();
    if (!holdTts) {
     const pcm = Buffer.alloc(16000 * 2 / 5);
     for (let i=0;i<pcm.length/2;i++) pcm.writeInt16LE(Math.round(3000*Math.sin(i/8)), i*2);
-    send({ kind: 'reply', id: m.id, pcm: pcm.toString('base64'), sampleRate: 16000 });
+    send({ kind: 'pcm', requestId: m.requestId, pieceId: m.pieceId, sampleRate: 16000, data: pcm.toString('base64') });
+    send({ kind: 'synthEnd', requestId: m.requestId, pieceId: m.pieceId });
    }
+  }
+  if (m.kind === 'play') {
+   if (!allowed) { send({ kind: 'stopped', requestId: m.requestId, pieceId: m.pieceId }); return; }
+   played.push(texts.get(m.pieceId) ?? ''); starts++;
+   send({ kind: 'started', requestId: m.requestId, pieceId: m.pieceId });
+   setTimeout(() => send({ kind: 'ended', requestId: m.requestId, pieceId: m.pieceId }), 80);
   }
  });
  try {
   const init = await command('init', { config: { vtsUrl: `ws://127.0.0.1:${(server.address() as any).port}`,
-   tokenPath: join(temp,'token'), audioDevice: 'none', modelProfile: 'auto' } });
-  assert.equal(init.error, undefined, errors); assert.match(init.prompt, /点头/);
+   tokenPath: join(temp,'token'), modelProfile: 'auto', live2dDir: temp } });
+  assert.equal(init.error, undefined, errors); assert.match(init.grammar, /点头/);
   const script = '<微笑>你好【点头】再见';
-  assert.equal((await command('prepare', { script })).spoken, '你好再见');
   const result = await command('perform', { script });
   assert.equal(result.error, undefined, errors); assert.ok(starts > 0);
   assert.ok(spoken.every(x => !/[<>【】]/.test(x)));
   assert.ok(frames.some(f => f.parameterValues.some((p: any) => p.id === 'FaceAngleY' && Math.abs(p.value) > 5)));
   assert.ok(frames.some(f => f.mode === 'set' && f.parameterValues.some((p: any) => p.id === 'MouthOpen' && p.value > 0)));
+  // Playback permission is the app's own gate now (per piece, via 'play'/'stopped'): a refusal
+  // no longer throws inside the sidecar, it just leaves that piece unplayed.
   allowed = false; const before = starts;
-  assert.ok((await command('perform', { script: '不应该播出' })).error);
+  const refused = await command('perform', { script: '不应该播出' });
+  assert.equal(refused.error, undefined, errors);
   assert.equal(starts, before);
+  assert.ok(!played.includes('不应该播出'));
   allowed = true; holdTts = true;
   const waiting = new Promise<void>(r => sawTts = r);
   const cancelled = command('perform', { script: '取消这句话' }); await waiting;
   await command('interrupt'); assert.ok((await cancelled).error);
   holdTts = false;
   assert.equal((await command('perform', { script: '下一轮' })).error, undefined);
+  assert.ok(played.every(t => spoken.indexOf(t) >= 0), 'play only ever follows a synth for that text');
  } finally {
   child.stdin.end();
   await Promise.race([once(child,'exit'), new Promise(r => setTimeout(r, 1500))]);

@@ -1,0 +1,20 @@
+{
+  "format": 1,
+  "profile_id": "streamer-000",
+  "account": "example-streamer",
+  "credential_revision": 1,
+  "credential_scope": "dedicated",
+  "auth_server": "https://auth.example.invalid/",
+  "providers": {
+    "llm": { "provider": "deepseek", "base_url": "https://api.deepseek.com", "model": "deepseek-chat", "api_key": "FAKE-llm-key-for-docs-only" },
+    "asr": { "provider": "aliyun", "model": "paraformer-realtime-v2", "api_key": "FAKE-asr-key-for-docs-only" },
+    "tts": {
+      "provider": "minimax", "model": "speech-2.8-hd", "api_key": "FAKE-tts-key-for-docs-only",
+      "voice_id": "your-default-voice-id",
+      "voices": [
+        { "id": "gentle", "name": "温柔姐姐", "description": "语速平稳，适合聊天", "voice_id": "your-default-voice-id" },
+        { "id": "lively", "name": "元气少女", "description": "活泼，适合游戏直播", "voice_id": "another-verified-voice-id" }
+      ]
+    }
+  }
+}

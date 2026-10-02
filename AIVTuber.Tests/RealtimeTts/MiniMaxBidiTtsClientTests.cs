@@ -545,7 +545,7 @@ public sealed class MiniMaxBidiTtsClientTests
         var tts = new ControlledBidiTts(outcome);
         using var orchestrator = new BotOrchestrator(
             new UnusedAsr(), new NoopLlm(), tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
+            async (chunks, ct, firstPcm) => { await foreach (var _ in chunks.WithCancellation(ct)) { } },
             () => { }, triggerHotkeyAsync: null);
         orchestrator.Trace = trace;
 
@@ -581,8 +581,12 @@ public sealed class MiniMaxBidiTtsClientTests
             => Task.FromResult(outcome);
     }
 
-    private sealed class NoopLlm : ILlmClient
+    private sealed class NoopLlm : ILlmClient, IReplyProtocolStream
     {
+    public string ReplyProtocol => "v2";
+    public IAsyncEnumerable<ReplyStreamEvent> StreamEventsAsync(List<Message> history, string userInput,
+        CancellationToken cancellationToken = default) =>
+        AIVTuber.Tests.Cortico.LegacyAsV2.Events(StreamAsync(history, userInput, cancellationToken), cancellationToken);
         public event EventHandler<string>? OnEmotionDetected { add { } remove { } }
         public event EventHandler<string>? OnActionDetected { add { } remove { } }
         public event EventHandler<string>? OnPoseDetected { add { } remove { } }

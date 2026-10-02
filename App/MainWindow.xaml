@@ -18,8 +18,25 @@
         <ui:TitleBar Title="AIVTuber 控制台" Grid.Row="0" />
 
         <Grid Grid.Row="1">
-            <views:WebConsoleView x:Name="ConsoleHost" />
-            <views:FirstRunView x:Name="FirstRunHost" Visibility="Collapsed" />
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <!-- Distribution builds only: account state and logout (AUTH-02). -->
+            <Border x:Name="AccountStrip" Grid.Row="0" Visibility="Collapsed" Padding="12,6"
+                    Background="{DynamicResource AppSurfaceBrush}">
+                <DockPanel LastChildFill="False">
+                    <TextBlock x:Name="AccountStatusText" DockPanel.Dock="Left" VerticalAlignment="Center"
+                               Foreground="{DynamicResource AppTextSecondaryBrush}" />
+                    <ui:Button x:Name="AccountActionButton" DockPanel.Dock="Right" Appearance="Secondary"
+                               Click="OnAccountAction" AutomationProperties.Name="账号操作" />
+                </DockPanel>
+            </Border>
+
+            <views:WebConsoleView x:Name="ConsoleHost" Grid.Row="1" />
+            <views:FirstRunView x:Name="FirstRunHost" Grid.Row="1" Visibility="Collapsed" />
+            <views:LoginView x:Name="LoginHost" Grid.Row="1" Visibility="Collapsed" />
         </Grid>
     </Grid>
 </ui:FluentWindow>

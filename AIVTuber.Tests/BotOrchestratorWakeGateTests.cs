@@ -16,7 +16,7 @@ public sealed class BotOrchestratorWakeGateTests
         using var player = new AudioPlayer();
         using var orchestrator = new BotOrchestrator(
             new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) =>
+            async (chunks, ct, firstPcm) =>
             {
                 await foreach (var _ in chunks.WithCancellation(ct)) { }
             },
@@ -47,7 +47,7 @@ public sealed class BotOrchestratorWakeGateTests
         using var player = new AudioPlayer();
         using var orchestrator = new BotOrchestrator(
             new UnusedAsr(), llm, tts, player, new TtsConfig(), null, null,
-            async (chunks, ct) =>
+            async (chunks, ct, firstPcm) =>
             {
                 await foreach (var _ in chunks.WithCancellation(ct)) { }
             },
@@ -68,8 +68,12 @@ public sealed class BotOrchestratorWakeGateTests
         Assert.False(orchestrator.IsProcessing);
     }
 
-    private sealed class CountingLlm : ILlmClient
+    private sealed class CountingLlm : ILlmClient, IReplyProtocolStream
     {
+    public string ReplyProtocol => "v2";
+    public IAsyncEnumerable<ReplyStreamEvent> StreamEventsAsync(List<Message> history, string userInput,
+        CancellationToken cancellationToken = default) =>
+        AIVTuber.Tests.Cortico.LegacyAsV2.Events(StreamAsync(history, userInput, cancellationToken), cancellationToken);
         public int CallCount { get; private set; }
         public event EventHandler<string>? OnSentenceReady;
         public event EventHandler<string>? OnEmotionDetected;

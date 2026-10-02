@@ -58,11 +58,18 @@ internal static class IdentityPrompt
         speech 只放准备朗读的口语正文，不含思考过程、JSON 包装或括号心里话。
         """;
 
-    /// <summary>Returns the invitation policy matching the configured reply protocol.</summary>
-    public static string InvitationPolicyFor(string? replyProtocol) =>
-        (replyProtocol ?? "").Trim().Equals("v2", StringComparison.OrdinalIgnoreCase)
-            ? InvitationPolicyV2
-            : InvitationPolicy;
+    /// <summary>Returns the invitation policy (protocol v2) for the performance layer actually in use. With Cortico the invitation rules are identical; only
+    /// the output format changes to the one <see cref="Cortico.CorticoReplyAdapter"/> parses.</summary>
+    public static string InvitationPolicyFor(bool cortico = false) => cortico ? InvitationPolicyV2Cortico : InvitationPolicyV2;
+
+    /// <summary>Protocol v2 with Cortico: speech text carries the Cortico script; no control lines.</summary>
+    public static readonly string InvitationPolicyV2Cortico =
+        InvitationPolicyV2
+            .Replace("说话时每段一行 speech，控制走 control 行，最后一行必须是 end。",
+                "说话时每段一行 speech，最后一行必须是 end；不要输出 control 行。", StringComparison.Ordinal)
+            .Replace("speech 只放准备朗读的口语正文，不含思考过程、JSON 包装或括号心里话。",
+                "speech 的 text 是准备朗读的台本，动作用演出台本标记写在台词里，不含思考过程、JSON 包装、【PASS】或括号心里话。",
+                StringComparison.Ordinal);
 
     public static bool IsStopRequest(string text, IReadOnlyList<string> aliases)
     {
