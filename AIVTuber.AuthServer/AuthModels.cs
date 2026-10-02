@@ -16,9 +16,21 @@ public enum AuthStatus
     [JsonStringEnumMemberName("invalid_session")] InvalidSession,
     [JsonStringEnumMemberName("rate_limited")] RateLimited,
     [JsonStringEnumMemberName("bad_request")] BadRequest,
+    [JsonStringEnumMemberName("invalid_invite")] InvalidInvite,
+    [JsonStringEnumMemberName("username_taken")] UsernameTaken,
+    [JsonStringEnumMemberName("invalid_username")] InvalidUsername,
+    [JsonStringEnumMemberName("weak_password")] WeakPassword,
 }
 
 public sealed record LoginRequest(
+    string Username,
+    string Password,
+    string ProfileId,
+    string AppVersion,
+    int CredentialRevision);
+
+public sealed record RegisterRequest(
+    string InviteCode,
     string Username,
     string Password,
     string ProfileId,

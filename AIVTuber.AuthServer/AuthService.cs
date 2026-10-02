@@ -11,6 +11,14 @@ namespace AIVTuber.AuthServer;
 /// </summary>
 public sealed class AuthService(AuthStore store, TimeProvider clock, AuthServerOptions options)
 {
+    /// <summary>"Never expires" for accounts that have no end date (invite registrations).
+    /// 2100 rather than a far-future year so the client's tick arithmetic cannot overflow.</summary>
+    public static readonly DateTimeOffset NoExpiry = new(2100, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+    private const string InviteAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    private static readonly System.Text.RegularExpressions.Regex UsernamePattern = new("^[A-Za-z0-9_-]{3,20}$");
+    public const int MinPasswordLength = 8;
+
     private readonly PasswordHasher<string> _hasher = new();
     private readonly ConcurrentDictionary<string, FailureWindow> _failures = new(StringComparer.OrdinalIgnoreCase);
 
@@ -76,6 +84,64 @@ public sealed class AuthService(AuthStore store, TimeProvider clock, AuthServerO
         if (denied is not null) return AuthResult.Denied(denied.Value, now);
         if (request.CredentialRevision < account.MinCredentialRevision)
             return AuthResult.Denied(AuthStatus.CredentialRevoked, now);
+
+        var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+        store.InsertSession(HashToken(token), account.Id, account.ProfileId, request.AppVersion ?? "", now);
+        return Granted(account, now) with { SessionToken = token };
+    }
+
+    public static string NormalizeInvite(string code) =>
+        new string((code ?? "").Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
+
+    public static string FormatInvite(string normalized) =>
+        normalized.Length == 8 ? normalized[..4] + "-" + normalized[4..] : normalized;
+
+    /// <summary>Generates <paramref name="count"/> unique one-time invite codes for a package profile.</summary>
+    public IReadOnlyList<string> CreateInvites(int count, string profileId, string note = "")
+    {
+        RequireText(profileId, nameof(profileId));
+        if (count is < 1 or > 500) throw new ArgumentException("数量需要在 1 到 500 之间。");
+        var now = clock.GetUtcNow();
+        var codes = new List<string>(count);
+        while (codes.Count < count)
+        {
+            var chars = new char[8];
+            for (var i = 0; i < chars.Length; i++) chars[i] = InviteAlphabet[RandomNumberGenerator.GetInt32(InviteAlphabet.Length)];
+            var code = new string(chars);
+            if (store.InsertInvite(code, profileId.Trim(), note ?? "", now)) codes.Add(FormatInvite(code));
+        }
+        return codes;
+    }
+
+    public bool RevokeInvite(string code) => store.RevokeInvite(NormalizeInvite(code), clock.GetUtcNow());
+
+    public IReadOnlyList<InviteRow> ListInvites() => store.ListInvites();
+
+    public AuthResult Register(RegisterRequest request, string sourceKey)
+    {
+        var now = clock.GetUtcNow();
+        var limitKey = "reg:" + sourceKey;
+        if (IsRateLimited(limitKey, now)) return AuthResult.Denied(AuthStatus.RateLimited, now);
+        if (string.IsNullOrWhiteSpace(request.InviteCode) || string.IsNullOrWhiteSpace(request.Username) ||
+            string.IsNullOrEmpty(request.Password) || string.IsNullOrWhiteSpace(request.ProfileId))
+            return AuthResult.Denied(AuthStatus.BadRequest, now);
+
+        var username = request.Username.Trim();
+        if (!UsernamePattern.IsMatch(username)) return AuthResult.Denied(AuthStatus.InvalidUsername, now);
+        if (request.Password.Length < MinPasswordLength) return AuthResult.Denied(AuthStatus.WeakPassword, now);
+
+        var id = "acc_" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(8));
+        var account = new AccountRow(id, username, _hasher.HashPassword(username, request.Password),
+            Enabled: true, NoExpiry, request.ProfileId.Trim(), MinCredentialRevision: 0, "邀请码注册");
+        switch (store.RegisterWithInvite(NormalizeInvite(request.InviteCode), account, now))
+        {
+            case RegisterOutcome.InvalidInvite:
+                NoteFailure(limitKey, now);
+                return AuthResult.Denied(AuthStatus.InvalidInvite, now);
+            case RegisterOutcome.UsernameTaken:
+                return AuthResult.Denied(AuthStatus.UsernameTaken, now);
+        }
 
         var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
             .TrimEnd('=').Replace('+', '-').Replace('/', '_');
