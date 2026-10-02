@@ -25,7 +25,7 @@ public sealed record LoginRequest(
     string AppVersion,
     int CredentialRevision);
 
-public sealed record HeartbeatRequest(string ProfileId);
+public sealed record HeartbeatRequest(string ProfileId, long ActiveSeconds = 0);
 
 /// <summary>Response for login and heartbeat. Times are UTC server time; the client
 /// anchors them to its own monotonic clock using <see cref="ServerTime"/>.</summary>
@@ -36,7 +36,10 @@ public sealed record AuthResult(
     DateTimeOffset? ServerTime = null,
     DateTimeOffset? LeaseValidUntil = null,
     DateTimeOffset? AccountValidUntil = null,
-    int HeartbeatSeconds = 0)
+    int HeartbeatSeconds = 0,
+    int? QuotaSeconds = null,
+    int? QuotaRemainingSeconds = null,
+    DateTimeOffset? QuotaResetsAt = null)
 {
     public static AuthResult Denied(AuthStatus status, DateTimeOffset now) => new(status, ServerTime: now);
 }
@@ -50,4 +53,8 @@ public sealed class AuthServerOptions
     public int HeartbeatSeconds { get; set; } = 60;
     public int MaxFailedLogins { get; set; } = 5;
     public int FailedLoginWindowMinutes { get; set; } = 15;
+    /// <summary>Daily companion time when neither the account nor the global setting says otherwise.</summary>
+    public int DefaultDailyQuotaSeconds { get; set; } = 3600;
+    /// <summary>Slack added to the elapsed time when capping what one heartbeat may credit.</summary>
+    public int MaxCatchUpSeconds { get; set; } = 30;
 }

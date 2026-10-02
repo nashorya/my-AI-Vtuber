@@ -60,6 +60,9 @@ public partial class App : Application
             return;
         }
 
+        // The streamer skin is a light design; dark title-bar glyphs and controls must match it.
+        if (profile is not null) ApplyTheme(AppTheme.Light);
+
         var configPath = System.IO.Path.Combine(AppPaths.ContentRoot, "config.json");
         var configManager = new ConfigManager(configPath) { Profile = profile };
         var config = LoadConfigSafe(configManager, configPath);

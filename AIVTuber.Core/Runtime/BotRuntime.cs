@@ -130,6 +130,18 @@ public sealed class BotRuntime : IAsyncDisposable
         _cloud = access;
         _profile = profile;
         _cloud.Revoked += OnCloudRevoked;
+        if (_quota is not null)
+        {
+            _quota.QuotaExhausted -= OnQuotaExhausted;
+            _quota.QuotaRestored -= OnQuotaRestored;
+        }
+        _quota = access as ICompanionQuota;
+        if (_quota is not null)
+        {
+            _quota.QuotaExhausted += OnQuotaExhausted;
+            _quota.QuotaRestored += OnQuotaRestored;
+            _quota.SetCompanionActive(!_companionPaused);
+        }
     }
 
     /// <summary>Stops everything that could still produce public output: in-flight ASR is
@@ -159,6 +171,9 @@ public sealed class BotRuntime : IAsyncDisposable
     // ── Companion pause and speech-recognition health (A2) ────────────────────
 
     private volatile bool _companionPaused;
+    private ICompanionQuota? _quota;
+    private int _quotaWindDown;            // 1 while the current reply is allowed to finish
+    private volatile bool _quotaExhausted;
     private AsrHealth _asrHealth = AsrHealth.Unknown;
     private int _asrInFlight;
 
@@ -168,10 +183,35 @@ public sealed class BotRuntime : IAsyncDisposable
     public bool CompanionPaused => _companionPaused;
     public event EventHandler? CompanionPausedChanged;
 
+    /// <summary>The daily companion quota, when the account service enforces one.</summary>
+    public ICompanionQuota? Quota => _quota;
+    /// <summary>True from the moment today's time ran out until the service reports time again.
+    /// While set, the streamer cannot resume the companion.</summary>
+    public bool QuotaExhausted
+    {
+        get
+        {
+            if (!_quotaExhausted) return false;
+            // The flag is only a latch. A new login (or an operator adding time) can leave the
+            // license with time left without ever raising QuotaRestored, so the live remaining
+            // time is the authority and clears the latch.
+            if (_quota is { QuotaManaged: true } quota && quota.QuotaRemainingSeconds > 0)
+            {
+                _quotaExhausted = false;
+                return false;
+            }
+            return true;
+        }
+    }
+    /// <summary>How long a reply in progress may keep going after the quota ran out.</summary>
+    internal TimeSpan QuotaWindDownMax { get; set; } = TimeSpan.FromSeconds(30);
+
     public void SetCompanionPaused(bool paused)
     {
+        if (!paused && QuotaExhausted) return; // today's time is gone: resuming is refused
         if (_companionPaused == paused) return;
         _companionPaused = paused;
+        _quota?.SetCompanionActive(!paused);
         if (paused)
         {
             _turnManagerV2?.Cancel(TurnCancelReason.Paused);
@@ -188,6 +228,40 @@ public sealed class BotRuntime : IAsyncDisposable
         NotifyAsrHealth();
     }
 
+    private void OnQuotaExhausted()
+    {
+        if (_companionPaused)
+        {
+            _quotaExhausted = true;
+            Notify(CompanionPausedChanged, nameof(CompanionPausedChanged));
+            return;
+        }
+        if (Interlocked.Exchange(ref _quotaWindDown, 1) == 1) return;
+        ReportTurnStatus("今日陪播时长已用完，说完这句后暂停");
+        _ = Task.Run(FinishQuotaWindDownAsync);
+    }
+
+    private async Task FinishQuotaWindDownAsync()
+    {
+        // New turns are already blocked (CanStartCloudWork). Let the reply in progress end,
+        // but never wait longer than QuotaWindDownMax.
+        var deadline = Environment.TickCount64 + (long)QuotaWindDownMax.TotalMilliseconds;
+        while (_stateTracker.State is PipelineState.Thinking or PipelineState.Speaking
+               && Environment.TickCount64 < deadline)
+            await Task.Delay(100).ConfigureAwait(false);
+
+        _quotaExhausted = true;
+        SetCompanionPaused(true); // cuts whatever is left after the cap
+        Volatile.Write(ref _quotaWindDown, 0);
+        Notify(CompanionPausedChanged, nameof(CompanionPausedChanged));
+    }
+
+    private void OnQuotaRestored()
+    {
+        _quotaExhausted = false;
+        Notify(CompanionPausedChanged, nameof(CompanionPausedChanged));
+    }
+
     private void SetMicSpeechAbandoned()
     {
         lock (_micInputSync)
@@ -198,7 +272,8 @@ public sealed class BotRuntime : IAsyncDisposable
     }
 
     /// <summary>Cloud work may start: signed in (or public build) and not paused.</summary>
-    private bool CanStartCloudWork => _cloud.IsAllowed && !_companionPaused;
+    private bool CanStartCloudWork =>
+        _cloud.IsAllowed && !_companionPaused && Volatile.Read(ref _quotaWindDown) == 0;
 
     /// <summary>Speech-recognition health derived from real recognition outcomes (cloud) or the
     /// sidecar health check (local) — never from the local sidecar flag alone.</summary>

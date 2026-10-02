@@ -111,4 +111,70 @@ public sealed class AdminCliTests : IDisposable
         Assert.NotEqual(0, code);
         Assert.Contains("ghost", error);
     }
+
+    private void CreateAlice() =>
+        Run("secret-1\n", "create", "--username", "alice", "--profile", "streamer-017", "--days", "30", "--password-stdin");
+
+    [Fact]
+    public void SetDefaultDaily_ChangesEveryoneWithoutAnOverride()
+    {
+        CreateAlice();
+        Assert.Equal(0, Run("", "set-default-daily", "--minutes", "30").Code);
+
+        Assert.Equal(1800, Login("secret-1").QuotaSeconds);
+    }
+
+    [Fact]
+    public void SetDaily_OverridesOneAccount_AndDefaultFlagRestores()
+    {
+        CreateAlice();
+        Run("", "set-default-daily", "--minutes", "30");
+
+        Assert.Equal(0, Run("", "set-daily", "--username", "alice", "--minutes", "120").Code);
+        Assert.Equal(7200, Login("secret-1").QuotaSeconds);
+
+        Assert.Equal(0, Run("", "set-daily", "--username", "alice", "--default").Code);
+        Assert.Equal(1800, Login("secret-1").QuotaSeconds);
+    }
+
+    [Fact]
+    public void AddToday_AddsToTodaysQuota()
+    {
+        CreateAlice();
+
+        Assert.Equal(0, Run("", "add-today", "--username", "alice", "--minutes", "30").Code);
+
+        Assert.Equal(3600 + 1800, Login("secret-1").QuotaSeconds);
+    }
+
+    [Fact]
+    public void Usage_ListsDaysAndList_ShowsTodayColumns()
+    {
+        CreateAlice();
+        var login = Login("secret-1");
+        _clock.Advance(TimeSpan.FromSeconds(60));
+        using (var store = AuthStore.Open(_db))
+        {
+            var service = new AuthService(store, _clock, new AuthServerOptions());
+            service.Heartbeat(login.SessionToken!, "streamer-017", 60);
+        }
+        SqliteConnection.ClearAllPools();
+
+        var usage = Run("", "usage", "--username", "alice", "--days", "7");
+        var list = Run("", "list");
+
+        Assert.Equal(0, usage.Code);
+        Assert.Contains("2026-09-26", usage.Out);
+        Assert.Contains("1.0", usage.Out); // minutes
+        Assert.Contains("today_used_min=1.0", list.Out);
+        Assert.Contains("today_quota_min=60.0", list.Out);
+    }
+
+    [Fact]
+    public void QuotaCommands_RejectNonPositiveMinutes()
+    {
+        CreateAlice();
+        Assert.Equal(1, Run("", "set-default-daily", "--minutes", "0").Code);
+        Assert.Equal(1, Run("", "add-today", "--username", "alice", "--minutes", "-5").Code);
+    }
 }

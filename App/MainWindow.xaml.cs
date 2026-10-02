@@ -61,6 +61,8 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         };
         FirstRunHost.SkipRequested += (_, _) => ShowConsolePage();
 
+        if (runtime.DistributionMode) ApplyStreamerShell();
+
         if (_accountVm is not null)
         {
             LoginHost.DataContext = _accountVm;
@@ -68,6 +70,16 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             _accountVm.PropertyChanged += (_, _) => RefreshAccount();
             RefreshAccount();
         }
+    }
+
+    /// <summary>Streamer builds use the pastel skin of the web console for the native chrome too:
+    /// a flat ground instead of Mica, so the title bar, account strip and login page match the page.</summary>
+    private void ApplyStreamerShell()
+    {
+        Title = "AIVTuber 陪播";
+        ShellTitleBar.Title = Title;
+        WindowBackdropType = Wpf.Ui.Controls.WindowBackdropType.None;
+        Background = (System.Windows.Media.Brush)FindResource("StreamerGroundBrush");
     }
 
     private void RefreshAccount()

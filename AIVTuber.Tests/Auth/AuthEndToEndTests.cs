@@ -50,6 +50,8 @@ public sealed class AuthEndToEndTests : IAsyncLifetime
         Assert.True(outcome.Success, outcome.Message);
         Assert.True(license.IsAllowed);
         Assert.NotNull(license.Snapshot.AccountValidUntil);
+        Assert.True(license.QuotaManaged);
+        Assert.Equal(3600, license.QuotaRemainingSeconds);
 
         await license.HeartbeatOnceAsync();
         Assert.True(license.IsAllowed);
@@ -83,7 +85,7 @@ public sealed class AuthEndToEndTests : IAsyncLifetime
 
         await license.LogoutAsync();
 
-        Assert.Equal(AuthCode.SessionRevoked, (await api.HeartbeatAsync(token!, "streamer-017")).Status);
+        Assert.Equal(AuthCode.SessionRevoked, (await api.HeartbeatAsync(token!, "streamer-017", 0)).Status);
     }
 
     [Fact]

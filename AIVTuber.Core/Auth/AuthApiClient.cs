@@ -30,8 +30,8 @@ public sealed class AuthApiClient : IAuthApi, IDisposable
     public Task<AuthReply> LoginAsync(AuthLoginRequest request, CancellationToken ct = default) =>
         SendAsync("v1/auth/login", request, token: null, ct);
 
-    public Task<AuthReply> HeartbeatAsync(string token, string profileId, CancellationToken ct = default) =>
-        SendAsync("v1/auth/heartbeat", new { profile_id = profileId }, token, ct);
+    public Task<AuthReply> HeartbeatAsync(string token, string profileId, long activeSeconds, CancellationToken ct = default) =>
+        SendAsync("v1/auth/heartbeat", new { profile_id = profileId, active_seconds = activeSeconds }, token, ct);
 
     public async Task LogoutAsync(string token, CancellationToken ct = default)
     {
@@ -82,8 +82,18 @@ public sealed class AuthApiClient : IAuthApi, IDisposable
             if (wire?.Status is null)
                 throw new AuthTransportException($"鉴权服务响应异常（HTTP {(int)response.StatusCode}）");
 
-            return new AuthReply(ParseStatus(wire.Status), wire.SessionToken, wire.AccountId, wire.ServerTime,
-                wire.LeaseValidUntil, wire.AccountValidUntil, wire.HeartbeatSeconds);
+            var status = ParseStatus(wire.Status);
+            QuotaReply? quota = null;
+            if (status == AuthCode.Ok)
+            {
+                // The service always sends the quota on success; a reply without it is a broken
+                // proxy or an outdated service, not an account verdict.
+                if (wire.QuotaSeconds is not { } total || wire.QuotaRemainingSeconds is not { } left || wire.QuotaResetsAt is not { } resets)
+                    throw new AuthTransportException("鉴权服务缺少时长额度信息");
+                quota = new QuotaReply(total, Math.Max(0, left), resets);
+            }
+            return new AuthReply(status, wire.SessionToken, wire.AccountId, wire.ServerTime,
+                wire.LeaseValidUntil, wire.AccountValidUntil, wire.HeartbeatSeconds, quota);
         }
     }
 
@@ -109,5 +119,8 @@ public sealed class AuthApiClient : IAuthApi, IDisposable
         DateTimeOffset? ServerTime,
         DateTimeOffset? LeaseValidUntil,
         DateTimeOffset? AccountValidUntil,
-        int HeartbeatSeconds);
+        int HeartbeatSeconds,
+        int? QuotaSeconds,
+        int? QuotaRemainingSeconds,
+        DateTimeOffset? QuotaResetsAt);
 }

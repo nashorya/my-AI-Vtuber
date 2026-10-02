@@ -31,7 +31,7 @@ public sealed record LoginOutcome(bool Success, string Message);
 /// <para>Lease expiry is measured on the monotonic clock from the moment the request was
 /// sent, using the server's own lease duration, so changing the PC's date cannot extend it.</para>
 /// </summary>
-public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
+public sealed class CloudLicense : ICloudAccess, ICompanionQuota, IAsyncDisposable
 {
     private readonly IAuthApi _api;
     private readonly string _profileId;
@@ -55,6 +55,15 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
     private TimeSpan _heartbeatInterval = TimeSpan.FromSeconds(60);
     private long _generation;
     private long _epoch;
+    private bool _companionActive = true;
+    private long _activeAccumTicks;
+    private long? _activeSinceTimestamp;
+    private bool _quotaManaged;
+    private int _quotaSeconds;
+    private int _quotaRemainingAtReport;
+    private long _activeSecondsAtReport;
+    private DateTimeOffset? _quotaResetsAt;
+    private bool _exhaustedRaised;
     private Task? _loop;
     private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(10);
 
@@ -71,6 +80,72 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
 
     public event Action<string>? Revoked;
     public event Action<LicenseSnapshot>? Changed;
+    public event Action? QuotaChanged;
+    public event Action? QuotaExhausted;
+    public event Action? QuotaRestored;
+
+    public bool QuotaManaged { get { lock (_sync) return _quotaManaged; } }
+    public int QuotaSeconds { get { lock (_sync) return _quotaSeconds; } }
+    public DateTimeOffset? QuotaResetsAt { get { lock (_sync) return _quotaResetsAt; } }
+    public long ActiveSeconds { get { lock (_sync) return ActiveSecondsLocked(); } }
+    public int QuotaRemainingSeconds { get { lock (_sync) return RemainingLocked(); } }
+
+    public void SetCompanionActive(bool active)
+    {
+        lock (_sync)
+        {
+            if (_companionActive == active) return;
+            if (!active) StopCountingLocked();
+            _companionActive = active;
+            if (active) StartCountingLocked();
+        }
+    }
+
+    /// <summary>Raises <see cref="QuotaExhausted"/> / <see cref="QuotaRestored"/> on the edges.
+    /// Called every second by the background loop and after every reply.</summary>
+    public void CheckQuota()
+    {
+        var raise = false;
+        var restore = false;
+        lock (_sync)
+        {
+            if (!_quotaManaged || _state != LicenseState.Active) return;
+            var remaining = RemainingLocked();
+            if (remaining <= 0 && !_exhaustedRaised) { _exhaustedRaised = true; raise = true; }
+            else if (remaining > 0 && _exhaustedRaised) { _exhaustedRaised = false; restore = true; }
+        }
+        if (raise) QuotaExhausted?.Invoke();
+        if (restore) QuotaRestored?.Invoke();
+    }
+
+    private long ActiveSecondsLocked()
+    {
+        var ticks = _activeAccumTicks;
+        if (_activeSinceTimestamp is { } since) ticks += _clock.GetTimestamp() - since;
+        return ticks / _clock.TimestampFrequency;
+    }
+
+    private int RemainingLocked()
+    {
+        if (!_quotaManaged) return int.MaxValue;
+        var usedSinceReport = ActiveSecondsLocked() - _activeSecondsAtReport;
+        return (int)Math.Max(0, _quotaRemainingAtReport - usedSinceReport);
+    }
+
+    private void StartCountingLocked()
+    {
+        if (_companionActive && _state == LicenseState.Active && _activeSinceTimestamp is null)
+            _activeSinceTimestamp = _clock.GetTimestamp();
+    }
+
+    private void StopCountingLocked()
+    {
+        if (_activeSinceTimestamp is { } since)
+        {
+            _activeAccumTicks += _clock.GetTimestamp() - since;
+            _activeSinceTimestamp = null;
+        }
+    }
 
     public bool IsAllowed
     {
@@ -128,7 +203,11 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
                 _token = reply.SessionToken;
                 _username = username;
                 _epoch++;
-                ApplyLeaseLocked(reply, sentAt);
+                _activeAccumTicks = 0;
+                _activeSinceTimestamp = null;
+                _exhaustedRaised = false;
+                StartCountingLocked();
+                ApplyLeaseLocked(reply, sentAt, activeAtSend: 0);
                 _message = "已登录";
                 _reason = LicenseStopReason.None;
                 snapshot = SnapshotLocked();
@@ -137,6 +216,8 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
 
         Changed?.Invoke(snapshot);
         if (snapshot.State != LicenseState.Active) return new LoginOutcome(false, snapshot.Message);
+        QuotaChanged?.Invoke();
+        CheckQuota();
         EnsureLoop();
         return new LoginOutcome(true, snapshot.Message);
     }
@@ -147,18 +228,20 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
     {
         string token;
         long generation;
+        long activeAtSend;
         lock (_sync)
         {
             if (_state != LicenseState.Active || _token is null) return;
             token = _token;
             generation = _generation;
+            activeAtSend = ActiveSecondsLocked();
         }
         var sentAt = _clock.GetTimestamp();
 
         AuthReply reply;
         try
         {
-            reply = await _api.HeartbeatAsync(token, _profileId, ct).ConfigureAwait(false);
+            reply = await _api.HeartbeatAsync(token, _profileId, activeAtSend, ct).ConfigureAwait(false);
         }
         catch (AuthTransportException)
         {
@@ -172,10 +255,12 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
             lock (_sync)
             {
                 if (_generation != generation || _state != LicenseState.Active) return;
-                ApplyLeaseLocked(reply, sentAt);
+                ApplyLeaseLocked(reply, sentAt, activeAtSend);
                 snapshot = SnapshotLocked();
             }
             Changed?.Invoke(snapshot);
+            QuotaChanged?.Invoke();
+            CheckQuota();
             return;
         }
 
@@ -219,6 +304,8 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
             wasActive = _state == LicenseState.Active;
             _generation++;
             if (wasActive) _epoch++;
+            StopCountingLocked();
+            _exhaustedRaised = false;
             _state = LicenseState.SignedOut;
             _token = null;
             _message = "已退出登录";
@@ -277,6 +364,8 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
         lock (_sync)
         {
             if (_state != LicenseState.Active) return;
+            StopCountingLocked();
+            _exhaustedRaised = false;
             _state = state;
             _message = reason;
             _reason = stopReason;
@@ -289,7 +378,7 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
         Changed?.Invoke(snapshot);
     }
 
-    private void ApplyLeaseLocked(AuthReply reply, long sentAt)
+    private void ApplyLeaseLocked(AuthReply reply, long sentAt, long activeAtSend)
     {
         var remaining = reply.LeaseValidUntil is { } until && reply.ServerTime is { } serverNow
             ? until - serverNow
@@ -302,6 +391,14 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
         _accountValidUntil = reply.AccountValidUntil;
         if (reply.HeartbeatSeconds > 0) _heartbeatInterval = TimeSpan.FromSeconds(reply.HeartbeatSeconds);
         _nextHeartbeatTimestamp = sentAt + (long)(_heartbeatInterval.TotalSeconds * _clock.TimestampFrequency);
+        if (reply.Quota is { } q)
+        {
+            _quotaManaged = true;
+            _quotaSeconds = q.QuotaSeconds;
+            _quotaRemainingAtReport = q.RemainingSeconds;
+            _activeSecondsAtReport = activeAtSend;
+            _quotaResetsAt = q.ResetsAt;
+        }
     }
 
     private LicenseSnapshot SnapshotLocked() => new(_state, _message, _username, _accountValidUntil, _reason);
@@ -318,6 +415,7 @@ public sealed class CloudLicense : ICloudAccess, IAsyncDisposable
         {
             await Task.Delay(TimeSpan.FromSeconds(1), _clock, ct).ConfigureAwait(false);
             EnforceExpiry();
+            CheckQuota();
             bool due;
             lock (_sync)
             {

@@ -32,6 +32,14 @@ public partial class WebConsoleView : UserControl
         _config = config;
         _memory = memory;
         _streamerFactory = streamerFactory;
+        if (streamerFactory is not null)
+        {
+            // Match streamer.css's ground so loading and resizing never flash the old cream.
+            var ground = System.Windows.Media.Color.FromRgb(0xF6, 0xF0, 0xFF);
+            Root.Background = new System.Windows.Media.SolidColorBrush(ground);
+            Browser.DefaultBackgroundColor = System.Drawing.Color.FromArgb(0xF6, 0xF0, 0xFF);
+            FallbackText.Foreground = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x5A, 0x4F, 0x78));
+        }
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
