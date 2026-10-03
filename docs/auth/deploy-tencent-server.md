@@ -26,7 +26,7 @@ cd /opt/aivtuber-auth
 sudo -u aivtuber-auth DOTNET_ROOT=/opt/dotnet /opt/dotnet/dotnet AIVTuber.AuthServer.dll admin --db /var/lib/aivtuber-auth/auth.db list
 ```
 
-后面接 `create`、`extend`、`disable`、`set-daily`、`add-today`、`usage` 等，见 `docs/auth/README.md`。建账号示例：
+后面接 `create`、`extend`、`disable`、`set-daily`、`add-today`、`usage`、`invite create` 等，见 `docs/auth/README.md`。建账号示例：
 
 ```bash
 echo '主播的密码' | sudo -u aivtuber-auth DOTNET_ROOT=/opt/dotnet /opt/dotnet/dotnet AIVTuber.AuthServer.dll admin \
@@ -54,7 +54,7 @@ sudo systemctl start aivtuber-auth
 systemctl is-active aivtuber-auth
 ```
 
-数据库结构的升级在服务启动时自动完成。
+数据库结构的升级在服务启动时自动完成（含邀请码表）。
 
 ## 验证
 

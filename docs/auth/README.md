@@ -53,7 +53,7 @@ AIVTuber.AuthServer admin --db auth.db create --username alice --profile streame
 
 | 命令 | 作用 |
 |---|---|
-| `create --username U --profile P (--days N \| --valid-until ISO) [--note T] [--password-stdin]` | 建账号，绑定到一个 profile |
+| `create --username U --profile P (--days N \| --valid-until ISO \| --no-expiry) [--note T] [--password-stdin]` | 建账号，绑定到一个 profile；`--no-expiry` 表示长期有效 |
 | `extend --username U (--days N \| --valid-until ISO)` | 续期。`--days` 从"当前截止时间和现在较晚的那个"往后加。客户端下次心跳生效，不用换包 |
 | `disable` / `enable --username U` | 禁用时同时注销该账号所有会话，客户端下次心跳（约 60 秒内）停止 |
 | `set-password --username U [--password-stdin]` | 重置密码，同时注销所有会话 |
@@ -62,9 +62,26 @@ AIVTuber.AuthServer admin --db auth.db create --username alice --profile streame
 | `set-daily --username U (--minutes N \| --default)` | 单独设置某账号的每日时长 / 恢复默认 |
 | `add-today --username U --minutes N` | 今天临时加时（可累加），下一个 06:00 作废 |
 | `usage --username U [--days 7]` | 最近几个额度日的用量（分钟） |
+| `invite create --count N --profile P [--note T]` | 批量生成一次性邀请码（1–500 个），只在生成时打印，格式 `XXXX-XXXX` |
+| `invite list` | 每个码的状态：未用 / 已用（账号名和时间）/ 已作废 |
+| `invite revoke --code C` | 作废一个还没用的码；已用的码不能作废 |
 | `list` | 列出账号状态，不输出哈希；末尾显示 `today_used_min` / `today_quota_min` |
 
 修改即时生效，客户端下一次心跳（约 60 秒内）拿到新的剩余时间。额度日从 06:00 到次日 06:00（北京时间），凌晨开播的时间算在前一个额度日。
+
+## 邀请码注册与共用安装包
+
+主播不需要运营者逐个建账号：运营者批量生成邀请码，所有主播用**同一个安装包**，在登录页点「没有账号？用邀请码注册」，填邀请码、自己起的账号名和密码（输两次），注册成功即登录。
+
+- 邀请码是一次性的注册门票：不带有效期，也不带时长；注册出来的账号**长期有效**，每日时长是默认的 60 分钟，可以用 `set-daily` 单独调，用 `disable` 停用。
+- 邀请码绑定一个档案编号（`--profile`）。共用包的档案里不写 `account`，`profile_id` 表示这批包的编号（例如 `shared-001`，示例见 `profile.shared.example.json`）；只有这个包的主播能用这个码注册，注册出来的账号也只能用这批包登录。
+- 邀请码打印出来之后服务器上只保存码本身和使用状态，丢了可以用 `invite list` 看哪些没用，但不会再给出新的信息；不用的码用 `invite revoke` 作废。
+- 老办法（每人一个专属包 + `create` 手动建号）仍然可用，两种方式可以并存。
+- **风险**：所有人共用一个包，包里的厂商 Key 是同一把。有人取出 Key，影响所有人；要换 Key 就必须重新发一个新包，并用 `set-min-revision` 让旧包失效。厂商账单也分不出是谁用的，只能靠服务端的每日用时记录来区分。
+
+### 注册协议
+
+`POST /v1/auth/register`，请求 `invite_code`、`username`、`password`、`profile_id`、`app_version`、`credential_revision`；成功时回复与登录相同（会话、许可、每日额度，`account_valid_until` 为 2100-01-01 表示长期有效）。账号名 3–20 位（字母、数字、下划线、横线），密码至少 8 位。邀请码用完 / 不存在 / 已作废 / 与档案不符，一律返回同一个 `invalid_invite`；同一来源注册失败 5 次后锁定 15 分钟。服务在反向代理后面时，来源取 `X-Real-IP`。
 
 ## 生成主播专属包
 
@@ -144,5 +161,9 @@ dotnet run --project tools/AIVTuber.Packager -- stream --profile ~/private/strea
 | `profile_mismatch` | 403 | 这个安装包不属于这个账号 |
 | `credential_revoked` | 403 | 安装包里的凭据版本已作废 |
 | `rate_limited` | 429 | 登录失败次数过多，请稍后再试 |
+| `invalid_invite` | 403 | 邀请码不对或已经用过，请向发放者确认 |
+| `username_taken` | 409 | 这个账号名已被占用，换一个试试 |
+| `invalid_username` | 400 | 账号名需要 3 到 20 位，只能用字母、数字、下划线和横线 |
+| `weak_password` | 400 | 密码至少需要 8 位 |
 
 网络不通、超时，或者反向代理返回非 JSON（比如 502 页面）时，客户端按"连不上鉴权服务"处理，不会当成账号被拒绝。
