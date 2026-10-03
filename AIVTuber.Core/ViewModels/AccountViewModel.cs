@@ -15,6 +15,7 @@ public sealed class AccountViewModel : INotifyPropertyChanged
     private bool _isSignedIn;
     private bool _showLogin = true;
     private bool _isBusy;
+    private bool _isRegistering;
     private string _errorText = "";
     private string _validUntilText = "";
     private LicenseStopReason _stopReason = LicenseStopReason.SignedOut;
@@ -36,6 +37,8 @@ public sealed class AccountViewModel : INotifyPropertyChanged
 
     public bool IsSignedIn { get => _isSignedIn; private set => Set(ref _isSignedIn, value); }
     public bool ShowLogin { get => _showLogin; private set => Set(ref _showLogin, value); }
+    /// <summary>True while the login page shows the invite-code registration form.</summary>
+    public bool IsRegistering { get => _isRegistering; private set => Set(ref _isRegistering, value); }
     public bool IsBusy { get => _isBusy; private set => Set(ref _isBusy, value); }
     public string ErrorText { get => _errorText; private set => Set(ref _errorText, value); }
     public string ValidUntilText { get => _validUntilText; private set => Set(ref _validUntilText, value); }
@@ -58,6 +61,48 @@ public sealed class AccountViewModel : INotifyPropertyChanged
         }
     }
 
+    public void ToggleRegister()
+    {
+        IsRegistering = !IsRegistering;
+        ErrorText = "";
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex UsernamePattern = new("^[A-Za-z0-9_-]{3,20}$");
+    private const int MinPasswordLength = 8;
+
+    /// <summary>Registers with a one-time invite code (the account name is <see cref="Username"/>).
+    /// Obvious mistakes are caught here so they never cost a request.</summary>
+    public async Task RegisterAsync(string inviteCode, string password, string confirmPassword)
+    {
+        if (IsBusy) return;
+        var invite = (inviteCode ?? "").Trim();
+        var username = (Username ?? "").Trim();
+        string? problem =
+            invite.Length == 0 ? "请填写邀请码"
+            : !UsernamePattern.IsMatch(username) ? "账号名需要 3 到 20 位，只能用字母、数字、下划线和横线"
+            : (password ?? "").Length < MinPasswordLength ? "密码至少需要 8 位"
+            : password != confirmPassword ? "两次输入的密码不一致"
+            : null;
+        if (problem is not null)
+        {
+            ErrorText = problem;
+            return;
+        }
+
+        IsBusy = true;
+        ErrorText = "";
+        try
+        {
+            var outcome = await _license.RegisterAsync(invite, username, password!).ConfigureAwait(true);
+            if (outcome.Success) IsRegistering = false;
+            else ErrorText = outcome.Message;
+        }
+        finally
+        {
+            IsBusy = false;
+        }
+    }
+
     public Task LogoutAsync() => _license.LogoutAsync();
 
     /// <summary>Hides the overlay while signed out so settings and diagnostics stay usable;
@@ -73,9 +118,9 @@ public sealed class AccountViewModel : INotifyPropertyChanged
     {
         IsSignedIn = snapshot.State == LicenseState.Active;
         StopReason = snapshot.Reason;
-        ValidUntilText = snapshot.AccountValidUntil is { } until
-            ? $"有效至 {until.ToLocalTime():yyyy-MM-dd HH:mm}"
-            : "";
+        ValidUntilText = snapshot.AccountValidUntil is not { } until ? ""
+            : CloudLicense.IsNoExpiry(until) ? "长期有效"
+            : $"有效至 {until.ToLocalTime():yyyy-MM-dd HH:mm}";
         if (IsSignedIn)
         {
             ErrorText = "";
