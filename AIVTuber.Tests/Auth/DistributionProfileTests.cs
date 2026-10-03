@@ -14,11 +14,11 @@ public sealed class DistributionProfileTests : IDisposable
     internal static string ProfileJson(
         string profileId = "streamer-017", int revision = 2, string llmKey = "sk-test-llm-aaaa1111",
         string asrProvider = "aliyun", string ttsProvider = "minimax", string llmBaseUrl = "https://api.deepseek.com",
-        string authServer = "https://auth.example.invalid/") => $$"""
+        string authServer = "https://auth.example.invalid/", string? account = "alice") => $$"""
         {
           "format": 1,
           "profile_id": "{{profileId}}",
-          "account": "alice",
+          {{(account is null ? "" : $"\"account\": \"{account}\",")}}
           "credential_revision": {{revision}},
           "credential_scope": "dedicated",
           "auth_server": "{{authServer}}",
@@ -171,5 +171,16 @@ public sealed class DistributionProfileTests : IDisposable
 
         Assert.Equal("sk-test-A-0001", a.Llm.ApiKey);
         Assert.Equal("sk-test-B-0002", b.Llm.ApiKey);
+    }
+
+    [Fact]
+    public void Profile_WithoutAccount_IsValid_ForASharedPackage()
+    {
+        WriteProfile(ProfileJson(profileId: "shared-001", account: null));
+
+        var profile = DistributionProfile.TryLoad(_root)!;
+
+        Assert.Equal("shared-001", profile.ProfileId);
+        Assert.Equal("", profile.Account);
     }
 }
