@@ -172,4 +172,19 @@ public sealed class PackagerTests : IDisposable
         Assert.Equal(["distribution-manifest.json", "distribution/profile.json"],
             zip.Entries.Select(e => e.FullName).OrderBy(n => n, StringComparer.Ordinal).ToArray());
     }
+
+    [Fact]
+    public void Stream_SharedProfile_IsNamedByProfileId_AndHasNoAccountInTheManifest()
+    {
+        var profile = WriteProfile("shared.json", DistributionProfileTests.ProfileJson(profileId: "shared-001", account: null));
+
+        Assert.Equal(0, Pack("--profile", profile));
+
+        var zipPath = Path.Combine(_outDir, "AIVTuber-v0.36.0-shared-001-c2.zip");
+        Assert.True(File.Exists(zipPath), _stderr.ToString());
+        using var zip = ZipFile.OpenRead(zipPath);
+        using var manifest = JsonDocument.Parse(new StreamReader(zip.GetEntry("distribution-manifest.json")!.Open()).ReadToEnd());
+        Assert.Equal("shared-001", manifest.RootElement.GetProperty("profile_id").GetString());
+        Assert.Equal("", manifest.RootElement.GetProperty("account").GetString());
+    }
 }

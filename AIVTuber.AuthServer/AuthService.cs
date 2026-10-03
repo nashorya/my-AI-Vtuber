@@ -11,8 +11,22 @@ namespace AIVTuber.AuthServer;
 /// </summary>
 public sealed class AuthService(AuthStore store, TimeProvider clock, AuthServerOptions options)
 {
+    /// <summary>"Never expires" for accounts that have no end date (invite registrations).
+    /// 2100 rather than a far-future year so the client's tick arithmetic cannot overflow.</summary>
+    public static readonly DateTimeOffset NoExpiry = new(2100, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+    private const string InviteAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    private static readonly System.Text.RegularExpressions.Regex UsernamePattern = new("^[A-Za-z0-9_-]{3,20}$");
+    public const int MinPasswordLength = 8;
+
     private readonly PasswordHasher<string> _hasher = new();
     private readonly ConcurrentDictionary<string, FailureWindow> _failures = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _registrationSync = new();
+    private readonly Dictionary<string, FailureWindow> _registrationFailures = new(StringComparer.Ordinal);
+    // Bound expensive work across all sources, without holding the store or admission lock.
+    private readonly SemaphoreSlim _registrationHashes = new(2, 2);
+    private DateTimeOffset _nextRegistrationCleanup;
+    private const int MaxRegistrationSources = 4096;
 
     private sealed record FailureWindow(int Count, DateTimeOffset Since);
 
@@ -81,6 +95,111 @@ public sealed class AuthService(AuthStore store, TimeProvider clock, AuthServerO
             .TrimEnd('=').Replace('+', '-').Replace('/', '_');
         store.InsertSession(HashToken(token), account.Id, account.ProfileId, request.AppVersion ?? "", now);
         return Granted(account, now) with { SessionToken = token };
+    }
+
+    public static string NormalizeInvite(string code) =>
+        new string((code ?? "").Where(char.IsLetterOrDigit).ToArray()).ToUpperInvariant();
+
+    public static string FormatInvite(string normalized) =>
+        normalized.Length == 8 ? normalized[..4] + "-" + normalized[4..] : normalized;
+
+    /// <summary>Generates <paramref name="count"/> unique one-time invite codes for a package profile.</summary>
+    public IReadOnlyList<string> CreateInvites(int count, string profileId, string note = "")
+    {
+        RequireText(profileId, nameof(profileId));
+        if (count is < 1 or > 500) throw new ArgumentException("数量需要在 1 到 500 之间。");
+        var now = clock.GetUtcNow();
+        var codes = new List<string>(count);
+        while (codes.Count < count)
+        {
+            var chars = new char[8];
+            for (var i = 0; i < chars.Length; i++) chars[i] = InviteAlphabet[RandomNumberGenerator.GetInt32(InviteAlphabet.Length)];
+            var code = new string(chars);
+            if (store.InsertInvite(code, profileId.Trim(), note ?? "", now)) codes.Add(FormatInvite(code));
+        }
+        return codes;
+    }
+
+    public bool RevokeInvite(string code) => store.RevokeInvite(NormalizeInvite(code), clock.GetUtcNow());
+
+    public IReadOnlyList<InviteRow> ListInvites() => store.ListInvites();
+
+    public AuthResult Register(RegisterRequest request, string sourceKey)
+    {
+        var now = clock.GetUtcNow();
+        if (string.IsNullOrWhiteSpace(request.InviteCode) || string.IsNullOrWhiteSpace(request.Username) ||
+            string.IsNullOrEmpty(request.Password) || string.IsNullOrWhiteSpace(request.ProfileId))
+            return AuthResult.Denied(AuthStatus.BadRequest, now);
+
+        var username = request.Username.Trim();
+        if (!UsernamePattern.IsMatch(username)) return AuthResult.Denied(AuthStatus.InvalidUsername, now);
+        if (request.Password.Length < MinPasswordLength) return AuthResult.Denied(AuthStatus.WeakPassword, now);
+
+        var code = NormalizeInvite(request.InviteCode);
+        var profileId = request.ProfileId.Trim();
+        lock (_registrationSync)
+        {
+            // Checking the budget and recording a bad guess are one atomic operation.
+            // Login failures use a separate map and cannot poison registration source keys.
+            var windowLength = TimeSpan.FromMinutes(options.FailedLoginWindowMinutes);
+            if (now >= _nextRegistrationCleanup)
+            {
+                foreach (var key in _registrationFailures.Where(p => now - p.Value.Since > windowLength)
+                             .Select(p => p.Key).ToArray())
+                    _registrationFailures.Remove(key);
+                _nextRegistrationCleanup = now.AddMinutes(1);
+            }
+            if (_registrationFailures.TryGetValue(sourceKey, out var window))
+            {
+                if (now - window.Since > windowLength) _registrationFailures.Remove(sourceKey);
+                else if (window.Count >= options.MaxFailedLogins)
+                    return AuthResult.Denied(AuthStatus.RateLimited, now);
+            }
+            else if (_registrationFailures.Count >= MaxRegistrationSources)
+                return AuthResult.Denied(AuthStatus.RateLimited, now);
+
+            if (!store.IsInviteUsable(code, profileId))
+            {
+                NoteRegistrationFailure(sourceKey, now);
+                return AuthResult.Denied(AuthStatus.InvalidInvite, now);
+            }
+            // Do not spend a password hash on a taken username. The transaction rechecks
+            // both the invite and username after hashing to cover intervening changes.
+            if (store.FindAccountByUsername(username) is not null)
+                return AuthResult.Denied(AuthStatus.UsernameTaken, now);
+        }
+
+        if (!_registrationHashes.Wait(0)) return AuthResult.Denied(AuthStatus.RateLimited, now);
+        try
+        {
+            var id = "acc_" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(8));
+            var account = new AccountRow(id, username, _hasher.HashPassword(username, request.Password),
+                Enabled: true, NoExpiry, request.ProfileId.Trim(), MinCredentialRevision: 0, "邀请码注册");
+            switch (store.RegisterWithInvite(code, account, now))
+            {
+                case RegisterOutcome.InvalidInvite:
+                    lock (_registrationSync) NoteRegistrationFailure(sourceKey, now);
+                    return AuthResult.Denied(AuthStatus.InvalidInvite, now);
+                case RegisterOutcome.UsernameTaken:
+                    return AuthResult.Denied(AuthStatus.UsernameTaken, now);
+            }
+
+            var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
+                .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            store.InsertSession(HashToken(token), account.Id, account.ProfileId, request.AppVersion ?? "", now);
+            return Granted(account, now) with { SessionToken = token };
+        }
+        finally { _registrationHashes.Release(); }
+    }
+
+    // Caller holds _registrationSync.
+    private void NoteRegistrationFailure(string sourceKey, DateTimeOffset now)
+    {
+        if (_registrationFailures.TryGetValue(sourceKey, out var window) &&
+            now - window.Since <= TimeSpan.FromMinutes(options.FailedLoginWindowMinutes))
+            _registrationFailures[sourceKey] = window with { Count = window.Count + 1 };
+        else if (_registrationFailures.Count < MaxRegistrationSources)
+            _registrationFailures[sourceKey] = new FailureWindow(1, now);
     }
 
     public AuthResult Heartbeat(string token, string profileId, long activeSeconds = 0)

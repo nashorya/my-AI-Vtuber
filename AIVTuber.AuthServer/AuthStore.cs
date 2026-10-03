@@ -25,6 +25,18 @@ public sealed record SessionRow(
     DateTimeOffset LastSeenAt,
     long ReportedActiveSeconds);
 
+public sealed record InviteRow(
+    string Code,
+    string ProfileId,
+    string Note,
+    DateTimeOffset CreatedAt,
+    string? UsedByAccountId,
+    string? UsedByUsername,
+    DateTimeOffset? UsedAt,
+    DateTimeOffset? RevokedAt);
+
+public enum RegisterOutcome { Ok, InvalidInvite, UsernameTaken }
+
 /// <summary>SQLite persistence for accounts and sessions. Only password hashes and token
 /// digests are stored.</summary>
 public sealed class AuthStore : IDisposable
@@ -69,6 +81,15 @@ public sealed class AuthStore : IDisposable
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS invites (
+                code TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                used_by_account_id TEXT NULL,
+                used_at TEXT NULL,
+                revoked_at TEXT NULL
             );
             CREATE TABLE IF NOT EXISTS usage (
                 account_id TEXT NOT NULL REFERENCES accounts(id),
@@ -312,6 +333,139 @@ public sealed class AuthStore : IDisposable
             using var reader = cmd.ExecuteReader();
             var rows = new List<(string, int)>();
             while (reader.Read()) rows.Add((reader.GetString(0), reader.GetInt32(1)));
+            return rows;
+        }
+    }
+
+    /// <summary>Stores one invite; false when the code already exists.</summary>
+    public bool InsertInvite(string code, string profileId, string note, DateTimeOffset now)
+    {
+        lock (_sync)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "INSERT INTO invites (code, profile_id, note, created_at) VALUES ($c, $p, $n, $t)";
+            cmd.Parameters.AddWithValue("$c", code);
+            cmd.Parameters.AddWithValue("$p", profileId);
+            cmd.Parameters.AddWithValue("$n", note);
+            cmd.Parameters.AddWithValue("$t", Format(now));
+            try { cmd.ExecuteNonQuery(); return true; }
+            catch (SqliteException ex) when (ex.SqliteErrorCode == 19) { return false; }
+        }
+    }
+
+    /// <summary>Cheap preflight before password hashing. The transaction must still recheck it.</summary>
+    public bool IsInviteUsable(string code, string profileId)
+    {
+        lock (_sync)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = """
+                SELECT 1 FROM invites WHERE code = $c AND profile_id = $p
+                AND used_by_account_id IS NULL AND revoked_at IS NULL
+                """;
+            cmd.Parameters.AddWithValue("$c", code);
+            cmd.Parameters.AddWithValue("$p", profileId);
+            return cmd.ExecuteScalar() is not null;
+        }
+    }
+
+    /// <summary>One transaction: the invite must be unused, unrevoked and for this account's profile;
+    /// the account is inserted and the invite consumed together. A username clash rolls everything
+    /// back, so the invite stays usable.</summary>
+    public RegisterOutcome RegisterWithInvite(string code, AccountRow account, DateTimeOffset now)
+    {
+        lock (_sync)
+        {
+            using var tx = _db.BeginTransaction();
+            using (var check = _db.CreateCommand())
+            {
+                check.Transaction = tx;
+                check.CommandText = "SELECT profile_id, used_by_account_id, revoked_at FROM invites WHERE code = $c";
+                check.Parameters.AddWithValue("$c", code);
+                using var reader = check.ExecuteReader();
+                if (!reader.Read() || !reader.IsDBNull(1) || !reader.IsDBNull(2) ||
+                    !string.Equals(reader.GetString(0), account.ProfileId, StringComparison.Ordinal))
+                {
+                    reader.Close();
+                    tx.Rollback();
+                    return RegisterOutcome.InvalidInvite;
+                }
+            }
+            using (var insert = _db.CreateCommand())
+            {
+                insert.Transaction = tx;
+                insert.CommandText = """
+                    INSERT INTO accounts (id, username, password_hash, enabled, valid_until, profile_id,
+                                          min_credential_revision, note, created_at)
+                    VALUES ($id, $u, $h, 1, $v, $p, 0, $n, $c)
+                    """;
+                insert.Parameters.AddWithValue("$id", account.Id);
+                insert.Parameters.AddWithValue("$u", account.Username);
+                insert.Parameters.AddWithValue("$h", account.PasswordHash);
+                insert.Parameters.AddWithValue("$v", Format(account.ValidUntil));
+                insert.Parameters.AddWithValue("$p", account.ProfileId);
+                insert.Parameters.AddWithValue("$n", account.Note);
+                insert.Parameters.AddWithValue("$c", Format(now));
+                try { insert.ExecuteNonQuery(); }
+                catch (SqliteException ex) when (ex.SqliteErrorCode == 19)
+                {
+                    tx.Rollback();
+                    return RegisterOutcome.UsernameTaken;
+                }
+            }
+            using (var consume = _db.CreateCommand())
+            {
+                consume.Transaction = tx;
+                consume.CommandText = """
+                    UPDATE invites SET used_by_account_id = $a, used_at = $n
+                    WHERE code = $c AND used_by_account_id IS NULL AND revoked_at IS NULL
+                    """;
+                consume.Parameters.AddWithValue("$a", account.Id);
+                consume.Parameters.AddWithValue("$n", Format(now));
+                consume.Parameters.AddWithValue("$c", code);
+                if (consume.ExecuteNonQuery() != 1)
+                {
+                    tx.Rollback();
+                    return RegisterOutcome.InvalidInvite;
+                }
+            }
+            tx.Commit();
+            return RegisterOutcome.Ok;
+        }
+    }
+
+    /// <summary>Revokes an invite that is still unused; false when it is unknown, used or already revoked.</summary>
+    public bool RevokeInvite(string code, DateTimeOffset now)
+    {
+        lock (_sync)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = "UPDATE invites SET revoked_at = $n WHERE code = $c AND used_by_account_id IS NULL AND revoked_at IS NULL";
+            cmd.Parameters.AddWithValue("$n", Format(now));
+            cmd.Parameters.AddWithValue("$c", code);
+            return cmd.ExecuteNonQuery() == 1;
+        }
+    }
+
+    public IReadOnlyList<InviteRow> ListInvites()
+    {
+        lock (_sync)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = """
+                SELECT i.code, i.profile_id, i.note, i.created_at, i.used_by_account_id, a.username, i.used_at, i.revoked_at
+                FROM invites i LEFT JOIN accounts a ON a.id = i.used_by_account_id
+                ORDER BY i.created_at, i.code
+                """;
+            using var reader = cmd.ExecuteReader();
+            var rows = new List<InviteRow>();
+            while (reader.Read())
+                rows.Add(new InviteRow(
+                    reader.GetString(0), reader.GetString(1), reader.GetString(2), Parse(reader.GetString(3)),
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.IsDBNull(5) ? null : reader.GetString(5),
+                    reader.IsDBNull(6) ? null : Parse(reader.GetString(6)),
+                    reader.IsDBNull(7) ? null : Parse(reader.GetString(7))));
             return rows;
         }
     }
