@@ -16,6 +16,7 @@ public sealed class AccountViewModel : INotifyPropertyChanged
     private bool _showLogin = true;
     private bool _isBusy;
     private bool _isRegistering;
+    private string _username = "";
     private string _errorText = "";
     private string _validUntilText = "";
     private LicenseStopReason _stopReason = LicenseStopReason.SignedOut;
@@ -25,14 +26,14 @@ public sealed class AccountViewModel : INotifyPropertyChanged
         _license = license;
         _dispatch = dispatch;
         ProfileId = profileId;
-        Username = username;
+        _username = username;
         _license.Changed += snapshot => _dispatch(() => Apply(snapshot));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
     public string ProfileId { get; }
-    public string Username { get; set; }
+    public string Username { get => _username; set => Set(ref _username, value); }
     public string VersionText => $"v{AppVersion.Current}";
 
     public bool IsSignedIn { get => _isSignedIn; private set => Set(ref _isSignedIn, value); }
