@@ -166,7 +166,22 @@ public sealed class CloudLicense : ICloudAccess, ICompanionQuota, IAsyncDisposab
         get { lock (_sync) return SnapshotLocked(); }
     }
 
-    public async Task<LoginOutcome> LoginAsync(string username, string password, CancellationToken ct = default)
+    /// <summary>Accounts without an end date carry this date or later (server-side "never expires").</summary>
+    public static readonly DateTimeOffset NoExpiryFrom = new(2100, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+    public static bool IsNoExpiry(DateTimeOffset accountValidUntil) => accountValidUntil >= NoExpiryFrom;
+
+    public Task<LoginOutcome> LoginAsync(string username, string password, CancellationToken ct = default) =>
+        SignInAsync(username, token => _api.LoginAsync(
+            new AuthLoginRequest(username, password, _profileId, _appVersion, _credentialRevision), token), "登录", ct);
+
+    /// <summary>Registers a new account with a one-time invite code and signs in with it. The state
+    /// afterwards is exactly that of a normal login.</summary>
+    public Task<LoginOutcome> RegisterAsync(string inviteCode, string username, string password, CancellationToken ct = default) =>
+        SignInAsync(username, token => _api.RegisterAsync(
+            new AuthRegisterRequest(inviteCode, username, password, _profileId, _appVersion, _credentialRevision), token), "注册", ct);
+
+    private async Task<LoginOutcome> SignInAsync(string username, Func<CancellationToken, Task<AuthReply>> call, string what, CancellationToken ct)
     {
         long generation;
         lock (_sync) generation = ++_generation;
@@ -175,14 +190,12 @@ public sealed class CloudLicense : ICloudAccess, ICompanionQuota, IAsyncDisposab
         AuthReply reply;
         try
         {
-            reply = await _api.LoginAsync(
-                new AuthLoginRequest(username, password, _profileId, _appVersion, _credentialRevision), ct)
-                .ConfigureAwait(false);
+            reply = await call(ct).ConfigureAwait(false);
         }
         catch (AuthTransportException ex)
         {
             AIVTuber.Core.Diagnostics.DebugLog.Write(
-                $"[鉴权] 登录请求失败: {AIVTuber.Core.Diagnostics.DiagnosticRedactor.Redact(ex.Message)}");
+                $"[鉴权] {what}请求失败: {AIVTuber.Core.Diagnostics.DiagnosticRedactor.Redact(ex.Message)}");
             return Fail(generation, TransportFailureMessage);
         }
 
@@ -342,6 +355,10 @@ public sealed class CloudLicense : ICloudAccess, ICompanionQuota, IAsyncDisposab
         AuthCode.InvalidSession => "登录状态已失效，请重新登录",
         AuthCode.RateLimited => "登录失败次数过多，请稍后再试",
         AuthCode.BadRequest => "登录信息不完整",
+        AuthCode.InvalidInvite => "邀请码不对或已经用过，请向发放者确认",
+        AuthCode.UsernameTaken => "这个账号名已被占用，换一个试试",
+        AuthCode.InvalidUsername => "账号名需要 3 到 20 位，只能用字母、数字、下划线和横线",
+        AuthCode.WeakPassword => "密码至少需要 8 位",
         _ => "鉴权服务返回了无法识别的结果",
     };
 

@@ -30,6 +30,9 @@ public sealed class AuthApiClient : IAuthApi, IDisposable
     public Task<AuthReply> LoginAsync(AuthLoginRequest request, CancellationToken ct = default) =>
         SendAsync("v1/auth/login", request, token: null, ct);
 
+    public Task<AuthReply> RegisterAsync(AuthRegisterRequest request, CancellationToken ct = default) =>
+        SendAsync("v1/auth/register", request, token: null, ct);
+
     public Task<AuthReply> HeartbeatAsync(string token, string profileId, long activeSeconds, CancellationToken ct = default) =>
         SendAsync("v1/auth/heartbeat", new { profile_id = profileId, active_seconds = activeSeconds }, token, ct);
 
@@ -109,6 +112,10 @@ public sealed class AuthApiClient : IAuthApi, IDisposable
         "invalid_session" => AuthCode.InvalidSession,
         "rate_limited" => AuthCode.RateLimited,
         "bad_request" => AuthCode.BadRequest,
+        "invalid_invite" => AuthCode.InvalidInvite,
+        "username_taken" => AuthCode.UsernameTaken,
+        "invalid_username" => AuthCode.InvalidUsername,
+        "weak_password" => AuthCode.WeakPassword,
         _ => AuthCode.Unknown,
     };
 
