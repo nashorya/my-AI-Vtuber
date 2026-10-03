@@ -353,6 +353,22 @@ public sealed class AuthStore : IDisposable
         }
     }
 
+    /// <summary>Cheap preflight before password hashing. The transaction must still recheck it.</summary>
+    public bool IsInviteUsable(string code, string profileId)
+    {
+        lock (_sync)
+        {
+            using var cmd = _db.CreateCommand();
+            cmd.CommandText = """
+                SELECT 1 FROM invites WHERE code = $c AND profile_id = $p
+                AND used_by_account_id IS NULL AND revoked_at IS NULL
+                """;
+            cmd.Parameters.AddWithValue("$c", code);
+            cmd.Parameters.AddWithValue("$p", profileId);
+            return cmd.ExecuteScalar() is not null;
+        }
+    }
+
     /// <summary>One transaction: the invite must be unused, unrevoked and for this account's profile;
     /// the account is inserted and the invite consumed together. A username clash rolls everything
     /// back, so the invite stays usable.</summary>

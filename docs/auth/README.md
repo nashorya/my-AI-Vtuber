@@ -62,7 +62,7 @@ AIVTuber.AuthServer admin --db auth.db create --username alice --profile streame
 | `set-daily --username U (--minutes N \| --default)` | 单独设置某账号的每日时长 / 恢复默认 |
 | `add-today --username U --minutes N` | 今天临时加时（可累加），下一个 06:00 作废 |
 | `usage --username U [--days 7]` | 最近几个额度日的用量（分钟） |
-| `invite create --count N --profile P [--note T]` | 批量生成一次性邀请码（1–500 个），只在生成时打印，格式 `XXXX-XXXX` |
+| `invite create --count N --profile P [--note T]` | 批量生成一次性邀请码（1–500 个），格式 `XXXX-XXXX`；也可用 `invite list` 查回 |
 | `invite list` | 每个码的状态：未用 / 已用（账号名和时间）/ 已作废 |
 | `invite revoke --code C` | 作废一个还没用的码；已用的码不能作废 |
 | `list` | 列出账号状态，不输出哈希；末尾显示 `today_used_min` / `today_quota_min` |
@@ -75,13 +75,13 @@ AIVTuber.AuthServer admin --db auth.db create --username alice --profile streame
 
 - 邀请码是一次性的注册门票：不带有效期，也不带时长；注册出来的账号**长期有效**，每日时长是默认的 60 分钟，可以用 `set-daily` 单独调，用 `disable` 停用。
 - 邀请码绑定一个档案编号（`--profile`）。共用包的档案里不写 `account`，`profile_id` 表示这批包的编号（例如 `shared-001`，示例见 `profile.shared.example.json`）；只有这个包的主播能用这个码注册，注册出来的账号也只能用这批包登录。
-- 邀请码打印出来之后服务器上只保存码本身和使用状态，丢了可以用 `invite list` 看哪些没用，但不会再给出新的信息；不用的码用 `invite revoke` 作废。
+- 邀请码以明文保存在数据库中，`invite list` 会显示完整码和使用状态；数据库及备份需限制访问，不用的码用 `invite revoke` 作废。
 - 老办法（每人一个专属包 + `create` 手动建号）仍然可用，两种方式可以并存。
-- **风险**：所有人共用一个包，包里的厂商 Key 是同一把。有人取出 Key，影响所有人；要换 Key 就必须重新发一个新包，并用 `set-min-revision` 让旧包失效。厂商账单也分不出是谁用的，只能靠服务端的每日用时记录来区分。
+- **风险**：所有人共用一个包，包里的厂商 Key 是同一把。有人取出 Key，影响所有人；换 Key 后必须重新发包。`set-min-revision` 只限制指定的已有账号，不是全局包版本禁用：旧包仍可能使用未消费的邀请码注册新账号。当前没有全局最低版本策略，不能把逐账号设置当成完整的旧包退役。厂商账单也分不出是谁用的，只能靠服务端的每日用时记录来区分。
 
 ### 注册协议
 
-`POST /v1/auth/register`，请求 `invite_code`、`username`、`password`、`profile_id`、`app_version`、`credential_revision`；成功时回复与登录相同（会话、许可、每日额度，`account_valid_until` 为 2100-01-01 表示长期有效）。账号名 3–20 位（字母、数字、下划线、横线），密码至少 8 位。邀请码用完 / 不存在 / 已作废 / 与档案不符，一律返回同一个 `invalid_invite`；同一来源注册失败 5 次后锁定 15 分钟。服务在反向代理后面时，来源取 `X-Real-IP`。
+`POST /v1/auth/register`，请求 `invite_code`、`username`、`password`、`profile_id`、`app_version`、`credential_revision`；成功时回复与登录相同（会话、许可、每日额度，`account_valid_until` 为 2100-01-01 表示长期有效）。账号名 3–20 位（字母、数字、下划线、横线），密码至少 8 位。邀请码用完 / 不存在 / 已作废 / 与档案不符，一律返回同一个 `invalid_invite`；同一来源错误邀请码 5 次后锁定 15 分钟（账号名或密码格式错误、账号名已占用不计入）。检查及错误计数串行完成，错误邀请码和已占用账号名不触发密码哈希；全服务最多同时进行 2 次注册密码计算，繁忙时返回 429。注册来源窗口定期清理，最多保留 4096 个，满时对新来源返回 429。服务在反向代理后面时，来源取 `X-Real-IP`。
 
 ## 生成主播专属包
 

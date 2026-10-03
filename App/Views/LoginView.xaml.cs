@@ -49,6 +49,7 @@ public partial class LoginView : UserControl
         try
         {
             await vm.RegisterAsync(InviteBox.Text, RegPasswordInput.Password, RegConfirmInput.Password);
+            if (vm.IsSignedIn) InviteBox.Clear();
         }
         finally
         {

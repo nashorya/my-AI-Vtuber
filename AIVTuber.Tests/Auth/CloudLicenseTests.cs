@@ -404,6 +404,8 @@ public sealed class CloudLicenseTests
     [InlineData(AuthCode.UsernameTaken, "这个账号名已被占用，换一个试试")]
     [InlineData(AuthCode.InvalidUsername, "账号名需要 3 到 20 位，只能用字母、数字、下划线和横线")]
     [InlineData(AuthCode.WeakPassword, "密码至少需要 8 位")]
+    [InlineData(AuthCode.RateLimited, "注册请求过多，请稍后再试")]
+    [InlineData(AuthCode.BadRequest, "注册信息不完整")]
     public async Task Register_Denied_ShowsPlainChinese(AuthCode code, string expected)
     {
         var license = NewLicense();
@@ -424,7 +426,7 @@ public sealed class CloudLicenseTests
         var outcome = await license.RegisterAsync("AAAA-BBBB", "alice", "password-1");
 
         Assert.False(outcome.Success);
-        Assert.Equal(CloudLicense.TransportFailureMessage, outcome.Message);
+        Assert.Contains("请先尝试用刚才的账号和密码登录", outcome.Message);
     }
 
     [Fact]

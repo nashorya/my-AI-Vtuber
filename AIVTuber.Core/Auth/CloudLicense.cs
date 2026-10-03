@@ -196,7 +196,9 @@ public sealed class CloudLicense : ICloudAccess, ICompanionQuota, IAsyncDisposab
         {
             AIVTuber.Core.Diagnostics.DebugLog.Write(
                 $"[鉴权] {what}请求失败: {AIVTuber.Core.Diagnostics.DiagnosticRedactor.Redact(ex.Message)}");
-            return Fail(generation, TransportFailureMessage);
+            return Fail(generation, what == "注册"
+                ? "未收到注册结果，账号可能已经创建。请先尝试用刚才的账号和密码登录；仍无法登录时，请检查网络或联系发放者。"
+                : TransportFailureMessage);
         }
 
         LicenseSnapshot snapshot;
@@ -206,7 +208,12 @@ public sealed class CloudLicense : ICloudAccess, ICompanionQuota, IAsyncDisposab
             if (reply.Status != AuthCode.Ok || string.IsNullOrEmpty(reply.SessionToken))
             {
                 _state = LicenseState.SignedOut;
-                _message = Describe(reply.Status);
+                _message = what == "注册" ? reply.Status switch
+                {
+                    AuthCode.RateLimited => "注册请求过多，请稍后再试",
+                    AuthCode.BadRequest => "注册信息不完整",
+                    _ => Describe(reply.Status),
+                } : Describe(reply.Status);
                 _reason = reply.Status == AuthCode.Expired ? LicenseStopReason.AccountExpired : LicenseStopReason.Denied;
                 snapshot = SnapshotLocked();
             }

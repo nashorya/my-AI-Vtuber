@@ -33,6 +33,81 @@ public sealed class AuthServiceRegisterTests : IDisposable
         => _service.Register(new RegisterRequest(code, username, password, profile, "0.37.0", 1), source);
 
     [Fact]
+    public void Register_ParallelBadCodes_CannotPassTheFailureBudget()
+    {
+        // Hold the real store lock until every request is blocked. In the old implementation
+        // all requests pass the limit and hash before reaching this lock; no timing lottery.
+        var sync = typeof(AuthStore).GetField("_sync",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(_store)!;
+        var results = new AuthStatus[16];
+        var errors = new Exception?[16];
+        var threads = Enumerable.Range(0, 16).Select(i => new Thread(() =>
+        {
+            try { results[i] = Reg("AAAA-BBBB", $"user{i}").Status; }
+            catch (Exception ex) { errors[i] = ex; }
+        }) { IsBackground = true }).ToArray();
+        bool allWaiting;
+        lock (sync)
+        {
+            foreach (var thread in threads) thread.Start();
+            allWaiting = SpinWait.SpinUntil(() => threads.All(t =>
+                (t.ThreadState & ThreadState.WaitSleepJoin) != 0), TimeSpan.FromSeconds(15));
+        }
+        foreach (var thread in threads) Assert.True(thread.Join(TimeSpan.FromSeconds(15)));
+        Assert.True(allWaiting, "Requests did not reach the held store / admission lock.");
+        Assert.All(errors, Assert.Null);
+        Assert.Equal(5, results.Count(s => s == AuthStatus.InvalidInvite));
+        Assert.Equal(11, results.Count(s => s == AuthStatus.RateLimited));
+        Assert.Empty(_store.ListAccounts());
+    }
+
+    [Fact]
+    public async Task Register_ParallelSameCode_OnlyOneAccountAndUsableSession()
+    {
+        var code = NewCode();
+        using var start = new Barrier(2);
+        var attempts = Enumerable.Range(0, 2).Select(i => Task.Factory.StartNew(() =>
+        {
+            Assert.True(start.SignalAndWait(TimeSpan.FromSeconds(10)));
+            return Reg(code, $"user{i}", source: $"source{i}");
+        }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
+        var results = await Task.WhenAll(attempts);
+        var winner = Assert.Single(results.Where(r => r.Status == AuthStatus.Ok));
+        Assert.Single(results.Where(r => r.Status == AuthStatus.InvalidInvite));
+        Assert.Single(_store.ListAccounts());
+        Assert.Equal(AuthStatus.Ok, _service.Heartbeat(winner.SessionToken!, "shared-001").Status);
+    }
+
+    [Fact]
+    public void Register_SourceCapacity_IsBoundedAndExpiredSourcesAreReclaimed()
+    {
+        for (var i = 0; i < 4096; i++)
+            Assert.Equal(AuthStatus.InvalidInvite, Reg("AAAA-BBBB", source: $"source{i}").Status);
+        var code = NewCode();
+        Assert.Equal(AuthStatus.RateLimited, Reg(code, source: "new-source").Status);
+        _clock.Advance(TimeSpan.FromMinutes(16));
+        Assert.Equal(AuthStatus.Ok, Reg(code, source: "new-source").Status);
+    }
+
+    [Fact]
+    public void Register_LoginFailureKeys_CannotLockOutRegistration()
+    {
+        for (var i = 0; i < 5; i++)
+            _service.Login(new LoginRequest("reg:1.2.3.4", "wrong", "shared-001", "0", 1), "other");
+        Assert.Equal(AuthStatus.Ok, Reg(NewCode()).Status);
+    }
+
+    [Fact]
+    public void Register_FailureBudget_ExpiresWithoutBurningTheInvite()
+    {
+        for (var i = 0; i < 5; i++) Reg("AAAA-BBBB");
+        var code = NewCode();
+        Assert.Equal(AuthStatus.RateLimited, Reg(code).Status);
+        _clock.Advance(TimeSpan.FromMinutes(16));
+        Assert.Equal(AuthStatus.Ok, Reg(code).Status);
+    }
+
+    [Fact]
     public void NormalizeInvite_IgnoresCaseDashAndSpaces()
     {
         Assert.Equal("K7M49QXD", AuthService.NormalizeInvite(" k7m4-9qxd "));
