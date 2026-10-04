@@ -10,6 +10,7 @@
   const pendingKind = {};       // request id -> kind
   let personaDirty = false;
   let liveDirty = false;
+  let pendingIdentity = null;   // name/title the persona assistant filled in; saved with the persona
   let previewRequest = 0;       // newest preview request id seen
   let previewActive = false;
 
@@ -84,6 +85,9 @@
       : "陪播进行中");
     const btn = $("btnCompanion");
     btn.hidden = !c.signedIn;
+    const assistBtn = $("btnPersonaAssist");
+    if (assistBtn.textContent === "帮我写人设") assistBtn.disabled = !c.signedIn;
+    assistBtn.title = c.signedIn ? "" : "登录后才能使用";
     btn.textContent = c.paused ? "继续陪播" : "暂停陪播";
     btn.classList.toggle("primary", !!c.paused);
     $("btnStop").disabled = !c.canStop;
@@ -220,13 +224,16 @@
   });
   $("btnSavePersona").addEventListener("click", () => {
     setPersonaState("保存中…");
-    saveSettings("persona", { persona: { systemPrompt: personaEl.value } });
+    const patch = { persona: { systemPrompt: personaEl.value } };
+    if (pendingIdentity) patch.live = { selfName: pendingIdentity.selfName, wakeKeywords: pendingIdentity.wakeKeywords };
+    saveSettings("persona", patch);
   });
   $("btnUndoPersona").addEventListener("click", () => {
     if (!settings) return;
     personaEl.value = settings.persona.effectiveSystemPrompt;
     personaDirty = false;
     setPersonaState("已生效", "ok");
+    dropPendingIdentity();
   });
   $("btnExample").addEventListener("click", () => {
     // Never replaces what the streamer wrote: appended at the end.
@@ -239,7 +246,159 @@
     if (!confirm("恢复默认会替换编辑框里的人设（保存后才生效），确定吗？")) return;
     personaEl.value = settings.persona.defaultSystemPrompt;
     personaEl.dispatchEvent(new Event("input"));
+    dropPendingIdentity();
   });
+
+  // ── 我的 AI: persona assistant ─────────────────────────────────────────
+  // Check the streamer's description, ask only what is missing, then preview a short persona.
+  // Taking it changes the editor (and the name/title fields) only; saving stays with the streamer.
+  let assistSeq = 0;
+  let assistRequest = 0;        // the request whose answer the panel waits for
+  let assistQuestions = [];
+  let assistDescription = "";
+  let assistResult = null;
+
+  function assistBusy(label) {
+    const btn = $("btnPersonaAssist");
+    btn.disabled = !!label || !canUseAssistant();
+    btn.textContent = label || "帮我写人设";
+    $("btnAssistCompose").disabled = !!label;
+    $("btnAssistAgain").disabled = !!label;
+  }
+  function canUseAssistant() { return !state || !state.companion || state.companion.signedIn !== false; }
+  function assistStatus(t, bad) {
+    const el = $("assistStatus");
+    text(el, t);
+    el.className = "assist-status" + (bad ? " bad" : "");
+  }
+  function closeAssist() {
+    assistRequest = 0;
+    $("personaAssist").hidden = true;
+    assistBusy("");
+  }
+  function sendAssist(name, data) {
+    assistRequest = ++assistSeq;
+    send(name, Object.assign({ requestId: assistRequest }, data));
+  }
+  function answers() {
+    return assistQuestions.map((q) => {
+      const box = document.querySelector(`[data-question="${q.id}"]`);
+      const typed = box.querySelector("input").value.trim();
+      const chosen = box.querySelector('.assist-chip[aria-pressed="true"]');
+      return { questionId: q.id, text: typed || (chosen ? chosen.textContent : null) };
+    });
+  }
+  function compose() {
+    $("assistPreview").hidden = true;
+    assistStatus("正在写人设…");
+    assistBusy("正在写…");
+    sendAssist("personaCompose", { description: assistDescription, answers: answers() });
+  }
+
+  $("btnPersonaAssist").addEventListener("click", () => {
+    assistDescription = personaEl.value;
+    assistQuestions = [];
+    $("assistQuestions").innerHTML = "";
+    $("assistAskRow").hidden = true;
+    $("assistPreview").hidden = true;
+    $("personaAssist").hidden = false;
+    assistStatus("正在看你写的描述…");
+    assistBusy("正在看…");
+    sendAssist("personaCheck", { description: assistDescription });
+  });
+  $("btnAssistCompose").addEventListener("click", compose);
+  $("btnAssistAgain").addEventListener("click", compose);
+  $("btnAssistCancel").addEventListener("click", closeAssist);
+  $("btnAssistClose").addEventListener("click", closeAssist);
+  $("btnAssistUse").addEventListener("click", () => {
+    if (!assistResult) return;
+    personaEl.value = assistResult.persona;
+    personaEl.dispatchEvent(new Event("input"));
+    pendingIdentity = { selfName: assistResult.streamerTitle, wakeKeywords: assistResult.aiNames.join(", ") };
+    $("selfName").value = pendingIdentity.selfName;
+    $("wakeWords").value = pendingIdentity.wakeKeywords;
+    closeAssist();
+    setPersonaState("未保存（名字和称呼会随「保存人设」一起保存）", "warn");
+  });
+
+  function dropPendingIdentity() {
+    if (!pendingIdentity) return;
+    pendingIdentity = null;
+    if (settings && !liveDirty) renderLive();
+  }
+
+  function renderQuestions(questions) {
+    const host = $("assistQuestions");
+    host.innerHTML = "";
+    questions.forEach((q) => {
+      const box = document.createElement("div");
+      box.className = "assist-q";
+      box.dataset.question = q.id;
+      const h = document.createElement("h3");
+      h.textContent = q.text;
+      const chips = document.createElement("div");
+      chips.className = "assist-chips";
+      q.suggestions.forEach((s) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "assist-chip";
+        chip.textContent = s;
+        chip.setAttribute("aria-pressed", "false");
+        chip.addEventListener("click", () => {
+          const on = chip.getAttribute("aria-pressed") !== "true";
+          chips.querySelectorAll(".assist-chip").forEach((c) => c.setAttribute("aria-pressed", "false"));
+          chip.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+        chips.appendChild(chip);
+      });
+      const own = document.createElement("input");
+      own.type = "text";
+      own.placeholder = "自己填（不填就跳过）";
+      own.setAttribute("aria-label", q.text);
+      chips.appendChild(own);
+      box.append(h, chips);
+      host.appendChild(box);
+    });
+  }
+
+  function renderPersonaPreview(d) {
+    assistResult = { persona: d.persona, aiNames: d.aiNames || [], streamerTitle: d.streamerTitle || "", supplemented: d.supplemented || [] };
+    const box = $("assistPersona");
+    box.innerHTML = "";
+    const added = new Set(assistResult.supplemented.map((s) => s.trim()));
+    assistResult.persona.split("\n").forEach((line) => {
+      const span = document.createElement("span");
+      span.textContent = line;
+      if (added.has(line.trim())) span.className = "added";
+      box.append(span, document.createTextNode("\n"));
+    });
+    text($("assistNames"), assistResult.aiNames.map((n) => (added.has(n) ? `${n}（AI 起的）` : n)).join("、"));
+    text($("assistTitle"), assistResult.streamerTitle);
+    $("assistPreview").hidden = false;
+  }
+
+  function onPersonaAssistant(d) {
+    if (d.requestId !== assistRequest) return; // cancelled or superseded
+    assistBusy("");
+    if (d.stage === "error") {
+      assistStatus(d.message, true);
+      return;
+    }
+    if (d.stage === "questions") {
+      assistQuestions = d.questions || [];
+      if (!assistQuestions.length) { compose(); return; }
+      renderQuestions(assistQuestions);
+      $("assistAskRow").hidden = false;
+      assistStatus("还差几样信息，选一个或自己填，也可以跳过：");
+      return;
+    }
+    if (d.stage === "preview") {
+      $("assistQuestions").innerHTML = "";
+      $("assistAskRow").hidden = true;
+      assistStatus("看看合不合适，可以「用这个」后再在编辑框里改：");
+      renderPersonaPreview(d);
+    }
+  }
 
   // ── 我的 AI: voice ─────────────────────────────────────────────────────
   const voiceSel = $("voiceSelect");
@@ -408,7 +567,7 @@
     if (!kind || latestSave[kind] !== r.requestId) return; // an older reply; a newer save is in flight or done
     const msg = r.ok ? "已生效" : r.message || r.stateText || "没有保存";
     if (kind === "persona") {
-      if (r.ok) personaDirty = false;
+      if (r.ok) { personaDirty = false; pendingIdentity = null; }
       setPersonaState(r.ok ? "已生效（下一句开始使用）" : `应用失败：${msg}`, r.ok ? "ok" : "bad");
     } else if (kind === "voice" || kind === "speed") {
       text($("voiceState"), r.ok ? "已生效，下一句开始使用" : msg);
@@ -429,6 +588,7 @@
       case "saveResult": onSaveResult(d); break;
       case "preview": renderPreview(d); break;
       case "biliQr": renderBiliQr(d); break;
+      case "personaAssistant": onPersonaAssistant(d); break;
       case "result":
         if (d.kind === "voices") text($("voiceState"), [d.message, d.diagnosticId ? `诊断编号 ${d.diagnosticId}` : ""].filter(Boolean).join(" · "));
         else if (d.kind === "diagnostics") text($("diagStatus"), d.message);
@@ -443,6 +603,7 @@
   }
 
   if (hasWebView) chrome.webview.addEventListener("message", onHostMessage);
+  else window.__streamerHostMessage = (msg) => onHostMessage({ data: msg }); // browser preview only
   post({ type: "ready" });
   send("getSettings");
 })();
