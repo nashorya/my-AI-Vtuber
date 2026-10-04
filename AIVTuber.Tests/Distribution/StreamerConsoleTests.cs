@@ -427,7 +427,7 @@ public sealed class StreamerConsoleTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task PersonaCommand_IgnoredWhileAnotherIsRunning()
+    public async Task PersonaCommand_WhileAnotherIsRunning_AnswersBusy()
     {
         await SignInAsync();
         var llm = new GatedLlm(CheckReply, CheckReply) { Gate = new TaskCompletionSource() };
@@ -438,8 +438,11 @@ public sealed class StreamerConsoleTests : IAsyncDisposable
         await controller.HandleAsync("personaCheck", Json("""{"requestId":2,"description":"猫娘"}"""));
         llm.Gate.SetResult();
 
-        var messages = await PersonaMessagesAsync(posted, 2, timeoutMs: 300);
-        Assert.Equal(1, Assert.Single(messages).GetProperty("data").GetProperty("requestId").GetInt64());
+        // The page may have cancelled the first request; it must hear back, not wait forever.
+        var messages = await PersonaMessagesAsync(posted, 2);
+        var busy = messages.Single(m => m.GetProperty("data").GetProperty("requestId").GetInt64() == 2).GetProperty("data");
+        Assert.Equal("error", busy.GetProperty("stage").GetString());
+        Assert.Equal("上一次还没结束，请稍等几秒再试", busy.GetProperty("message").GetString());
         Assert.Equal(1, llm.Calls);
     }
 

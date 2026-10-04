@@ -170,8 +170,8 @@ public sealed class StreamerConsoleController : IDisposable
     }
 
     /// <summary>
-    /// One persona-assistant step. Runs off the message loop; one at a time (a second click while
-    /// one runs is ignored). Only reads the draft's identity fields — the result is a preview the
+    /// One persona-assistant step. Runs off the message loop; one at a time (a request while
+    /// one runs is answered as busy). Only reads the draft's identity fields — the result is a preview the
     /// page may put into its own draft, never a saved change.
     /// </summary>
     private async Task RunPersonaAsync(string name, JsonElement data)
@@ -185,7 +185,12 @@ public sealed class StreamerConsoleController : IDisposable
             Post(new { requestId, stage = "error", message = "登录后才能使用人设助手" });
             return;
         }
-        if (Interlocked.CompareExchange(ref _personaBusy, 1, 0) != 0) return;
+        if (Interlocked.CompareExchange(ref _personaBusy, 1, 0) != 0)
+        {
+            // The page may have cancelled the running request and asked again: answer, don't leave it waiting.
+            Post(new { requestId, stage = "error", message = "上一次还没结束，请稍等几秒再试" });
+            return;
+        }
         try
         {
             var input = new PersonaDraftInput(
