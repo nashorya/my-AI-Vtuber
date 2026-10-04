@@ -42,6 +42,10 @@ try {
     $blocked = Start-Process $Installer -ArgumentList @('/S', "/D=$target") -Wait -PassThru
     Require ($blocked.ExitCode -ne 0) 'Locked executable upgrade unexpectedly succeeded'
 } finally { $locked.Dispose() }
+Write-Host 'PASS: locked install and uninstall refused'
+$probe = [IO.File]::Open((Join-Path $target 'AIVTuber.exe'), 'Open', 'Write', 'None')
+$probe.Dispose()
+Write-Host 'PASS: executable lock released'
 $other = "$target-Other"
 $blocked = Start-Process $Installer -ArgumentList @('/S', "/D=$other") -Wait -PassThru
 Require ($blocked.ExitCode -ne 0) 'Upgrade accepted a different directory'

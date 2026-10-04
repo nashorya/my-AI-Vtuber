@@ -41,8 +41,17 @@ FunctionEnd
 !macro AppClosed PREFIX
 Function ${PREFIX}CheckAppClosed
   IfFileExists "$INSTDIR\AIVTuber.exe" 0 done
+  StrCpy $1 0
+  retry:
   System::Call 'kernel32::CreateFileW(w "$INSTDIR\AIVTuber.exe", i 0x40000000, i 0, p 0, i 3, i 0x80, p 0) p.r0'
   ${If} $0 == -1
+    IntOp $1 $1 + 1
+    ${If} $1 < 15
+      Sleep 200
+      Goto retry
+    ${EndIf}
+    System::Call 'kernel32::GetLastError() i.r2'
+    DetailPrint "Cannot acquire app file, Win32 error $2"
     MessageBox MB_ICONSTOP "程序文件正在使用或不可写，请关闭 AIVTuber 后重试。" /SD IDOK
     SetErrorLevel 3
     Abort
