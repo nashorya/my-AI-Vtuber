@@ -244,6 +244,60 @@ public sealed class ReplyProtocolV2Parser
 /// format section changes (NDJSON events instead of one JSON object).</summary>
 public static class ReplyProtocolV2
 {
+    private static readonly JsonSerializerOptions HistoryJson = new()
+    {
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    /// <summary>A silent turn (pass, or a private thought) as the model would have written it.</summary>
+    public static string RenderSilentTurn(ReplyDecisionMode mode, string thought = "")
+    {
+        var decision = mode == ReplyDecisionMode.Thought && !string.IsNullOrWhiteSpace(thought)
+            ? JsonSerializer.Serialize(new { v = 2, type = "decision", mode = "thought", text = thought.Trim() }, HistoryJson)
+            : JsonSerializer.Serialize(new { v = 2, type = "decision", mode = mode == ReplyDecisionMode.Thought ? "thought" : "pass" }, HistoryJson);
+        return decision + "\n" + EndLine;
+    }
+
+    /// <summary>
+    /// The assistant's past turns rewritten in this protocol before they are sent back. History
+    /// keeps what was said as plain text (memory extraction reads it); shown to the model as plain
+    /// text, it is a few-shot example of answering in plain text, which this parser rejects.
+    /// Consecutive spoken segments are one turn; turns already in protocol form are kept.
+    /// </summary>
+    public static List<Message> RenderAssistantTurns(IEnumerable<Message> history)
+    {
+        var result = new List<Message>();
+        var spoken = new List<string>();
+        foreach (var message in history)
+        {
+            if (message.Role == MessageRole.Assistant && !IsProtocolText(message.Content))
+            {
+                if (!string.IsNullOrWhiteSpace(message.Content)) spoken.Add(message.Content.Trim());
+                continue;
+            }
+            FlushSpoken();
+            result.Add(message);
+        }
+        FlushSpoken();
+        return result;
+
+        void FlushSpoken()
+        {
+            if (spoken.Count == 0) return;
+            var lines = new List<string> { JsonSerializer.Serialize(new { v = 2, type = "decision", mode = "speak" }, HistoryJson) };
+            for (var seq = 0; seq < spoken.Count; seq++)
+                lines.Add(JsonSerializer.Serialize(new { v = 2, type = "speech", seq, text = spoken[seq] }, HistoryJson));
+            lines.Add(EndLine);
+            result.Add(new Message { Role = MessageRole.Assistant, Content = string.Join("\n", lines) });
+            spoken.Clear();
+        }
+    }
+
+    private const string EndLine = "{\"v\":2,\"type\":\"end\"}";
+
+    private static bool IsProtocolText(string content) =>
+        content.StartsWith("{\"v\":2,", StringComparison.Ordinal);
+
     /// <summary>With <paramref name="scriptMarkup"/> (Cortico selected) motion is written as script
     /// markup inside speech text and no control lines are requested: the performance layer owns
     /// every VTS write. The event envelope is otherwise identical.</summary>
