@@ -84,7 +84,11 @@ def main():
             z.extractall(payload)
         files = sorted(p for p in payload.rglob('*') if p.is_file())
         # Delete only files we ship. User config, memory, logs and avatars survive uninstall.
-        deletes = ['Delete "$INSTDIR\\' + nsis_quote(str(f.relative_to(payload)).replace('/', '\\')) + '"' for f in files]
+        deletes = []
+        for f in files:
+            target = '$INSTDIR\\' + nsis_quote(str(f.relative_to(payload)).replace('/', '\\'))
+            deletes += [f'IfFileExists "{target}" 0 +5', 'ClearErrors',
+                        f'Delete "{target}"', 'IfErrors 0 +2', 'StrCpy $9 1']
         dirs = sorted({d for f in files for d in f.relative_to(payload).parents if str(d) != '.'}, key=lambda d: len(d.parts), reverse=True)
         deletes += ['RMDir "$INSTDIR\\' + nsis_quote(str(d).replace('/', '\\')) + '"' for d in dirs]
         (root / 'uninstall-files.nsh').write_text('\n'.join(deletes), encoding='utf-8')

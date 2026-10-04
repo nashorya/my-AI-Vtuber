@@ -22,12 +22,37 @@ VIAddVersionKey "LegalCopyright" "AIVTuber contributors"
 !define MUI_FINISHPAGE_RUN_TEXT "启动 AIVTuber"
 !define MUI_FINISHPAGE_TEXT "安装完成。启动后选择「用邀请码注册」，输入邀请码并设置账号密码。"
 !insertmacro MUI_PAGE_WELCOME
+!define MUI_PAGE_CUSTOMFUNCTION_PRE DirectoryPre
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "SimpChinese"
+
+Var RegisteredDir
+
+Function DirectoryPre
+  ${If} $RegisteredDir != ""
+    Abort
+  ${EndIf}
+FunctionEnd
+
+!macro AppClosed PREFIX
+Function ${PREFIX}CheckAppClosed
+  IfFileExists "$INSTDIR\AIVTuber.exe" 0 done
+  System::Call 'kernel32::CreateFileW(w "$INSTDIR\AIVTuber.exe", i 0x40000000, i 0, p 0, i 3, i 0x80, p 0) p.r0'
+  ${If} $0 == -1
+    MessageBox MB_ICONSTOP "程序文件正在使用或不可写，请关闭 AIVTuber 后重试。" /SD IDOK
+    SetErrorLevel 3
+    Abort
+  ${EndIf}
+  System::Call 'kernel32::CloseHandle(p r0)'
+  done:
+FunctionEnd
+!macroend
+!insertmacro AppClosed ""
+!insertmacro AppClosed "un."
 
 Function .onInit
   ${IfNot} ${RunningX64}
@@ -39,6 +64,14 @@ Function .onInit
     Abort
   ${EndIf}
   SetShellVarContext current
+  SetRegView 32
+  ReadRegStr $RegisteredDir HKCU "Software\AIVTuber" "InstallDir"
+  ${If} $RegisteredDir != ""
+  ${AndIf} $RegisteredDir != $INSTDIR
+    MessageBox MB_ICONSTOP "升级必须使用原安装目录。要更换目录，请先卸载原版本。" /SD IDOK
+    SetErrorLevel 4
+    Abort
+  ${EndIf}
 FunctionEnd
 
 Function EnsureWebView
@@ -67,7 +100,21 @@ Function EnsureWebView
 FunctionEnd
 
 Section "AIVTuber" SEC_APP
+  Call CheckAppClosed
   Call EnsureWebView
+  ; The previous uninstaller owns its exact old payload, including retired files.
+  ; It preserves unowned user data and must finish before the new files are copied.
+  ${If} $RegisteredDir != ""
+    IfFileExists "$INSTDIR\Uninstall.exe" +4 0
+      MessageBox MB_ICONSTOP "原版本卸载程序缺失，请修复原安装后重试。" /SD IDOK
+      SetErrorLevel 5
+      Abort
+    ExecWait '"$INSTDIR\Uninstall.exe" /S _?=$INSTDIR' $0
+    ${If} $0 != 0
+      SetErrorLevel 6
+      Abort
+    ${EndIf}
+  ${EndIf}
   SetOutPath "$INSTDIR"
   SetOverwrite on
   File /r "${PAYLOAD}\*"
@@ -90,7 +137,14 @@ SectionEnd
 Section "Uninstall"
   SetShellVarContext current
   SetRegView 32
+  Call un.CheckAppClosed
+  StrCpy $9 0
   !include "${UNINSTALL_FILES}"
+  ${If} $9 != 0
+    MessageBox MB_ICONSTOP "部分文件无法删除，请关闭占用程序后重新卸载。卸载入口已保留。" /SD IDOK
+    SetErrorLevel 7
+    Abort
+  ${EndIf}
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
   Delete "$DESKTOP\AIVTuber.lnk"
