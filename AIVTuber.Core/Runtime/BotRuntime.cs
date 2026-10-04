@@ -1318,6 +1318,7 @@ public sealed class BotRuntime : IAsyncDisposable
             // Current input is supplied separately. Inputs arriving during this turn
             // are already retained, but belong to the next decision, not this snapshot.
             history.RemoveAll(_queuedInputs.Contains);
+            history = ReplyProtocolV2.RenderAssistantTurns(history);
             foreach (var line in lines)
                 if (line.HistoryMessage is { } message) _queuedInputs.Remove(message);
             history.Add(new Message { Role = MessageRole.System, Content = IdentityPrompt.InvitationPolicyFor(cortico: _orchestrator?.Cortico is not null) });
@@ -1406,10 +1407,16 @@ public sealed class BotRuntime : IAsyncDisposable
                 break;
             case ReplyKind.InnerThought:
                 ReportTurnStatus("模型选择心里话，本轮不播放语音");
+                _conversation.ObserveSilentDecision(
+                    ReplyProtocolV2.RenderSilentTurn(ReplyDecisionMode.Thought, reply.Thought),
+                    lines.Select(l => l.HistoryMessage).OfType<Message>());
                 if (_cloud.IsAllowed && _memoryExtractor is not null) SuperviseBackgroundTask(_memoryExtractor.OnTurnAsync(true));
                 break;
             case ReplyKind.Pass:
                 ReportTurnStatus("继续旁听，对话已保留");
+                _conversation.ObserveSilentDecision(
+                    ReplyProtocolV2.RenderSilentTurn(ReplyDecisionMode.Pass),
+                    lines.Select(l => l.HistoryMessage).OfType<Message>());
                 break;
             default:
                 break;

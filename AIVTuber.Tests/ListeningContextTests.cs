@@ -73,6 +73,83 @@ public class ListeningContextTests
         Assert.Equal("现在说吧", Assert.Single(turns[0]).Text);
     }
 
+    [Fact]
+    public async Task OwnPastReplies_ReachTheModelInTheReplyProtocol_NotAsPlainText()
+    {
+        // Plain-text assistant turns taught the model to answer in plain text, which the v2
+        // parser then dropped (fail closed) — the AI looked like it ignored people.
+        var config = new AppConfig();
+        await using var runtime = new BotRuntime(config, Path.GetTempPath());
+        var conversation = new ConversationManager(config.Llm);
+        SetField(runtime, "_conversation", conversation);
+
+        Dispatch(runtime, Accept(runtime, conversation, new TalkLine(TalkIdentity.Self, "纳什", "大肥鱼摇摇脑袋", null)));
+        Commit(runtime, new ClassifiedReply(ReplyKind.Speak, "好呀，老板叫我摇我就摇。", "", []));
+        Commit(runtime, new ClassifiedReply(ReplyKind.Speak, "像不像一条真的鱼？", "", []));
+
+        var next = new TalkLine(TalkIdentity.Opponent, "花花", "你为什么要用女生的？", null);
+        var history = runtime.BuildTurnHistory([next], IdentityPrompt.FormatTurn([next]));
+
+        var reply = Assert.Single(history, m => m.Role == MessageRole.Assistant);
+        Assert.Equal(
+            "{\"v\":2,\"type\":\"decision\",\"mode\":\"speak\"}\n" +
+            "{\"v\":2,\"type\":\"speech\",\"seq\":0,\"text\":\"好呀，老板叫我摇我就摇。\"}\n" +
+            "{\"v\":2,\"type\":\"speech\",\"seq\":1,\"text\":\"像不像一条真的鱼？\"}\n" +
+            "{\"v\":2,\"type\":\"end\"}",
+            reply.Content);
+        // Memory extraction still reads what was actually said.
+        Assert.Contains(conversation.GetPersistableHistory(), m => m.Content == "好呀，老板叫我摇我就摇。");
+    }
+
+    [Fact]
+    public async Task PassAndThought_AreRecordedRightAfterTheirTurn_AndNeverPersisted()
+    {
+        var config = new AppConfig();
+        await using var runtime = new BotRuntime(config, Path.GetTempPath());
+        var conversation = new ConversationManager(config.Llm);
+        SetField(runtime, "_conversation", conversation);
+
+        Dispatch(runtime, Accept(runtime, conversation, new TalkLine(TalkIdentity.Self, "纳什", "怎么就跟我一模一样了？", null)));
+        // A line heard while the model was still deciding belongs after the decision.
+        var heardMeanwhile = Accept(runtime, conversation, new TalkLine(TalkIdentity.Opponent, "花花", "真的很像啊", null));
+        Commit(runtime, new ClassifiedReply(ReplyKind.Pass, "", "", []));
+
+        Dispatch(runtime, heardMeanwhile, Accept(runtime, conversation, new TalkLine(TalkIdentity.Opponent, "花花", "地摊上买的", null)));
+        Commit(runtime, new ClassifiedReply(ReplyKind.InnerThought, "", "记录：人类好奇怪", []));
+
+        var next = new TalkLine(TalkIdentity.Self, "纳什", "大肥鱼你说呢？", null);
+        var history = runtime.BuildTurnHistory([next], IdentityPrompt.FormatTurn([next]))
+            .Where(m => m.Role != MessageRole.System).Select(m => m.Content).ToList();
+
+        Assert.Equal(
+        [
+            "使用者（纳什）：怎么就跟我一模一样了？",
+            "{\"v\":2,\"type\":\"decision\",\"mode\":\"pass\"}\n{\"v\":2,\"type\":\"end\"}",
+            "对方主播（花花）：真的很像啊",
+            "对方主播（花花）：地摊上买的",
+            "{\"v\":2,\"type\":\"decision\",\"mode\":\"thought\",\"text\":\"记录：人类好奇怪\"}\n{\"v\":2,\"type\":\"end\"}",
+        ], history);
+        Assert.DoesNotContain(conversation.GetPersistableHistory(), m => m.Role == MessageRole.Assistant);
+    }
+
+    /// <summary>Accepts a line; returns it bound to its history message, as the gate hands it on.</summary>
+    private static TalkLine Accept(BotRuntime runtime, ConversationManager conversation, TalkLine line)
+    {
+        runtime.AcceptTalkLine(line);
+        return line with { HistoryMessage = conversation.GetHistory()[^1] };
+    }
+
+    /// <summary>Dispatches lines as the current turn, as HandleTurnReadyAsync does.</summary>
+    private static void Dispatch(BotRuntime runtime, params TalkLine[] lines)
+    {
+        runtime.BuildTurnHistory(lines, IdentityPrompt.FormatTurn(lines));
+        SetField(runtime, "_pendingTurnLines", (IReadOnlyList<TalkLine>)lines);
+    }
+
+    private static void Commit(BotRuntime runtime, ClassifiedReply reply) =>
+        typeof(BotRuntime).GetMethod("CommitReply", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(runtime, [reply]);
+
     private static void SetField(BotRuntime runtime, string name, object value) =>
         typeof(BotRuntime).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(runtime, value);
 }

@@ -108,6 +108,23 @@ public sealed class ConversationManager
         }
     }
 
+    /// <summary>
+    /// Records a turn the AI chose not to speak (pass / private thought) right after the input
+    /// it answered, so the model sees which lines it already heard and let go. Inputs heard
+    /// while it was deciding stay after the record. Never persisted.
+    /// </summary>
+    internal void ObserveSilentDecision(string protocolText, IEnumerable<Message> answered)
+    {
+        lock (_lock)
+        {
+            var message = new Message { Role = MessageRole.Assistant, Content = protocolText };
+            var anchor = answered.Select(m => _history.IndexOf(m)).DefaultIfEmpty(-1).Max();
+            _history.Insert(anchor < 0 ? _history.Count : anchor + 1, message);
+            _transient.Add(message);
+            TrimHistory();
+        }
+    }
+
     public List<Message> GetHistory()
     {
         lock (_lock) { return [.. _history]; }
