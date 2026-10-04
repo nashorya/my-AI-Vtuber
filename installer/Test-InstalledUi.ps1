@@ -37,31 +37,34 @@ try {
         $children = @($allProcesses | Where-Object { $_.ParentProcessId -in $tree -and $_.ProcessId -notin $tree } | ForEach-Object { [int]$_.ProcessId })
         $tree += $children
     } while ($children.Count -gt 0)
-    if (-not $app.HasExited) {
-        $null = $app.CloseMainWindow()
-        if (-not $app.WaitForExit(5000)) { & taskkill.exe /PID $app.Id /T /F | Out-Null }
-        $app.WaitForExit()
-    }
-    $app.Dispose()
-    foreach ($childId in ($tree | Select-Object -Skip 1)) {
-        $child = Get-Process -Id $childId -ErrorAction SilentlyContinue
-        if ($null -ne $child) {
-            Write-Host "Cleaning test app descendant: $($child.ProcessName) ($childId)"
-            Stop-Process -Id $childId -Force -ErrorAction SilentlyContinue
-            $child.WaitForExit()
-            $child.Dispose()
+    try {
+        if (-not $app.HasExited) {
+            $null = $app.CloseMainWindow()
+            if (-not $app.WaitForExit(10000)) { throw 'Application did not exit after normal window close' }
+        }
+        $app.Dispose()
+        $releaseDeadline = [DateTime]::UtcNow.AddSeconds(15)
+        do {
+            try {
+                $probe = [IO.File]::Open((Join-Path $AppDirectory 'AIVTuber.exe'), 'Open', 'Write', 'None')
+                $probe.Dispose()
+                Write-Host 'PASS: normally closed application released its executable'
+                break
+            } catch {
+                if ([DateTime]::UtcNow -ge $releaseDeadline) { throw }
+                Start-Sleep -Milliseconds 200
+            }
+        } while ($true)
+    } finally {
+        # Cleanup never turns a failed natural shutdown/release check into a pass.
+        foreach ($childId in $tree) {
+            $child = Get-Process -Id $childId -ErrorAction SilentlyContinue
+            if ($null -ne $child) {
+                Write-Host "Cleanup only: surviving test process $($child.ProcessName) ($childId)"
+                Stop-Process -Id $childId -Force -ErrorAction SilentlyContinue
+                $child.WaitForExit()
+                $child.Dispose()
+            }
         }
     }
-    $releaseDeadline = [DateTime]::UtcNow.AddSeconds(15)
-    do {
-        try {
-            $probe = [IO.File]::Open((Join-Path $AppDirectory 'AIVTuber.exe'), 'Open', 'Write', 'None')
-            $probe.Dispose()
-            Write-Host 'PASS: closed application released its executable'
-            break
-        } catch {
-            if ([DateTime]::UtcNow -ge $releaseDeadline) { throw }
-            Start-Sleep -Milliseconds 200
-        }
-    } while ($true)
 }
