@@ -37,6 +37,7 @@ try {
         $children = @($allProcesses | Where-Object { $_.ParentProcessId -in $tree -and $_.ProcessId -notin $tree } | ForEach-Object { [int]$_.ProcessId })
         $tree += $children
     } while ($children.Count -gt 0)
+    $releaseVerified = $false
     try {
         if (-not $app.HasExited) {
             $null = $app.CloseMainWindow()
@@ -48,6 +49,7 @@ try {
             try {
                 $probe = [IO.File]::Open((Join-Path $AppDirectory 'AIVTuber.exe'), 'Open', 'Write', 'None')
                 $probe.Dispose()
+                $releaseVerified = $true
                 Write-Host 'PASS: normally closed application released its executable'
                 break
             } catch {
@@ -57,7 +59,7 @@ try {
         } while ($true)
     } finally {
         # Cleanup never turns a failed natural shutdown/release check into a pass.
-        foreach ($childId in $tree) {
+        foreach ($childId in $(if ($releaseVerified) { @() } else { $tree })) {
             $child = Get-Process -Id $childId -ErrorAction SilentlyContinue
             if ($null -ne $child) {
                 Write-Host "Cleanup only: surviving test process $($child.ProcessName) ($childId)"
