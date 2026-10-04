@@ -189,3 +189,21 @@ details p { color: var(--mute); font-size: 13px; line-height: 1.7; }
   .row2 { grid-template-columns: 1fr; }
   .tabs button { padding: 0 12px; }
 }
+
+/* Persona assistant: questions, then a preview the streamer can take into the editor */
+.assist { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.assist-status { margin: 0 0 8px; font-size: 13px; color: var(--mute); }
+.assist-status.bad { color: var(--bad); }
+.assist-q { margin: 10px 0 14px; }
+.assist-q h3 { margin: 0 0 8px; font-size: 14px; }
+.assist-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.assist-chip {
+  font: inherit; font-size: 13px; color: var(--ink); cursor: pointer;
+  min-height: 32px; padding: 0 14px; border-radius: 999px;
+  border: 1px solid var(--line); background: rgba(255, 255, 255, .7);
+}
+.assist-chip[aria-pressed="true"] { color: #fff; border-color: transparent; background: linear-gradient(180deg, var(--pink), var(--pink-deep)); }
+.assist-chips input[type=text] { min-height: 32px; padding: 4px 12px; flex: 1 1 140px; }
+.assist-persona { margin: 0 0 6px; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--line); background: rgba(255, 255, 255, .8); font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
+.assist-persona .added { background: rgba(122, 108, 240, .1); border-radius: 6px; }
+.assist-persona .added::after { content: "AI 补的"; margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 11px; color: var(--lavender); border: 1px solid rgba(122, 108, 240, .4); }

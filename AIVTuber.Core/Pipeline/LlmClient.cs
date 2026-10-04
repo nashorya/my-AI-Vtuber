@@ -19,6 +19,8 @@ public sealed class LlmClient : ILlmClient, IReplyProtocolStream, IDisposable, I
     private readonly string _apiKey;
     private readonly string _model;
     private readonly string _systemPrompt;
+    // Legacy-path cap override for one-shot structured requests that need a longer reply.
+    private readonly int? _maxTokens;
     private readonly Func<string[]>? _avatarChannels;
     public event EventHandler<AvatarReplyPlan>? OnAvatarPlanReady;
 
@@ -46,9 +48,11 @@ public sealed class LlmClient : ILlmClient, IReplyProtocolStream, IDisposable, I
     public bool ScriptMarkup { get; }
 
     public LlmClient(string baseUrl, string apiKey, string model, string systemPrompt,
-        Func<string[]>? avatarChannels = null, string? replyProtocol = null, bool scriptMarkup = false)
+        Func<string[]>? avatarChannels = null, string? replyProtocol = null, bool scriptMarkup = false,
+        int? maxTokens = null)
     {
         ScriptMarkup = scriptMarkup;
+        _maxTokens = maxTokens;
         if (scriptMarkup) avatarChannels = null; // one VTS writer: Cortico
         _baseUrl = baseUrl.TrimEnd('/');
         _apiKey = apiKey;
@@ -99,7 +103,7 @@ public sealed class LlmClient : ILlmClient, IReplyProtocolStream, IDisposable, I
                 model = _model,
                 messages,
                 stream = true,
-                max_tokens = allowedChannels is null ? 256 : 512,
+                max_tokens = _maxTokens ?? (allowedChannels is null ? 256 : 512),
                 // DeepSeek V4 enables thinking by default (effort=high). CoT arrives as
                 // delta.reasoning_content, which this client ignores; with max_tokens=256 the
                 // budget is often spent entirely on thinking so content never appears → no TTS.
@@ -110,7 +114,7 @@ public sealed class LlmClient : ILlmClient, IReplyProtocolStream, IDisposable, I
                 model = _model,
                 messages,
                 stream = true,
-                max_tokens = allowedChannels is null ? 256 : 512,
+                max_tokens = _maxTokens ?? (allowedChannels is null ? 256 : 512),
             };
 
         var json = JsonSerializer.Serialize(requestBody, JsonOptions);
