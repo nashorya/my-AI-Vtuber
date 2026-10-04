@@ -13,7 +13,7 @@ public static class AdminCli
 {
     public const string Usage = """
         用法: AIVTuber.AuthServer admin --db <auth.db> <命令> [选项]
-          create            --username U --profile P (--days N | --valid-until ISO) [--note T] [--password-stdin]
+          create            --username U --profile P (--days N | --valid-until ISO | --no-expiry) [--note T] [--password-stdin]
           set-password      --username U [--password-stdin]      （同时注销该账号全部会话）
           disable | enable  --username U                         （disable 同时注销会话）
           extend            --username U (--days N | --valid-until ISO)
@@ -22,6 +22,9 @@ public static class AdminCli
           set-daily         --username U (--minutes N | --default)
           add-today         --username U --minutes N             （今天临时加时，明早 6 点作废）
           usage             --username U [--days 7]
+          invite create     --count N --profile P [--note T]       （批量生成一次性邀请码）
+          invite list
+          invite revoke     --code C                             （只能作废还没用的码）
           list
         """;
 
@@ -123,6 +126,30 @@ public static class AdminCli
                         stdout.WriteLine($"{day}\t{used / 60.0:F1} min");
                     return 0;
                 }
+                case "invite create":
+                {
+                    var count = int.Parse(Required(opts, "count"), CultureInfo.InvariantCulture);
+                    foreach (var code in service.CreateInvites(count, Required(opts, "profile"), opts.GetValueOrDefault("note") ?? ""))
+                        stdout.WriteLine(code);
+                    return 0;
+                }
+                case "invite list":
+                    foreach (var i in service.ListInvites())
+                    {
+                        var status = i.RevokedAt is not null ? "已作废"
+                            : i.UsedAt is { } usedAt ? $"已用 {i.UsedByUsername} {usedAt:O}"
+                            : "未用";
+                        stdout.WriteLine($"{AuthService.FormatInvite(i.Code)}\tprofile={i.ProfileId}\t{status}\t{i.Note}");
+                    }
+                    return 0;
+                case "invite revoke":
+                {
+                    var code = Required(opts, "code");
+                    if (!service.RevokeInvite(code))
+                        throw new InvalidOperationException($"邀请码 {code} 不存在，或者已经被使用 / 作废。");
+                    stdout.WriteLine($"{code} revoked");
+                    return 0;
+                }
                 case "list":
                     foreach (var a in store.ListAccounts())
                     {
@@ -155,11 +182,12 @@ public static class AdminCli
             if (arg.StartsWith("--", StringComparison.Ordinal))
             {
                 var name = arg[2..];
-                if (name is "password-stdin" or "default") { opts[name] = "true"; continue; }
+                if (name is "password-stdin" or "default" or "no-expiry") { opts[name] = "true"; continue; }
                 if (i + 1 >= args.Length) throw new ArgumentException($"缺少 {arg} 的值。");
                 opts[name] = args[++i];
             }
             else if (command.Length == 0) command = arg;
+            else if (command == "invite") command = "invite " + arg;
             else throw new ArgumentException($"多余的参数: {arg}");
         }
         return (command, opts);
@@ -179,6 +207,12 @@ public static class AdminCli
 
     private static DateTimeOffset ResolveValidUntil(Dictionary<string, string> opts, DateTimeOffset from)
     {
+        if (opts.ContainsKey("no-expiry"))
+        {
+            if (opts.ContainsKey("days") || opts.ContainsKey("valid-until"))
+                throw new ArgumentException("--no-expiry 不能和 --days / --valid-until 一起用。");
+            return AuthService.NoExpiry;
+        }
         if (opts.TryGetValue("valid-until", out var iso))
             return DateTimeOffset.Parse(iso, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal).ToUniversalTime();
         if (opts.TryGetValue("days", out var days))
