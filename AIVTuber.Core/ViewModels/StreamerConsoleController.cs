@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using AIVTuber.Core.Auth;
 using AIVTuber.Core.Diagnostics;
+using AIVTuber.Core.Persona;
+using AIVTuber.Core.Pipeline;
 using AIVTuber.Core.Runtime;
 using AIVTuber.Core.Voice;
 
@@ -25,6 +27,7 @@ public sealed class StreamerConsoleController : IDisposable
         "saveSettings", "discardSettings", "refreshDevices",
         "refreshVoices", "previewVoice", "stopPreview",
         "signIn", "signOut", "copyDiagnostics", "dismissIssue",
+        "personaCheck", "personaCompose",
     };
 
     private readonly BotRuntime _runtime;
@@ -41,6 +44,12 @@ public sealed class StreamerConsoleController : IDisposable
     private string _dismissedError = "";
     private bool _quotaLowDismissed;
     private UserFacingError? _voiceListError;
+    private readonly PersonaAssistant _persona;
+    private int _personaBusy;
+    private (string Description, PersonaCheckResult Result)? _lastPersonaCheck;
+
+    /// <summary>How long one persona-assistant step may take before the streamer is told to retry.</summary>
+    internal TimeSpan PersonaTimeout { get; set; } = TimeSpan.FromSeconds(15);
 
     public StreamerConsoleController(
         BotRuntime runtime,
@@ -52,6 +61,22 @@ public sealed class StreamerConsoleController : IDisposable
         Action<object> post,
         Action<string> copyToClipboard,
         string versionText)
+        : this(runtime, monitor, config, account, preview, catalog, post, copyToClipboard, versionText, null)
+    {
+    }
+
+    /// <summary>Tests pass their own persona assistant; null builds one on the configured main model.</summary>
+    internal StreamerConsoleController(
+        BotRuntime runtime,
+        MonitorViewModel monitor,
+        ConfigViewModel config,
+        AccountViewModel? account,
+        VoicePreviewService preview,
+        VoiceCatalogService catalog,
+        Action<object> post,
+        Action<string> copyToClipboard,
+        string versionText,
+        PersonaAssistant? personaAssistant)
     {
         _runtime = runtime;
         _monitor = monitor;
@@ -62,6 +87,11 @@ public sealed class StreamerConsoleController : IDisposable
         _post = post;
         _copyToClipboard = copyToClipboard;
         _versionText = versionText;
+        _persona = personaAssistant ?? new PersonaAssistant(() =>
+        {
+            var llm = _runtime.CurrentConfig.Llm;
+            return new LlmClient(llm.BaseUrl, llm.ApiKey, llm.Model, systemPrompt: "", maxTokens: 800);
+        });
 
         _runtime.AsrHealthChanged += OnRuntimeChanged;
         _runtime.CompanionPausedChanged += OnRuntimeChangedPlain;
@@ -120,6 +150,10 @@ public sealed class StreamerConsoleController : IDisposable
                 _copyToClipboard(BuildDiagnostics());
                 _post(new { type = "result", data = new { kind = "diagnostics", ok = true, message = "诊断信息已复制（已去除密钥和个人凭据）" } });
                 break;
+            case "personaCheck":
+            case "personaCompose":
+                _ = RunPersonaAsync(name, data);
+                break;
             case "dismissIssue":
                 if (ReadString(data, "code") == "quota_low")
                 {
@@ -133,6 +167,89 @@ public sealed class StreamerConsoleController : IDisposable
                 PushState();
                 break;
         }
+    }
+
+    /// <summary>
+    /// One persona-assistant step. Runs off the message loop; one at a time (a second click while
+    /// one runs is ignored). Only reads the draft's identity fields — the result is a preview the
+    /// page may put into its own draft, never a saved change.
+    /// </summary>
+    private async Task RunPersonaAsync(string name, JsonElement data)
+    {
+        var requestId = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("requestId", out var r) &&
+                        r.TryGetInt64(out var rid) ? rid : 0;
+        void Post(object payload) => _post(new { type = "personaAssistant", data = payload });
+
+        if (!_runtime.CloudAllowed)
+        {
+            Post(new { requestId, stage = "error", message = "登录后才能使用人设助手" });
+            return;
+        }
+        if (Interlocked.CompareExchange(ref _personaBusy, 1, 0) != 0) return;
+        try
+        {
+            var input = new PersonaDraftInput(
+                ReadString(data, "description") ?? "",
+                _config.Working.Interaction.WakeKeywords.Where(k => !string.IsNullOrWhiteSpace(k)).ToArray(),
+                _config.Working.Identity.SelfName ?? "");
+            using var cts = new CancellationTokenSource(PersonaTimeout);
+            object result;
+            try
+            {
+                var check = _lastPersonaCheck is { } last && last.Description == input.Description
+                    ? last.Result
+                    : await _persona.CheckAsync(input, cts.Token).ConfigureAwait(false);
+                _lastPersonaCheck = (input.Description, check);
+                if (name == "personaCheck")
+                {
+                    result = new
+                    {
+                        requestId, stage = "questions",
+                        questions = check.Questions.Select(q => new { id = q.Id, text = q.Text, suggestions = q.Suggestions }),
+                    };
+                }
+                else
+                {
+                    var composed = await _persona.ComposeAsync(input, check, ReadAnswers(data), cts.Token).ConfigureAwait(false);
+                    result = new
+                    {
+                        requestId, stage = "preview",
+                        persona = composed.Persona, aiNames = composed.AiNames,
+                        streamerTitle = composed.StreamerTitle, supplemented = composed.Supplemented,
+                    };
+                }
+            }
+            catch (OperationCanceledException) when (cts.IsCancellationRequested)
+            {
+                result = new { requestId, stage = "error", message = "AI 没有及时回应，请稍后再试" };
+            }
+            catch (PersonaAssistantException ex)
+            {
+                result = new { requestId, stage = "error", message = ex.Message };
+            }
+            catch (Exception ex)
+            {
+                var message = UserErrorMapper.FromException(ex, ErrorArea.Model)?.UserMessage ?? "人设助手出错了，请稍后再试";
+                result = new { requestId, stage = "error", message };
+            }
+            // Signed out while the model was answering: nothing goes back to the page.
+            if (_runtime.CloudAllowed) Post(result);
+        }
+        finally
+        {
+            Volatile.Write(ref _personaBusy, 0);
+        }
+    }
+
+    private static IReadOnlyList<PersonaAnswer> ReadAnswers(JsonElement data)
+    {
+        if (data.ValueKind != JsonValueKind.Object || !data.TryGetProperty("answers", out var answers) ||
+            answers.ValueKind != JsonValueKind.Array) return [];
+        return answers.EnumerateArray()
+            .Where(a => a.ValueKind == JsonValueKind.Object)
+            .Select(a => new PersonaAnswer(ReadString(a, "questionId") ?? "",
+                a.TryGetProperty("text", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null))
+            .ToArray();
     }
 
     /// <summary>Records a mapped error for display on the home page (e.g. a failed command).</summary>
