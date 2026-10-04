@@ -1,0 +1,19 @@
+[Unit]
+Description=AIVTuber auth service
+After=network.target
+
+[Service]
+User=aivtuber-auth
+WorkingDirectory=/opt/aivtuber-auth
+Environment=DOTNET_ROOT=/opt/dotnet
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+Environment=Auth__DatabasePath=/var/lib/aivtuber-auth/auth.db
+ExecStart=/opt/dotnet/dotnet /opt/aivtuber-auth/AIVTuber.AuthServer.dll --urls http://127.0.0.1:5080
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/aivtuber-auth
+
+[Install]
+WantedBy=multi-user.target

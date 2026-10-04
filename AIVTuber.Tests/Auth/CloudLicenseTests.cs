@@ -382,6 +382,59 @@ public sealed class CloudLicenseTests
         Assert.False(license.QuotaManaged);
         Assert.Equal(int.MaxValue, license.QuotaRemainingSeconds);
     }
+
+    [Fact]
+    public async Task Register_Success_BehavesLikeLogin()
+    {
+        var license = NewLicense();
+        _api.Register = (_, _) => Task.FromResult(OkWithQuota());
+
+        var outcome = await license.RegisterAsync("K7M4-9QXD", "alice", "password-1");
+
+        Assert.True(outcome.Success);
+        Assert.True(license.IsAllowed);
+        Assert.Equal(1, license.Epoch);
+        Assert.True(license.QuotaManaged);
+        Assert.Equal(("K7M4-9QXD", "alice", "streamer-017", 1),
+            (_api.LastRegister!.InviteCode, _api.LastRegister.Username, _api.LastRegister.ProfileId, _api.LastRegister.CredentialRevision));
+    }
+
+    [Theory]
+    [InlineData(AuthCode.InvalidInvite, "邀请码不对或已经用过，请向发放者确认")]
+    [InlineData(AuthCode.UsernameTaken, "这个账号名已被占用，换一个试试")]
+    [InlineData(AuthCode.InvalidUsername, "账号名需要 3 到 20 位，只能用字母、数字、下划线和横线")]
+    [InlineData(AuthCode.WeakPassword, "密码至少需要 8 位")]
+    [InlineData(AuthCode.RateLimited, "注册请求过多，请稍后再试")]
+    [InlineData(AuthCode.BadRequest, "注册信息不完整")]
+    public async Task Register_Denied_ShowsPlainChinese(AuthCode code, string expected)
+    {
+        var license = NewLicense();
+        _api.Register = (_, _) => Task.FromResult(new AuthReply(code, ServerTime: ServerStart));
+
+        var outcome = await license.RegisterAsync("AAAA-BBBB", "alice", "password-1");
+
+        Assert.False(outcome.Success);
+        Assert.Equal(expected, outcome.Message);
+        Assert.False(license.IsAllowed);
+    }
+
+    [Fact]
+    public async Task Register_TransportFailure_IsNotAnAccountVerdict()
+    {
+        var license = NewLicense(); // FakeAuthApi.Register throws AuthTransportException by default
+
+        var outcome = await license.RegisterAsync("AAAA-BBBB", "alice", "password-1");
+
+        Assert.False(outcome.Success);
+        Assert.Contains("请先尝试用刚才的账号和密码登录", outcome.Message);
+    }
+
+    [Fact]
+    public void IsNoExpiry_Boundary()
+    {
+        Assert.True(CloudLicense.IsNoExpiry(new DateTimeOffset(2100, 1, 1, 0, 0, 0, TimeSpan.Zero)));
+        Assert.False(CloudLicense.IsNoExpiry(new DateTimeOffset(2099, 12, 31, 23, 59, 59, TimeSpan.Zero)));
+    }
 }
 
 internal sealed class FakeAuthApi : IAuthApi
@@ -402,6 +455,15 @@ internal sealed class FakeAuthApi : IAuthApi
     }
 
     public long LastHeartbeatActiveSeconds { get; private set; }
+    public Func<AuthRegisterRequest, CancellationToken, Task<AuthReply>> Register { get; set; } =
+        (_, _) => throw new AuthTransportException("no register stub");
+    public AuthRegisterRequest? LastRegister { get; private set; }
+
+    Task<AuthReply> IAuthApi.RegisterAsync(AuthRegisterRequest request, CancellationToken ct)
+    {
+        LastRegister = request;
+        return Register(request, ct);
+    }
 
     Task<AuthReply> IAuthApi.HeartbeatAsync(string token, string profileId, long activeSeconds, CancellationToken ct)
     {

@@ -69,33 +69,82 @@
                                        FontSize="16" FontWeight="Bold" Foreground="{StaticResource StreamerInkBrush}" />
                         </StackPanel>
 
-                        <TextBlock Text="欢迎回来" Margin="0,22,0,0" FontSize="26" FontWeight="Bold"
-                                   Foreground="{StaticResource StreamerInkBrush}" />
-                        <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontSize="13" Foreground="{StaticResource StreamerMuteBrush}"
-                                   Text="登录后开始 AI 陪播。" />
+                        <StackPanel x:Name="LoginPanel">
+                            <TextBlock Text="欢迎回来" Margin="0,22,0,0" FontSize="26" FontWeight="Bold"
+                                       Foreground="{StaticResource StreamerInkBrush}" />
+                            <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontSize="13" Foreground="{StaticResource StreamerMuteBrush}"
+                                       Text="登录后开始 AI 陪播。" />
 
-                        <TextBlock Text="账号" Margin="0,22,0,6" FontSize="13" FontWeight="SemiBold"
-                                   Foreground="{StaticResource StreamerMuteBrush}" />
-                        <TextBox x:Name="UsernameBox" Style="{StaticResource StreamerTextBox}"
-                                 Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"
-                                 AutomationProperties.Name="账号" />
+                            <TextBlock Text="账号" Margin="0,22,0,6" FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{StaticResource StreamerMuteBrush}" />
+                            <TextBox x:Name="UsernameBox" Style="{StaticResource StreamerTextBox}"
+                                     Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.Name="账号" />
 
-                        <TextBlock Text="密码" Margin="0,14,0,6" FontSize="13" FontWeight="SemiBold"
-                                   Foreground="{StaticResource StreamerMuteBrush}" />
-                        <PasswordBox x:Name="PasswordInput" Style="{StaticResource StreamerPasswordBox}"
-                                     KeyDown="OnPasswordKeyDown" AutomationProperties.Name="密码" />
+                            <TextBlock Text="密码" Margin="0,14,0,6" FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{StaticResource StreamerMuteBrush}" />
+                            <PasswordBox x:Name="PasswordInput" Style="{StaticResource StreamerPasswordBox}"
+                                         KeyDown="OnPasswordKeyDown" AutomationProperties.Name="密码" />
 
-                        <TextBlock Text="{Binding ErrorText}" Margin="0,12,0,0" TextWrapping="Wrap" FontSize="13"
-                                   Foreground="#B3263E" />
+                            <TextBlock Text="{Binding ErrorText}" Margin="0,12,0,0" TextWrapping="Wrap" FontSize="13"
+                                       Foreground="#B3263E" />
 
-                        <WrapPanel Margin="0,16,0,0">
-                            <Button x:Name="LoginButton" Content="登录" Style="{StaticResource StreamerPrimaryButton}"
-                                    Click="OnLogin" AutomationProperties.Name="登录" />
-                            <Button Content="先看看设备和帮助" Style="{StaticResource StreamerGlassButton}" Margin="10,0,0,0"
-                                    Click="OnDismiss"
-                                    ToolTip="未登录时可以检查麦克风和查看帮助，但不会连接任何云端服务"
-                                    AutomationProperties.Name="先看看设备和帮助" />
-                        </WrapPanel>
+                            <WrapPanel Margin="0,16,0,0">
+                                <Button x:Name="LoginButton" Content="登录" Style="{StaticResource StreamerPrimaryButton}"
+                                        Click="OnLogin" AutomationProperties.Name="登录" />
+                                <Button Content="先看看设备和帮助" Style="{StaticResource StreamerGlassButton}" Margin="10,0,0,0"
+                                        Click="OnDismiss"
+                                        ToolTip="未登录时可以检查麦克风和查看帮助，但不会连接任何云端服务"
+                                        AutomationProperties.Name="先看看设备和帮助" />
+                            </WrapPanel>
+
+                            <Button x:Name="ShowRegisterButton" Content="没有账号？用邀请码注册" Style="{StaticResource StreamerLinkButton}"
+                                    Margin="0,12,0,0" HorizontalAlignment="Left" Click="OnToggleRegister"
+                                    AutomationProperties.Name="用邀请码注册" />
+                        </StackPanel>
+
+                        <StackPanel x:Name="RegisterPanel" Visibility="Collapsed">
+                            <TextBlock Text="注册账号" Margin="0,22,0,0" FontSize="26" FontWeight="Bold"
+                                       Foreground="{StaticResource StreamerInkBrush}" />
+                            <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontSize="13" Foreground="{StaticResource StreamerMuteBrush}"
+                                       Text="输入发放者给你的邀请码，再起一个账号名和密码。" />
+
+                            <TextBlock Text="邀请码" Margin="0,22,0,6" FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{StaticResource StreamerMuteBrush}" />
+                            <TextBox x:Name="InviteBox" Style="{StaticResource StreamerTextBox}" CharacterCasing="Upper"
+                                     AutomationProperties.Name="邀请码" />
+
+                            <TextBlock Text="账号名" Margin="0,14,0,6" FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{StaticResource StreamerMuteBrush}" />
+                            <TextBox x:Name="RegUsernameBox" Style="{StaticResource StreamerTextBox}"
+                                     Text="{Binding Username, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="3 到 20 位，只能用字母、数字、下划线和横线"
+                                     AutomationProperties.Name="账号名" />
+
+                            <TextBlock Text="密码（至少 8 位）" Margin="0,14,0,6" FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{StaticResource StreamerMuteBrush}" />
+                            <PasswordBox x:Name="RegPasswordInput" Style="{StaticResource StreamerPasswordBox}"
+                                         AutomationProperties.Name="密码" />
+
+                            <TextBlock Text="再输一次密码" Margin="0,14,0,6" FontSize="13" FontWeight="SemiBold"
+                                       Foreground="{StaticResource StreamerMuteBrush}" />
+                            <PasswordBox x:Name="RegConfirmInput" Style="{StaticResource StreamerPasswordBox}"
+                                         KeyDown="OnConfirmKeyDown" AutomationProperties.Name="再输一次密码" />
+
+                            <TextBlock Text="{Binding ErrorText}" Margin="0,12,0,0" TextWrapping="Wrap" FontSize="13"
+                                       Foreground="#B3263E" />
+
+                            <WrapPanel Margin="0,16,0,0">
+                                <Button x:Name="RegisterButton" Content="注册并登录" Style="{StaticResource StreamerPrimaryButton}"
+                                        Click="OnRegister" AutomationProperties.Name="注册并登录" />
+                                <Button Content="先看看设备和帮助" Style="{StaticResource StreamerGlassButton}" Margin="10,0,0,0"
+                                        Click="OnDismiss" AutomationProperties.Name="先看看设备和帮助" />
+                            </WrapPanel>
+
+                            <Button Content="已有账号？去登录" Style="{StaticResource StreamerLinkButton}"
+                                    Margin="0,12,0,0" HorizontalAlignment="Left" Click="OnToggleRegister"
+                                    AutomationProperties.Name="去登录" />
+                        </StackPanel>
 
                         <TextBlock Margin="0,18,0,0" TextWrapping="Wrap" FontSize="12" LineHeight="19"
                                    Foreground="{StaticResource StreamerMuteBrush}"

@@ -91,8 +91,27 @@
           <div class="row">
             <button type="button" class="btn primary" id="btnSavePersona">保存人设</button>
             <button type="button" class="btn ghost" id="btnUndoPersona">撤销修改</button>
+            <button type="button" class="btn" id="btnPersonaAssist">帮我写人设</button>
             <button type="button" class="btn ghost" id="btnExample">插入示例</button>
             <button type="button" class="btn ghost" id="btnDefaultPersona">恢复默认</button>
+          </div>
+          <div class="assist" id="personaAssist" hidden>
+            <p class="assist-status" id="assistStatus" role="status"></p>
+            <div id="assistQuestions"></div>
+            <div class="row" id="assistAskRow" hidden>
+              <button type="button" class="btn primary" id="btnAssistCompose">生成人设</button>
+              <button type="button" class="btn ghost" id="btnAssistCancel">取消</button>
+            </div>
+            <div id="assistPreview" hidden>
+              <div class="assist-persona" id="assistPersona"></div>
+              <p class="kv"><span>AI 名字/别名</span><b id="assistNames"></b></p>
+              <p class="kv"><span>称呼你</span><b id="assistTitle"></b></p>
+              <div class="row">
+                <button type="button" class="btn primary" id="btnAssistUse">用这个</button>
+                <button type="button" class="btn" id="btnAssistAgain">重新生成</button>
+                <button type="button" class="btn ghost" id="btnAssistClose">取消</button>
+              </div>
+            </div>
           </div>
         </div>
 

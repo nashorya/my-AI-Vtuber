@@ -39,6 +39,15 @@ public static class AuthServerApp
             return Respond(result);
         });
 
+        app.MapPost("/v1/auth/register", (RegisterRequest request, HttpContext http, AuthService auth) =>
+        {
+            var result = auth.Register(request, SourceKey(http.Connection.RemoteIpAddress, http.Request.Headers["X-Real-IP"].ToString()));
+            // Account/state/profile only — never the invite code, password or token.
+            log.LogInformation("register status={Status} account={Account} profile={Profile} version={Version}",
+                result.Status, result.AccountId ?? "-", request.ProfileId, request.AppVersion);
+            return Respond(result);
+        });
+
         app.MapPost("/v1/auth/heartbeat", (HeartbeatRequest request, HttpContext http, AuthService auth) =>
         {
             var result = auth.Heartbeat(BearerToken(http), request.ProfileId, request.ActiveSeconds);
@@ -61,10 +70,23 @@ public static class AuthServerApp
         AuthStatus.Ok => Results.Json(result, Json),
         AuthStatus.BadRequest => Results.Json(result, Json, statusCode: 400),
         AuthStatus.RateLimited => Results.Json(result, Json, statusCode: 429),
+        AuthStatus.InvalidInvite => Results.Json(result, Json, statusCode: 403),
+        AuthStatus.UsernameTaken => Results.Json(result, Json, statusCode: 409),
+        AuthStatus.InvalidUsername or AuthStatus.WeakPassword => Results.Json(result, Json, statusCode: 400),
         AuthStatus.InvalidCredentials or AuthStatus.InvalidSession or AuthStatus.SessionRevoked =>
             Results.Json(result, Json, statusCode: 401),
         _ => Results.Json(result, Json, statusCode: 403),
     };
+
+    /// <summary>Who is registering, for rate limiting. Behind the reverse proxy every connection is
+    /// loopback, so the proxy's X-Real-IP is used then; a direct connection is never trusted to set it.</summary>
+    public static string SourceKey(System.Net.IPAddress? remote, string? realIpHeader)
+    {
+        if (remote is null) return "";
+        if (System.Net.IPAddress.IsLoopback(remote) && !string.IsNullOrWhiteSpace(realIpHeader))
+            return realIpHeader.Trim();
+        return remote.ToString();
+    }
 
     private static string BearerToken(HttpContext http)
     {

@@ -107,4 +107,30 @@ public sealed class AuthEndToEndTests : IAsyncLifetime
 
         Assert.Null(api.HttpClientForTests.DefaultRequestHeaders.Authorization);
     }
+
+    [Fact]
+    public async Task Register_WithAnInvite_SignsInAndKeepsTheQuota_ThenTheCodeIsSpent()
+    {
+        var code = Service.CreateInvites(1, "streamer-017", "e2e")[0];
+        using var api = new AuthApiClient(_baseUri);
+        await using var license = NewLicense(api);
+
+        var outcome = await license.RegisterAsync(code, "newbie", "password-1");
+
+        Assert.True(outcome.Success, outcome.Message);
+        Assert.True(license.IsAllowed);
+        Assert.True(license.QuotaManaged);
+        Assert.True(CloudLicense.IsNoExpiry(license.Snapshot.AccountValidUntil!.Value));
+        await license.HeartbeatOnceAsync();
+        Assert.True(license.IsAllowed);
+
+        using var api2 = new AuthApiClient(_baseUri);
+        await using var second = NewLicense(api2);
+        var again = await second.RegisterAsync(code, "other", "password-1");
+        Assert.False(again.Success);
+        Assert.Equal("邀请码不对或已经用过，请向发放者确认", again.Message);
+
+        var taken = await second.RegisterAsync(Service.CreateInvites(1, "streamer-017", "e2e")[0], "newbie", "password-1");
+        Assert.Equal("这个账号名已被占用，换一个试试", taken.Message);
+    }
 }

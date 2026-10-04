@@ -112,7 +112,6 @@ public sealed class DistributionProfile
     {
         if (Format != 1) throw new DistributionProfileException($"不支持的专属配置格式 {Format}，请使用与本程序匹配的专属包。");
         Require(ProfileId, "profile_id");
-        Require(Account, "account");
         Require(AuthServer, "auth_server");
         if (!Uri.TryCreate(AuthServerUri.ToString(), UriKind.Absolute, out var auth) ||
             auth.Scheme is not ("https" or "http"))

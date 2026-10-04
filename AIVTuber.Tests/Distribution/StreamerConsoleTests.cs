@@ -3,6 +3,8 @@ using System.Text.RegularExpressions;
 using AIVTuber.Core.Auth;
 using AIVTuber.Core.Config;
 using AIVTuber.Core.Diagnostics;
+using AIVTuber.Core.Persona;
+using AIVTuber.Core.Pipeline;
 using AIVTuber.Core.Runtime;
 using AIVTuber.Core.ViewModels;
 using AIVTuber.Core.Voice;
@@ -341,6 +343,158 @@ public sealed class StreamerConsoleTests : IAsyncDisposable
         var field = typeof(BotRuntime).GetField("PipelineError",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
         ((EventHandler<string>?)field.GetValue(_runtime))?.Invoke(_runtime, message);
+    }
+
+    // ── 人设助手 ─────────────────────────────────────────────────────────────
+
+    private const string CheckReply =
+        "{\"aiName\":null,\"streamerTitle\":null,\"needsStyle\":false,\"suggestions\":{\"aiName\":[\"小咪\",\"团子\"],\"streamerTitle\":[\"老大\",\"主播\"],\"style\":[]}}";
+    private const string ComposeReply =
+        "{\"persona\":\"你是小咪，老大的猫娘搭档，正在陪老大直播。\\n性格：傲娇。\",\"aiNames\":[\"小咪\"],\"streamerTitle\":\"老大\",\"supplemented\":[]}";
+
+    /// <summary>A second controller over the same runtime whose persona assistant talks to <paramref name="llm"/>.</summary>
+    private StreamerConsoleController PersonaController(GatedLlm llm, List<string> posted) =>
+        new(_runtime, _monitor, _config, _account,
+            _runtime.CreateVoicePreview(_ => throw new InvalidOperationException("no device in tests")),
+            _runtime.CreateVoiceCatalog(_ => null),
+            payload => { lock (posted) posted.Add(Serialize(payload)); },
+            _ => { }, "v0.36.0-rc.2", new PersonaAssistant(() => llm));
+
+    private static async Task<List<JsonElement>> PersonaMessagesAsync(List<string> posted, int count, int timeoutMs = 3000)
+    {
+        var deadline = Environment.TickCount64 + timeoutMs;
+        while (true)
+        {
+            List<JsonElement> found;
+            lock (posted)
+                found = posted.Select(p => JsonDocument.Parse(p).RootElement.Clone())
+                    .Where(e => e.GetProperty("type").GetString() == "personaAssistant").ToList();
+            if (found.Count >= count || Environment.TickCount64 > deadline) return found;
+            await Task.Delay(10);
+        }
+    }
+
+    [Fact]
+    public async Task PersonaCheck_PostsQuestions()
+    {
+        await SignInAsync();
+        var posted = new List<string>();
+        using var controller = PersonaController(new GatedLlm(CheckReply), posted);
+
+        await controller.HandleAsync("personaCheck", Json("""{"requestId":7,"description":"傲娇猫娘"}"""));
+
+        var data = Assert.Single(await PersonaMessagesAsync(posted, 1)).GetProperty("data");
+        Assert.Equal(7, data.GetProperty("requestId").GetInt64());
+        Assert.Equal("questions", data.GetProperty("stage").GetString());
+        Assert.Equal("aiName", data.GetProperty("questions")[0].GetProperty("id").GetString());
+    }
+
+    [Fact]
+    public async Task PersonaCompose_PostsPreview_AndDoesNotTouchTheDraft()
+    {
+        await SignInAsync();
+        var before = (_config.Working.Llm.SystemPrompt, _config.Working.Identity.SelfName,
+            string.Join(",", _config.Working.Interaction.WakeKeywords));
+        var posted = new List<string>();
+        using var controller = PersonaController(new GatedLlm(CheckReply, ComposeReply), posted);
+
+        await controller.HandleAsync("personaCompose", Json("""
+            {"requestId":8,"description":"傲娇猫娘","answers":[{"questionId":"aiName","text":"小咪"},{"questionId":"streamerTitle","text":"老大"}]}
+            """));
+
+        var data = Assert.Single(await PersonaMessagesAsync(posted, 1)).GetProperty("data");
+        Assert.Equal("preview", data.GetProperty("stage").GetString());
+        Assert.StartsWith("你是小咪", data.GetProperty("persona").GetString());
+        Assert.Equal("小咪", data.GetProperty("aiNames")[0].GetString());
+        Assert.Equal("老大", data.GetProperty("streamerTitle").GetString());
+        Assert.Equal(before, (_config.Working.Llm.SystemPrompt, _config.Working.Identity.SelfName,
+            string.Join(",", _config.Working.Interaction.WakeKeywords)));
+    }
+
+    [Fact]
+    public async Task PersonaCommands_RefusedWhenCloudNotAllowed()
+    {
+        var llm = new GatedLlm(CheckReply);
+        var posted = new List<string>();
+        using var controller = PersonaController(llm, posted);
+
+        await controller.HandleAsync("personaCheck", Json("""{"requestId":1,"description":"猫娘"}"""));
+
+        var data = Assert.Single(await PersonaMessagesAsync(posted, 1)).GetProperty("data");
+        Assert.Equal("error", data.GetProperty("stage").GetString());
+        Assert.Equal("登录后才能使用人设助手", data.GetProperty("message").GetString());
+        Assert.Equal(0, llm.Calls);
+    }
+
+    [Fact]
+    public async Task PersonaCommand_WhileAnotherIsRunning_AnswersBusy()
+    {
+        await SignInAsync();
+        var llm = new GatedLlm(CheckReply, CheckReply) { Gate = new TaskCompletionSource() };
+        var posted = new List<string>();
+        using var controller = PersonaController(llm, posted);
+
+        await controller.HandleAsync("personaCheck", Json("""{"requestId":1,"description":"猫娘"}"""));
+        await controller.HandleAsync("personaCheck", Json("""{"requestId":2,"description":"猫娘"}"""));
+        llm.Gate.SetResult();
+
+        // The page may have cancelled the first request; it must hear back, not wait forever.
+        var messages = await PersonaMessagesAsync(posted, 2);
+        var busy = messages.Single(m => m.GetProperty("data").GetProperty("requestId").GetInt64() == 2).GetProperty("data");
+        Assert.Equal("error", busy.GetProperty("stage").GetString());
+        Assert.Equal("上一次还没结束，请稍等几秒再试", busy.GetProperty("message").GetString());
+        Assert.Equal(1, llm.Calls);
+    }
+
+    [Fact]
+    public async Task PersonaCommand_TimesOut()
+    {
+        await SignInAsync();
+        var posted = new List<string>();
+        using var controller = PersonaController(new GatedLlm(CheckReply) { Gate = new TaskCompletionSource() }, posted);
+        controller.PersonaTimeout = TimeSpan.FromMilliseconds(50);
+
+        await controller.HandleAsync("personaCheck", Json("""{"requestId":3,"description":"猫娘"}"""));
+
+        var data = Assert.Single(await PersonaMessagesAsync(posted, 1)).GetProperty("data");
+        Assert.Equal("error", data.GetProperty("stage").GetString());
+        Assert.Equal("AI 没有及时回应，请稍后再试", data.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task PersonaResult_DroppedWhenSignedOutMeanwhile()
+    {
+        await SignInAsync();
+        var llm = new GatedLlm(CheckReply) { Gate = new TaskCompletionSource() };
+        var posted = new List<string>();
+        using var controller = PersonaController(llm, posted);
+
+        await controller.HandleAsync("personaCheck", Json("""{"requestId":4,"description":"猫娘"}"""));
+        await _account.LogoutAsync();
+        llm.Gate.SetResult();
+
+        Assert.Empty(await PersonaMessagesAsync(posted, 1, timeoutMs: 300));
+    }
+
+    internal sealed class GatedLlm(params string[] replies) : ILlmClient
+    {
+        private int _calls;
+        public int Calls => Volatile.Read(ref _calls);
+        public TaskCompletionSource? Gate { get; init; }
+        public event EventHandler<string>? OnSentenceReady;
+        public event EventHandler<string>? OnEmotionDetected;
+        public event EventHandler<string>? OnActionDetected;
+        public event EventHandler<string>? OnPoseDetected;
+
+        public async IAsyncEnumerable<string> StreamAsync(List<Message> history, string userInput,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            var reply = replies[Interlocked.Increment(ref _calls) - 1];
+            if (Gate is not null) await Gate.Task.WaitAsync(cancellationToken);
+            await Task.Yield();
+            yield return reply;
+            OnSentenceReady?.Invoke(this, reply);
+        }
     }
 }
 

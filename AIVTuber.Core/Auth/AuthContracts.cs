@@ -13,6 +13,10 @@ public enum AuthCode
     InvalidSession,
     RateLimited,
     BadRequest,
+    InvalidInvite,
+    UsernameTaken,
+    InvalidUsername,
+    WeakPassword,
     Unknown,
 }
 
@@ -25,6 +29,14 @@ public sealed record AuthLoginRequest(
 
 /// <summary>Today's companion-time allowance as reported by the account service.</summary>
 public sealed record QuotaReply(int QuotaSeconds, int RemainingSeconds, DateTimeOffset ResetsAt);
+
+public sealed record AuthRegisterRequest(
+    string InviteCode,
+    string Username,
+    string Password,
+    string ProfileId,
+    string AppVersion,
+    int CredentialRevision);
 
 /// <summary>Login/heartbeat answer. Times are server UTC; the client only uses their
 /// difference, measured on its own monotonic clock.</summary>
@@ -45,6 +57,7 @@ public sealed class AuthTransportException(string message, Exception? inner = nu
 public interface IAuthApi
 {
     Task<AuthReply> LoginAsync(AuthLoginRequest request, CancellationToken ct = default);
+    Task<AuthReply> RegisterAsync(AuthRegisterRequest request, CancellationToken ct = default);
     Task<AuthReply> HeartbeatAsync(string token, string profileId, long activeSeconds, CancellationToken ct = default);
     Task LogoutAsync(string token, CancellationToken ct = default);
 }
