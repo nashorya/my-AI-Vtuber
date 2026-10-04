@@ -1,0 +1,52 @@
+name: Windows installer verification
+on:
+  push:
+    branches: [feat/windows-installer]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Fetch the verified public build
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh run download 37187052583 --repo $env:GITHUB_REPOSITORY --name windows-quality-9f4ebbf3ff8e3f0835d1ffcc5ac3aaaa7d9bd9f2 --dir "$env:RUNNER_TEMP\public-build"
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download verified build' }
+      - name: Install NSIS and verify Microsoft bootstrapper
+        shell: pwsh
+        run: |
+          choco install nsis --no-progress -y
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+          Invoke-WebRequest 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile "$env:RUNNER_TEMP\WebView2Setup.exe"
+          $sig = Get-AuthenticodeSignature "$env:RUNNER_TEMP\WebView2Setup.exe"
+          if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw 'WebView2 signature invalid' }
+      - name: Build public TEST-ONLY installer (never real credentials)
+        shell: pwsh
+        run: |
+          Copy-Item docs/auth/profile.shared.example.json "$env:RUNNER_TEMP\fixture-profile.json"
+          Set-Content "$env:RUNNER_TEMP\public-build\publish\obsolete-installer-fixture.txt" "old-owned-file"
+          python installer/build_installer.py --app-dir "$env:RUNNER_TEMP\public-build\publish" --profile "$env:RUNNER_TEMP\fixture-profile.json" --output "$env:RUNNER_TEMP\installer\AIVTuber-TEST-ONLY-Previous.exe" --webview-bootstrapper "$env:RUNNER_TEMP\WebView2Setup.exe" --version 0.36.0-rc.2 --source-commit 9f4ebbf3ff8e3f0835d1ffcc5ac3aaaa7d9bd9f2 --test-fixture --makensis "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Previous installer compilation failed" }
+          Remove-Item "$env:RUNNER_TEMP\public-build\publish\obsolete-installer-fixture.txt"
+          python installer/build_installer.py --app-dir "$env:RUNNER_TEMP\public-build\publish" --profile "$env:RUNNER_TEMP\fixture-profile.json" --output "$env:RUNNER_TEMP\installer\AIVTuber-TEST-ONLY-Setup.exe" --webview-bootstrapper "$env:RUNNER_TEMP\WebView2Setup.exe" --version 0.36.0-rc.2 --source-commit 9f4ebbf3ff8e3f0835d1ffcc5ac3aaaa7d9bd9f2 --test-fixture --makensis "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
+      - name: Exercise installation, upgrade and uninstall
+        shell: pwsh
+        run: ./installer/Test-Installer.ps1 -Installer "$env:RUNNER_TEMP\installer\AIVTuber-TEST-ONLY-Setup.exe" -PreviousInstaller "$env:RUNNER_TEMP\installer\AIVTuber-TEST-ONLY-Previous.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-test-evidence
+          path: ${{ runner.temp }}/installer
+          retention-days: 3
