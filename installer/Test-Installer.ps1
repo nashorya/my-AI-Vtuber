@@ -22,6 +22,7 @@ Require (Test-Path $reg) 'Uninstall registration absent'
 $profile = Get-Content (Join-Path $target 'distribution\profile.json') -Raw | ConvertFrom-Json
 Require ($profile.profile_id -eq 'shared-001') 'Wrong invite profile'
 Require (-not $profile.account) 'Shared package prefilled an account'
+function VerifyInstalled {
 $manifest = Get-Content (Join-Path $target 'distribution-manifest.json') -Raw | ConvertFrom-Json
 foreach ($file in $manifest.files.PSObject.Properties) {
     $hash = (Get-FileHash (Join-Path $target $file.Name) -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -29,6 +30,8 @@ foreach ($file in $manifest.files.PSObject.Properties) {
 }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Test-InstalledUi.ps1') -AppDirectory $target
 Require ($LASTEXITCODE -eq 0) 'Installed application UI check failed'
+}
+VerifyInstalled
 # Sharing violation must fail before changing files or the recovery registration.
 $locked = [IO.File]::Open((Join-Path $target 'AIVTuber.exe'), 'Open', 'Read', 'Read')
 try {
@@ -51,6 +54,14 @@ Install
 Require (-not (Test-Path (Join-Path $target 'obsolete-installer-fixture.txt'))) 'Upgrade left retired owned file'
 Require ((Get-Content (Join-Path $target 'memory.db') -Raw).Trim() -eq 'user-memory-sentinel') 'Upgrade overwrote memory'
 Require ((Get-Content (Join-Path $target 'config.json') -Raw) -match 'installer_test') 'Upgrade overwrote settings'
+# Verify the final upgraded payload as well as the first installation.
+# Preserve the deliberate fake user-data sentinels while doing the startup check.
+Move-Item (Join-Path $target 'config.json') (Join-Path $target 'config.installer-test-backup')
+Move-Item (Join-Path $target 'memory.db') (Join-Path $target 'memory.installer-test-backup')
+try { VerifyInstalled } finally {
+    Move-Item (Join-Path $target 'config.installer-test-backup') (Join-Path $target 'config.json') -Force
+    Move-Item (Join-Path $target 'memory.installer-test-backup') (Join-Path $target 'memory.db') -Force
+}
 $u = Start-Process -FilePath (Join-Path $target 'Uninstall.exe') -ArgumentList @('/S', "_?=$target") -PassThru -Wait
 Require ($u.ExitCode -eq 0) "Uninstall failed: $($u.ExitCode)"
 Require (-not (Test-Path (Join-Path $target 'AIVTuber.exe'))) 'Uninstall left app executable'
