@@ -20,7 +20,7 @@ test('vendored upstream files exactly match the pinned source hashes', () => {
 
 test('real host + original Performer: clean speech, VTS frames, authorization and cancellation', { timeout: 20000 }, async () => {
  const temp = mkdtempSync(join(tmpdir(), 'cortico-host-'));
- // The fake model's file wires every pack input, so the conservative adaptation may drive them.
+ // The fake model's file wires every pack input, so the auto adaptation may drive them.
  writeModel(temp, 'Fake', loadPack(EXAMPLE_PACK_DIR).paramIds);
  const server = new WebSocketServer({ port: 0 }); await once(server, 'listening');
  const frames: any[] = [];

@@ -361,7 +361,7 @@ public sealed class RuntimeCorticoAcceptanceTests
 
         string status;
         lock (h.Diagnostics) status = h.Diagnostics.Last(d => d.Contains("\"model\":\"RigLite\""));
-        Assert.Contains("\"mode\":\"conservative\"", status);
+        Assert.Contains("\"mode\":\"auto\"", status);
         var before = (int)(await h.Vts.StatsAsync())["total"]!;
 
         h.Http.Replies.Enqueue(Speak + Seg(0, "【用力点头,拼命摇头】换好了。") + End);

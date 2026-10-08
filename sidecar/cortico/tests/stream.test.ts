@@ -103,7 +103,7 @@ test('a denied piece stops the rest of that turn instead of acting without a voi
  }, (live2d) => writeModel(live2d, 'Fake', PACK_PARAMS));
 });
 
-test('each rig uses its own mapping; a rig without a profile gets a conservative, verified subset; switching rigs cuts the old turn', { timeout: 40000 }, async () => {
+test('each rig uses its own mapping; a rig without a profile gets a verified subset calibrated from its model file; switching rigs cuts the old turn', { timeout: 40000 }, async () => {
  const rigA = { ...exampleProfile, id: 'RigA', label: 'Rig A', vtsModelName: 'RigA',
   wiring: { ...exampleProfile.wiring, FaceAngleY: { invert: true, scale: 0.5 } },
   fx: { fx_sweat: { file: 'Sweat.exp3.json', durationMs: 3000 } }, keepExpressions: [] };
@@ -132,7 +132,7 @@ test('each rig uses its own mapping; a rig without a profile gets a conservative
   host.holdTts = false;
   await until(() => host.statuses.at(-1)?.model === 'Lite');
   const lite = host.statuses.at(-1);
-  assert.equal(lite.mode, 'conservative');
+  assert.equal(lite.mode, 'auto');
   assert.ok(lite.skipped.some((s: any) => s.param === 'FaceAngleY'));
   assert.ok(lite.driven.includes('MouthOpen') && lite.driven.includes('FaceAngleX'));
 
@@ -148,7 +148,7 @@ test('each rig uses its own mapping; a rig without a profile gets a conservative
   assert.ok(shakeLite > 0, 'shake still performed on its available axis');
 
   // Whatever of Rig A's turn was in flight across the switch, Lite ends with none of Rig A's
-  // expressions switched on, and its own conservative turn switches none on.
+  // expressions switched on, and its own auto-adapted turn switches none on.
   await sleep(3200);
   assert.deepEqual(vts.activeOn('Lite'), [], JSON.stringify(vts.expressions));
   assert.ok(!vts.expressions.some(e => e.model === 'Lite' && e.active && e.file !== 'Sweat.exp3.json'));
@@ -162,7 +162,7 @@ test('each rig uses its own mapping; a rig without a profile gets a conservative
 test('a rig without profile or model file is only lip-synced, and says so', { timeout: 30000 }, async () => {
  await withHost(async (vts, host) => {
   const status = host.statuses.at(-1);
-  assert.equal(status.mode, 'conservative');
+  assert.equal(status.mode, 'auto');
   assert.deepEqual(status.driven, ['MouthOpen']);
   assert.ok(status.warnings.some((w: string) => w.includes('只驱动口型')));
   const perf = await host.begin();
