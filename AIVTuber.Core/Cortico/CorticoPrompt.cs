@@ -13,6 +13,8 @@ public static class CorticoPrompt
         【Cortico 与输出协议 v2】
         仍按【输出协议 v2】逐行输出 decision / speech / end 事件。动作和表情写在 speech 的 text 里，
         用上面的台本标记，例如 {"v":2,"type":"speech","seq":0,"text":"<微笑>好呀【点头】"}。
+        表格里有「表情」行时，每轮第一段开头必须先写一个表情词表明你此刻的情绪，情绪变化时在那一段开头换一个。
+        表情和动作、姿态是两回事，动作姿态不能代替表情，可以用逗号和表情组合在同一个标记里。
         不要输出 control 行；不要把【PASS】、心里话或思考过程写进 speech。
         """;
 }
