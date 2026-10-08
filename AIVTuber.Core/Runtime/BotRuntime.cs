@@ -1484,6 +1484,10 @@ public sealed class BotRuntime : IAsyncDisposable
         }
     }
 
+    private VadDetector NewVad() => new(_config.Audio.VadAggressiveness, _config.Audio.PreSpeechPaddingMs,
+        _config.Audio.PostSpeechSilenceMs,
+        softMaxSegmentMs: _config.Audio.SegmentSoftMaxMs, maxSegmentMs: _config.Audio.SegmentMaxMs);
+
     private async Task ObserveLoopbackSegmentAsync(SpeechSegment seg)
     {
         var opponent = Interlocked.Exchange(ref _capturedOpponent, null) ?? CaptureOpponent();
@@ -1752,7 +1756,7 @@ public sealed class BotRuntime : IAsyncDisposable
         }
 
         _mic = new MicrophoneCapture(_config.Audio.InputDeviceIndex);
-        _vad = new VadDetector(_config.Audio.VadAggressiveness, _config.Audio.PreSpeechPaddingMs, _config.Audio.PostSpeechSilenceMs);
+        _vad = NewVad();
         if (realtimeFactory is not null)
         {
             _micAsrPump = new RealtimeAsrPump(AIVTuber.Core.Audio.AudioSource.Microphone,
@@ -1830,7 +1834,7 @@ public sealed class BotRuntime : IAsyncDisposable
         {
             try
             {
-                _loopbackVad = new VadDetector(_config.Audio.VadAggressiveness, _config.Audio.PreSpeechPaddingMs, _config.Audio.PostSpeechSilenceMs);
+                _loopbackVad = NewVad();
                 if (realtimeFactory is not null)
                 {
                     // Independent socket/session/buffer/cancellation from the mic pump; the
@@ -1907,7 +1911,10 @@ public sealed class BotRuntime : IAsyncDisposable
         if (!_config.Bilibili.Enable) { _selector = null; _danmaku = null; return; }
         _selector = CreateSelector();
         _danmaku = new BilibiliDanmakuClient(_config.Bilibili);
-        _danmaku.OnDanmaku += (_, d) => { _selector?.Enqueue(d); _selector?.TrySelectNext(); };
+        // Every danmaku goes to the conversation as it arrives. The turn gate already holds
+        // input while the AI is busy and merges lines that arrive together; the selector's one
+        // pick per interval dropped most of a busy chat and delayed the rest.
+        _danmaku.OnDanmaku += (_, d) => SuperviseBackgroundTask(AcceptDanmakuAsync(d));
         _danmaku.OnPkStarted += (_, pk) => AnnouncePkOpponent(pk);
         _danmaku.OnPkEnded += (_, _) => HandlePkEnded();
         // Surface bridge health to the UI error banner, and pipe its stdout/stderr to the debug log.
@@ -2113,18 +2120,20 @@ public sealed class BotRuntime : IAsyncDisposable
     private DanmakuSelector CreateSelector()
     {
         var selector = new DanmakuSelector(_config.Bilibili.SelectionIntervalSec, _viewerRepo);
-        selector.OnDanmakuSelected += async (_, d) =>
-        {
-            _stateTracker.TextInputStarted(Environment.TickCount64);
-            await _viewerRepo.RecordInteractionAsync(d.Uid, d.Platform, d.Username);
-            var label = IdentityPrompt.ResolveDanmakuLabel(_config.Identity.DanmakuLabel);
-            AcceptTalkLine(new TalkLine(
-                TalkIdentity.Danmaku,
-                string.IsNullOrWhiteSpace(d.Username) ? label : d.Username,
-                d.Content,
-                string.IsNullOrEmpty(d.Uid) ? null : d.Uid));
-        };
+        selector.OnDanmakuSelected += (_, d) => SuperviseBackgroundTask(AcceptDanmakuAsync(d));
         return selector;
+    }
+
+    private async Task AcceptDanmakuAsync(Danmaku d)
+    {
+        _stateTracker.TextInputStarted(Environment.TickCount64);
+        var label = IdentityPrompt.ResolveDanmakuLabel(_config.Identity.DanmakuLabel);
+        AcceptTalkLine(new TalkLine(
+            TalkIdentity.Danmaku,
+            string.IsNullOrWhiteSpace(d.Username) ? label : d.Username,
+            d.Content,
+            string.IsNullOrEmpty(d.Uid) ? null : d.Uid));
+        await _viewerRepo.RecordInteractionAsync(d.Uid, d.Platform, d.Username).ConfigureAwait(false);
     }
 
     /// <summary>

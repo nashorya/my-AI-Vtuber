@@ -147,6 +147,66 @@ public class VadDetectorTests
     }
 }
 
+public class VadSegmentLimitTests
+{
+    private static readonly byte[] Voice = [1, .. new byte[959]];
+    private static readonly byte[] Quiet = new byte[960];
+
+    private static VadDetector Vad(int softMaxMs, int maxMs) =>
+        new(2, 0, 800, 16000, 30, softMaxMs, maxMs, hasSpeech: f => f[0] == 1);
+
+    private static void Feed(VadDetector vad, byte[] frame, int count)
+    {
+        for (var i = 0; i < count; i++) vad.Feed(frame);
+    }
+
+    [Fact]
+    public void LongSpeech_ClosesAtAShortPause_OncePastTheSoftLimit()
+    {
+        using var capped = Vad(softMaxMs: 600, maxMs: 0);
+        using var uncapped = Vad(softMaxMs: 0, maxMs: 0);
+        var cappedSegments = 0;
+        var uncappedSegments = 0;
+        capped.SpeechDetected += (_, _) => cappedSegments++;
+        uncapped.SpeechDetected += (_, _) => uncappedSegments++;
+
+        foreach (var vad in new[] { capped, uncapped })
+        {
+            Feed(vad, Voice, 25); // 750 ms of speech, past the 600 ms soft limit
+            Feed(vad, Quiet, 10); // a 300 ms breath: shorter than the 800 ms closing silence
+        }
+
+        Assert.Equal(1, cappedSegments);
+        Assert.Equal(0, uncappedSegments);
+    }
+
+    [Fact]
+    public void ShortSpeech_StillWaitsForTheFullClosingSilence()
+    {
+        using var vad = Vad(softMaxMs: 6000, maxMs: 15000);
+        var segments = 0;
+        vad.SpeechDetected += (_, _) => segments++;
+
+        Feed(vad, Voice, 25);
+        Feed(vad, Quiet, 10);
+        Assert.Equal(0, segments);
+        Feed(vad, Quiet, 17); // 810 ms of silence in total
+        Assert.Equal(1, segments);
+    }
+
+    [Fact]
+    public void UnbrokenSpeech_IsCutAtTheHardLimit_AndContinuesInANewSegment()
+    {
+        using var vad = Vad(softMaxMs: 0, maxMs: 300);
+        var lengths = new List<int>();
+        vad.SpeechDetected += (_, seg) => lengths.Add(seg.AudioData.Length / 960);
+
+        Feed(vad, Voice, 25);
+
+        Assert.Equal(new[] { 10, 10 }, lengths);
+    }
+}
+
 public class AudioPlayerTests
 {
     [SkippableFact]

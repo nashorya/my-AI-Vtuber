@@ -22,12 +22,17 @@ public sealed class SpeechSegment
 /// </summary>
 public sealed class VadDetector : IDisposable
 {
-    private readonly WebRtcVad _vad;
+    private readonly WebRtcVad? _vad;
+    private readonly Func<byte[], bool> _hasSpeech;
     private readonly int _aggressiveness;
     private readonly int _preSpeechPaddingMs;
     private readonly int _postSpeechSilenceMs;
     private readonly int _sampleRate;
     private readonly int _frameDurationMs;
+    private readonly int _softMaxSegmentMs;
+    private readonly int _maxSegmentMs;
+    /// <summary>Closing silence once a segment is past <see cref="_softMaxSegmentMs"/>.</summary>
+    private readonly int _shortSilenceMs;
 
     // State tracking
     private bool _isSpeaking;
@@ -62,7 +67,24 @@ public sealed class VadDetector : IDisposable
         int preSpeechPaddingMs = 200,
         int postSpeechSilenceMs = 500,
         int sampleRate = 16000,
-        int frameDurationMs = 30)
+        int frameDurationMs = 30,
+        int softMaxSegmentMs = 0,
+        int maxSegmentMs = 0)
+        : this(aggressiveness, preSpeechPaddingMs, postSpeechSilenceMs, sampleRate, frameDurationMs,
+            softMaxSegmentMs, maxSegmentMs, hasSpeech: null)
+    {
+    }
+
+    /// <param name="hasSpeech">Speech classifier for tests; null uses WebRTC VAD.</param>
+    internal VadDetector(
+        int aggressiveness,
+        int preSpeechPaddingMs,
+        int postSpeechSilenceMs,
+        int sampleRate,
+        int frameDurationMs,
+        int softMaxSegmentMs,
+        int maxSegmentMs,
+        Func<byte[], bool>? hasSpeech)
     {
         if (aggressiveness is < 0 or > 3)
             throw new ArgumentOutOfRangeException(nameof(aggressiveness), "Must be 0-3");
@@ -72,6 +94,13 @@ public sealed class VadDetector : IDisposable
         _postSpeechSilenceMs = postSpeechSilenceMs;
         _sampleRate = sampleRate;
         _frameDurationMs = frameDurationMs;
+        // A speaker who never pauses for the full closing silence (or a stream whose music keeps
+        // the detector "speaking") would otherwise be heard only when the whole stretch ends:
+        // live logs show 11 s segments at p90 and up to 46 s. Past the soft limit a short
+        // breath closes the segment; the hard limit cuts regardless. 0 disables either.
+        _softMaxSegmentMs = Math.Max(0, softMaxSegmentMs);
+        _maxSegmentMs = Math.Max(0, maxSegmentMs);
+        _shortSilenceMs = Math.Min(postSpeechSilenceMs, 250);
 
         // Map our 0-3 aggressiveness to WebRtcVadSharp.OperatingMode
         var mode = aggressiveness switch
@@ -83,7 +112,12 @@ public sealed class VadDetector : IDisposable
             _ => OperatingMode.Aggressive,
         };
 
-        _vad = new WebRtcVad
+        if (hasSpeech is not null)
+        {
+            _hasSpeech = hasSpeech;
+            return;
+        }
+        var vad = new WebRtcVad
         {
             SampleRate = SampleRate.Is16kHz,
             FrameLength = frameDurationMs switch
@@ -95,6 +129,8 @@ public sealed class VadDetector : IDisposable
             },
             OperatingMode = mode,
         };
+        _vad = vad;
+        _hasSpeech = frame => vad.HasSpeech(frame);
     }
 
     /// <summary>
@@ -109,7 +145,7 @@ public sealed class VadDetector : IDisposable
             try
             {
                 // WebRtcVadSharp expects 16-bit PCM samples
-                isSpeech = _vad.HasSpeech(frame);
+                isSpeech = _hasSpeech(frame);
             }
             catch
             {
@@ -139,6 +175,12 @@ public sealed class VadDetector : IDisposable
                 _currentSpeechFrames.Add(frame);
                 SpeechFrame?.Invoke(this, frame);
                 _silenceFrames = 0;
+                if (_maxSegmentMs > 0 && SegmentMs >= _maxSegmentMs)
+                {
+                    // Hard limit: the next speech frame starts a new segment.
+                    _isSpeaking = false;
+                    EmitSpeechSegment(now);
+                }
             }
             else
             {
@@ -150,7 +192,10 @@ public sealed class VadDetector : IDisposable
 
                     _silenceFrames++;
                     var silenceMs = _silenceFrames * _frameDurationMs;
-                    if (silenceMs >= _postSpeechSilenceMs)
+                    var closingSilenceMs = _softMaxSegmentMs > 0 && SegmentMs >= _softMaxSegmentMs
+                        ? _shortSilenceMs
+                        : _postSpeechSilenceMs;
+                    if (silenceMs >= closingSilenceMs)
                     {
                         // Speech segment ended
                         _isSpeaking = false;
@@ -172,6 +217,9 @@ public sealed class VadDetector : IDisposable
             }
         }
     }
+
+    /// <summary>Audio length of the segment in progress (frames × frame duration).</summary>
+    private int SegmentMs => _currentSpeechFrames.Count * _frameDurationMs;
 
     /// <summary>
     /// Force-flush any ongoing speech segment (e.g., on Stop).
@@ -229,6 +277,6 @@ public sealed class VadDetector : IDisposable
     public void Dispose()
     {
         Flush();
-        _vad.Dispose();
+        _vad?.Dispose();
     }
 }

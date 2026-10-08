@@ -43,11 +43,17 @@ internal static class IdentityPrompt
     /// LLM client (see <see cref="Pipeline.ReplyProtocolV2.Prompt"/>). This is the companion
     /// policy at its quietest level; <see cref="InvitationPolicyFor"/> picks one per mode.
     /// </summary>
-    public const string InvitationPolicyV2 = PolicyHeader + "\n" + ListenRules + "\n" + PolicyFormat;
+    public const string InvitationPolicyV2 = PolicyHeader + "\n" + ListenRules + "\n" + DanmakuRules + "\n" + PolicyFormat;
 
     private const string PolicyHeader = """
         【当前接话规则与输出格式 v2】
         保留角色的名字、性格和语气；以下规则取代角色提示词中旧的接话规则及 PASS/心里话输出格式。
+        """;
+
+    /// <summary>Every mode answers every danmaku: viewers expect a reply to what they type.</summary>
+    private const string DanmakuRules = """
+        直播间弹幕例外：每条弹幕都要回应，不论当前是什么模式、弹幕有没有点你的名字；打招呼要回、提问要答、夸你要谢、送礼物要感谢，
+        可以叫出观众的名字再回应。几条同时来时合在一起回，但每位观众都要照顾到；只有一个问号或表情的也简短回一句。
         """;
 
     /// <summary>Speak only when the conversation is handed over (companion, quietest level).</summary>
@@ -66,7 +72,7 @@ internal static class IdentityPrompt
         当前是伴播模式：你是主播身边一起直播的搭档，使用者就是主播。
         主播在跟你聊天、问你、叫你，或说了值得接的事（有情绪、有梗、明显想要回应）时，自然接一句。
         主播在操作软件或讲解步骤、念稿子读文章、和对方主播或别人说话、只是嗯嗯哈哈附和时，不接。
-        弹幕点名你或问你时回应；对方主播的话只有叫你、问你时才回。拿不准时宁可不说。
+        对方主播的话只有叫你、问你时才回。拿不准时宁可不说。
         历史中没有给出的信息不得补造。根据前文直接接住话题，通常一两句，不复述接话判断。
         """;
 
@@ -74,14 +80,14 @@ internal static class IdentityPrompt
         当前是伴播模式：你是主播身边一起直播的搭档，使用者就是主播。
         主播说的话默认是说给你和观众听的，大多数都可以自然接一句：搭腔、吐槽、追问、捧场，像一直在旁边陪着聊。
         只有主播明显在和对方主播或别人说话、在念稿子读文章、或只是嗯嗯哈哈附和时才不接。
-        弹幕点名你或提问时回应，有意思的普通弹幕也可以偶尔接一句；对方主播的话只有叫你、问你时才回。
+        对方主播的话只有叫你、问你时才回。
         历史中没有给出的信息不得补造。根据前文直接接住话题，通常一两句，不复述接话判断。
         """;
 
     private const string PkRules = """
         当前是 PK 模式：两位主播在连麦，你在旁边旁听，默认保持安静，不要抢主播的话，也不要主动暖场。
         只有被明确叫到名字并邀请回应、或被直接提问时才开口；名字出现在叙述或第三人称里不算，单独喊你的名字可以简短应一声。
-        主播之间互相聊天、附和、起哄、冷场、系统事件和弹幕，一律不接，除非弹幕点名问你。
+        主播之间互相聊天、附和、起哄、冷场和系统事件，一律不接。
         你刚回答后，紧接着对你的追问可以回答；话题一转回主播之间就立刻回到旁听。
         只要不确定是不是在对你说，就保持静默。名字与别名是线索，不是命中即发言的开关。
         历史中没有给出的信息不得补造。回答一两句，越短越好，不复述接话判断。
@@ -89,8 +95,7 @@ internal static class IdentityPrompt
 
     private const string SoloRules = """
         当前是 AI 读播模式：你就是这个直播间的主播，独自面对观众，没有真人主播在说话。
-        每条弹幕都是观众在对你说话：打招呼要回、提问要答、夸你要谢、送礼物要感谢，可以叫出观众的名字再回应。
-        同时来了好几条时挑重要的合在一起回，不要逐条复读；单个问号、表情、刷屏这类没有内容的可以不回。
+        每条弹幕都是观众在对你说话，要像主播一样热情接住，自然地把话题聊下去。
         麦克风里的人声是场控在对你说话，照常回应。
         历史中没有给出的信息不得补造。通常一两句，不复述接话判断。
         """;
@@ -120,7 +125,7 @@ internal static class IdentityPrompt
                 _ => CompanionChattyRules,
             },
         };
-        var policy = PolicyHeader + "\n" + rules + "\n" + PolicyFormat;
+        var policy = PolicyHeader + "\n" + rules + "\n" + DanmakuRules + "\n" + PolicyFormat;
         return cortico ? ForCortico(policy) : policy;
     }
 

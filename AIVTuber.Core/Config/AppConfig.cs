@@ -259,6 +259,11 @@ public sealed class AudioConfig
     /// only counts silence, it cannot tell "finished" from "thinking". Raising this trades
     /// reply latency for not being interrupted.</summary>
     public int PostSpeechSilenceMs { get; set; } = 800;
+    /// <summary>Past this length a segment closes at a short pause (~250 ms) instead of the full
+    /// <see cref="PostSpeechSilenceMs"/>, so long talk is heard in pieces. 0 = off.</summary>
+    public int SegmentSoftMaxMs { get; set; } = 6000;
+    /// <summary>A segment is cut at this length even without a pause. 0 = off.</summary>
+    public int SegmentMaxMs { get; set; } = 15000;
 }
 
 public sealed class AsrConfig
@@ -542,7 +547,8 @@ public sealed class BilibiliConfig
     public string Buvid3 { get; set; } = string.Empty;
     /// <summary>Push port for the local HTTP endpoint receiving danmaku from Python bridge.</summary>
     public int PushPort { get; set; } = 19876;
-    /// <summary>Seconds between danmaku selections (avoid over-replying).</summary>
+    /// <summary>Seconds between danmaku selections. Live danmaku no longer go through the
+    /// selector (every message reaches the conversation), so this no longer throttles replies.</summary>
     public int SelectionIntervalSec { get; set; } = 8;
     /// <summary>Fallback Python executable when danmaku_bridge.exe is not beside the app.</summary>
     public string PythonPath { get; set; } = "python";

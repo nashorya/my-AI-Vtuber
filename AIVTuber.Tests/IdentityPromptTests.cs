@@ -64,6 +64,10 @@ public class IdentityPromptTests
         Assert.Equal(IdentityPrompt.InvitationPolicyFor(mode: InteractionModes.Companion), IdentityPrompt.InvitationPolicyFor(mode: "normal"));
         foreach (var policy in new[] { pk, solo })
             Assert.Contains("{\"v\":2,\"type\":\"decision\",\"mode\":\"pass\"}", policy);
+        // Danmaku are answered in every mode and at every companion level.
+        foreach (var policy in new[] { pk, solo, IdentityPrompt.InvitationPolicyV2,
+            IdentityPrompt.InvitationPolicyFor(companionLevel: 2), IdentityPrompt.InvitationPolicyFor(companionLevel: 3) })
+            Assert.Contains("每条弹幕都要回应", policy);
         // Cortico swaps only the output format, in every mode.
         var corticoPk = IdentityPrompt.InvitationPolicyFor(cortico: true, mode: InteractionModes.Pk);
         Assert.Contains("PK 模式", corticoPk);
