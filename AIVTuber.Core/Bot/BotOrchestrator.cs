@@ -392,6 +392,9 @@ public sealed class BotOrchestrator : IDisposable
         private readonly List<string> _emotions = [];
         private readonly List<string> _controls = [];
         private int _applied;
+        private readonly Queue<(int Length, string Written)> _written = new();
+        private string _unspokenWritten = "";
+        private int _committed;
 
         public void NoteEmotion(string emotion) { lock (_emotions) _emotions.Add(emotion); }
         public void NoteControl(string tag) { lock (_controls) _controls.Add(tag); }
@@ -404,6 +407,34 @@ public sealed class BotOrchestrator : IDisposable
         {
             lock (_controls) { var copy = _controls.ToArray(); _controls.Clear(); return copy; }
         }
+
+        /// <summary>Remembers a segment as the model wrote it. A segment with nothing to say
+        /// (tags only) rides with the next spoken one, as the pacers handle it.</summary>
+        public void NoteWritten(string clean, string written)
+        {
+            lock (_written)
+            {
+                if (!LlmClient.IsSpeakableText(clean)) { _unspokenWritten += written; return; }
+                _written.Enqueue((Letters(clean), _unspokenWritten + written.Trim()));
+                _unspokenWritten = "";
+            }
+        }
+
+        /// <summary>The written form for a committed piece: the whole segment with its first piece,
+        /// empty for later pieces of the same segment (Cortico may split a segment, never merge two).</summary>
+        public string? TakeWritten(string committed)
+        {
+            lock (_written)
+            {
+                if (!_written.TryPeek(out var head)) return null;
+                var first = _committed == 0;
+                _committed += Letters(committed);
+                if (_committed >= head.Length) { _written.Dequeue(); _committed = 0; }
+                return first ? head.Written : "";
+            }
+        }
+
+        private static int Letters(string text) => text.Count(c => !char.IsWhiteSpace(c));
     }
 
     /// <summary>
@@ -526,7 +557,11 @@ public sealed class BotOrchestrator : IDisposable
                     AIVTuber.Core.Diagnostics.DebugLog.Write($"[Cortico] 忽略 v2 control 行（{ev.ControlKind}）：动作应写在台本标记里");
                     return true;
                 }
-                if (ev.ControlKind == "emotion") turn.NoteEmotion(ev.Text);
+                if (ev.ControlKind == "emotion")
+                {
+                    turn.NoteEmotion(ev.Text);
+                    turn.NoteWritten("", $"[emotion:{ev.Text}]");
+                }
                 else if (ev.Motion is { } intent)
                 {
                     bool started;
@@ -543,6 +578,7 @@ public sealed class BotOrchestrator : IDisposable
                     if (segment is null or { Kind: CorticoReplyKind.Pass or CorticoReplyKind.Thought }) return true;
                     if (segment.Value.Kind == CorticoReplyKind.Invalid) { turn.ProtocolError = segment.Value.Text; return false; }
                     text = corticoPacing ? segment.Value.Text : CorticoScript.Clean(segment.Value.Text);
+                    turn.NoteWritten(CorticoScript.Clean(segment.Value.Text), segment.Value.Text);
                 }
                 else
                 {
@@ -559,6 +595,7 @@ public sealed class BotOrchestrator : IDisposable
                         else turn.NoteControl(tag);
                     }
                     text = classified.Spoken;
+                    turn.NoteWritten(text, ev.Text);
                 }
                 // People resumed (or the turn ended) before this segment: nothing new may start.
                 if (!canSpeak()) { turn.Interrupted = true; return false; }
@@ -587,7 +624,7 @@ public sealed class BotOrchestrator : IDisposable
             OnFirstSentenceToTts?.Invoke(this, EventArgs.Empty);
             OnAiStartSpeaking?.Invoke(this, EventArgs.Empty);
         }
-        OnReplyCommitted?.Invoke(this, new ClassifiedReply(ReplyKind.Speak, text, "", []));
+        OnReplyCommitted?.Invoke(this, new ClassifiedReply(ReplyKind.Speak, text, "", [], Written: turn.TakeWritten(text)));
         PublishSpokenSentence(context, text);
     }
 

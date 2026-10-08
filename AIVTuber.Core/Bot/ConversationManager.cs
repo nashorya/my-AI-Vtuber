@@ -95,11 +95,11 @@ public sealed class ConversationManager
         lock (_lock) { return _history.Where(m => !_transient.Contains(m)).ToList(); }
     }
 
-    public void AddAssistantMessage(string content)
+    public void AddAssistantMessage(string content, string? written = null)
     {
         lock (_lock)
         {
-            var message = new Message { Role = MessageRole.Assistant, Content = content };
+            var message = new Message { Role = MessageRole.Assistant, Content = content, Written = written };
             // An answer can paraphrase a PASS observation still visible to the model.
             // Keep that derived text out of extraction as well.
             if (_transient.Count > 0) _transient.Add(message);

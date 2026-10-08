@@ -102,6 +102,33 @@ public class ListeningContextTests
     }
 
     [Fact]
+    public async Task OwnPastReplies_AreShownWithTheTagsTheModelWrote()
+    {
+        // Replayed without their [emotion:] tags, past turns taught the model to stop writing them.
+        var config = new AppConfig();
+        await using var runtime = new BotRuntime(config, Path.GetTempPath());
+        var conversation = new ConversationManager(config.Llm);
+        SetField(runtime, "_conversation", conversation);
+
+        Dispatch(runtime, Accept(runtime, conversation, new TalkLine(TalkIdentity.Self, "纳什", "大肥鱼笑一个", null)));
+        Commit(runtime, new ClassifiedReply(ReplyKind.Speak, "好呀。", "", [], Written: "好呀[emotion:happy]。"));
+        // A later piece of the same segment (Cortico split it) adds nothing to the replay.
+        Commit(runtime, new ClassifiedReply(ReplyKind.Speak, "嘿嘿。", "", [], Written: ""));
+
+        var next = new TalkLine(TalkIdentity.Self, "纳什", "再来一个", null);
+        var history = runtime.BuildTurnHistory([next], IdentityPrompt.FormatTurn([next]));
+
+        var reply = Assert.Single(history, m => m.Role == MessageRole.Assistant);
+        Assert.Equal(
+            "{\"v\":2,\"type\":\"decision\",\"mode\":\"speak\"}\n" +
+            "{\"v\":2,\"type\":\"speech\",\"seq\":0,\"text\":\"好呀[emotion:happy]。\"}\n" +
+            "{\"v\":2,\"type\":\"end\"}",
+            reply.Content);
+        // Memory extraction still reads only what was said.
+        Assert.Contains(conversation.GetPersistableHistory(), m => m.Content == "好呀。");
+    }
+
+    [Fact]
     public async Task PassAndThought_AreRecordedRightAfterTheirTurn_AndNeverPersisted()
     {
         var config = new AppConfig();

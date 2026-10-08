@@ -17,6 +17,9 @@ public sealed class Message
 {
     public MessageRole Role { get; init; }
     public string Content { get; init; } = string.Empty;
+    /// <summary>An assistant segment as the model wrote it, control tags included. Only used when
+    /// the turn is shown back to the model; <see cref="Content"/> stays the plain spoken text.</summary>
+    public string? Written { get; init; }
 }
 
 /// <summary>

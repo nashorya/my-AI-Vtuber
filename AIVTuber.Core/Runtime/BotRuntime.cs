@@ -1397,7 +1397,7 @@ public sealed class BotRuntime : IAsyncDisposable
             case ReplyKind.Speak:
                 ReportTurnStatus("回答已生成，开始播放");
                 _conversation.MarkInputsPersistable(lines.Select(l => l.HistoryMessage).OfType<Message>());
-                _conversation.AddAssistantMessage(reply.Spoken);
+                _conversation.AddAssistantMessage(reply.Spoken, reply.Written);
                 _turnManagerV2?.NoteAssistantMessage(reply.Spoken);
                 // PK curation also reads assistant text; it must not provide a
                 // second persistence route for a paraphrased PASS observation.

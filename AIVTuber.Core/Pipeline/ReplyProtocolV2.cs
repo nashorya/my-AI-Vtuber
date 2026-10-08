@@ -262,7 +262,9 @@ public static class ReplyProtocolV2
     /// The assistant's past turns rewritten in this protocol before they are sent back. History
     /// keeps what was said as plain text (memory extraction reads it); shown to the model as plain
     /// text, it is a few-shot example of answering in plain text, which this parser rejects.
-    /// Consecutive spoken segments are one turn; turns already in protocol form are kept.
+    /// Segments are shown as the model wrote them: with their [emotion:]/script tags stripped they
+    /// teach the model to stop writing tags. Consecutive spoken segments are one turn; turns
+    /// already in protocol form are kept.
     /// </summary>
     public static List<Message> RenderAssistantTurns(IEnumerable<Message> history)
     {
@@ -272,7 +274,8 @@ public static class ReplyProtocolV2
         {
             if (message.Role == MessageRole.Assistant && !IsProtocolText(message.Content))
             {
-                if (!string.IsNullOrWhiteSpace(message.Content)) spoken.Add(message.Content.Trim());
+                var text = message.Written ?? message.Content;
+                if (!string.IsNullOrWhiteSpace(text)) spoken.Add(text.Trim());
                 continue;
             }
             FlushSpoken();
