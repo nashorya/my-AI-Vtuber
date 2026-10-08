@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using AIVTuber.Core.Config;
 using AIVTuber.Core.LiveStream;
 using AIVTuber.Core.Runtime;
 
@@ -64,7 +65,12 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
             LocalAsrReachable = reachable;
         });
         _isPkMode = _runtime.IsPkMode;
-        _runtime.InteractionModeChanged += (_, _) => _dispatch(() => IsPkMode = _runtime.IsPkMode);
+        _modeLabel = CurrentModeLabel();
+        _runtime.InteractionModeChanged += (_, _) => _dispatch(() =>
+        {
+            IsPkMode = _runtime.IsPkMode;
+            ModeLabel = CurrentModeLabel();
+        });
     }
 
     private void OnStateChanged()
@@ -243,17 +249,38 @@ public sealed class MonitorViewModel : INotifyPropertyChanged
     /// <summary>Live interaction mode: PK = silent until wake keyword.</summary>
     public bool IsPkMode { get => _isPkMode; private set => SetField(ref _isPkMode, value); }
 
-    public void TogglePkMode()
+    private string _modeLabel;
+    /// <summary>The live mode as shown on its button, e.g. "伴播·适中", "PK", "AI读播".</summary>
+    public string ModeLabel { get => _modeLabel; private set => SetField(ref _modeLabel, value); }
+
+    private string CurrentModeLabel() => _runtime.InteractionMode == InteractionModes.Companion
+        ? $"{InteractionModes.Label(InteractionModes.Companion)}·{InteractionConfig.CompanionLevelLabel(_runtime.CompanionLevel)}"
+        : InteractionModes.Label(_runtime.InteractionMode);
+
+    /// <summary>Cycles the live mode: 伴播 → PK → AI读播 → 伴播.</summary>
+    public void TogglePkMode() => SetInteractionMode(InteractionModes.Next(_runtime.InteractionMode));
+
+    public void SetInteractionMode(string mode)
     {
-        var next = !_runtime.IsPkMode;
-        _runtime.SetPkMode(next);
+        _runtime.SetInteractionMode(mode);
         _dispatch(() =>
         {
-            IsPkMode = next;
-            AddOperationalEvent("模式", next
-                ? "PK（静默；关键词唤起，保持窗内可追问；开场播报亦门控）"
-                : "正常");
+            IsPkMode = _runtime.IsPkMode;
+            ModeLabel = CurrentModeLabel();
+            AddOperationalEvent("模式", _runtime.InteractionMode switch
+            {
+                InteractionModes.Pk => "PK（默认旁听，被叫到名字或被提问才接话）",
+                InteractionModes.Solo => "AI读播（AI 独自主播，回应弹幕）",
+                _ => $"伴播（发言积极度：{InteractionConfig.CompanionLevelLabel(_runtime.CompanionLevel)}）",
+            });
         });
+    }
+
+    /// <summary>Companion mode: how readily the AI joins in (1 少说 … 3 多说).</summary>
+    public void SetCompanionLevel(int level)
+    {
+        _runtime.SetCompanionLevel(level);
+        _dispatch(() => ModeLabel = CurrentModeLabel());
     }
 
     /// <summary>Interrupts the AI immediately — stops current speech/generation and playback.</summary>

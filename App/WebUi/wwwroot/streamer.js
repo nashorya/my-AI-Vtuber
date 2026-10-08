@@ -108,7 +108,7 @@
     text($("loopState"), l.loopbackEnabled ? "已开启" : "未开启");
     $("btnMic").textContent = l.micEnabled ? "关闭麦克风监听" : "打开麦克风监听";
     $("btnMic").classList.toggle("warn", !l.micEnabled);
-    text($("chipMode"), l.isPkMode ? `PK 模式${l.pkOpponent ? " · " + l.pkOpponent : ""}` : "正常模式");
+    text($("chipMode"), `${l.modeLabel || (l.isPkMode ? "PK" : "伴播")} 模式${l.isPkMode && l.pkOpponent ? " · " + l.pkOpponent : ""}`);
 
     const sp = s.speech || {};
     const chip = $("chipSpeech");
@@ -477,6 +477,8 @@
       if (el.type === "checkbox") el.checked = !!v;
       else el.value = v == null ? "" : String(v);
     });
+    $("liveMode").value = settings.live.mode || "companion";
+    $("liveCompanionLevel").value = String(settings.live.companionLevel || 2);
     $("obsPassword").placeholder = settings.obs.passwordSet ? "已保存（留空不修改）" : "未设置";
     $("avatarCard").hidden = !settings.avatar.usesVts;
     text($("biliQrStatus"), settings.live.bilibiliLoggedIn ? "已绑定" : "");

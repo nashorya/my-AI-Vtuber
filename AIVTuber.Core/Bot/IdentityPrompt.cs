@@ -1,4 +1,5 @@
 using System.Text;
+using AIVTuber.Core.Config;
 using AIVTuber.Core.LiveStream;
 
 namespace AIVTuber.Core.Bot;
@@ -39,11 +40,18 @@ internal static class IdentityPrompt
     /// Invitation policy for reply protocol v2 (RT-05). Same invitation semantics as
     /// <see cref="InvitationPolicy"/>; only the output-format section differs — the exact
     /// NDJSON event grammar and the motion channel list are injected separately by the
-    /// LLM client (see <see cref="Pipeline.ReplyProtocolV2.Prompt"/>).
+    /// LLM client (see <see cref="Pipeline.ReplyProtocolV2.Prompt"/>). This is the companion
+    /// policy at its quietest level; <see cref="InvitationPolicyFor"/> picks one per mode.
     /// </summary>
-    public const string InvitationPolicyV2 = """
+    public const string InvitationPolicyV2 = PolicyHeader + "\n" + ListenRules + "\n" + PolicyFormat;
+
+    private const string PolicyHeader = """
         【当前接话规则与输出格式 v2】
         保留角色的名字、性格和语气；以下规则取代角色提示词中旧的接话规则及 PASS/心里话输出格式。
+        """;
+
+    /// <summary>Speak only when the conversation is handed over (companion, quietest level).</summary>
+    private const string ListenRules = """
         你是聚会里安静但交流自然的朋友：一直旁听，只有话递到你这里才开口。
         先结合近期双方对话和最新发言，判断最新发言在对谁说。仅提到你的名字、第三人称谈论你、
         人类互相聊天、嗯嗯哈哈等附和、冷场或系统事件，都不构成邀请。不要抢话或主动暖场。
@@ -52,19 +60,73 @@ internal static class IdentityPrompt
         你刚回答后，承接你的“为什么”“那怎么办”等追问无需重复叫名；但人类转向彼此后立即回到旁听。
         不确定对方是不是在问你时，保持静默。名字与别名是线索，不是命中即发言的开关。
         历史中没有给出的信息不得补造。根据前文直接接住话题，通常一两句，不复述接话判断。
+        """;
+
+    private const string CompanionModerateRules = """
+        当前是伴播模式：你是主播身边一起直播的搭档，使用者就是主播。
+        主播在跟你聊天、问你、叫你，或说了值得接的事（有情绪、有梗、明显想要回应）时，自然接一句。
+        主播在操作软件或讲解步骤、念稿子读文章、和对方主播或别人说话、只是嗯嗯哈哈附和时，不接。
+        弹幕点名你或问你时回应；对方主播的话只有叫你、问你时才回。拿不准时宁可不说。
+        历史中没有给出的信息不得补造。根据前文直接接住话题，通常一两句，不复述接话判断。
+        """;
+
+    private const string CompanionChattyRules = """
+        当前是伴播模式：你是主播身边一起直播的搭档，使用者就是主播。
+        主播说的话默认是说给你和观众听的，大多数都可以自然接一句：搭腔、吐槽、追问、捧场，像一直在旁边陪着聊。
+        只有主播明显在和对方主播或别人说话、在念稿子读文章、或只是嗯嗯哈哈附和时才不接。
+        弹幕点名你或提问时回应，有意思的普通弹幕也可以偶尔接一句；对方主播的话只有叫你、问你时才回。
+        历史中没有给出的信息不得补造。根据前文直接接住话题，通常一两句，不复述接话判断。
+        """;
+
+    private const string PkRules = """
+        当前是 PK 模式：两位主播在连麦，你在旁边旁听，默认保持安静，不要抢主播的话，也不要主动暖场。
+        只有被明确叫到名字并邀请回应、或被直接提问时才开口；名字出现在叙述或第三人称里不算，单独喊你的名字可以简短应一声。
+        主播之间互相聊天、附和、起哄、冷场、系统事件和弹幕，一律不接，除非弹幕点名问你。
+        你刚回答后，紧接着对你的追问可以回答；话题一转回主播之间就立刻回到旁听。
+        只要不确定是不是在对你说，就保持静默。名字与别名是线索，不是命中即发言的开关。
+        历史中没有给出的信息不得补造。回答一两句，越短越好，不复述接话判断。
+        """;
+
+    private const string SoloRules = """
+        当前是 AI 读播模式：你就是这个直播间的主播，独自面对观众，没有真人主播在说话。
+        每条弹幕都是观众在对你说话：打招呼要回、提问要答、夸你要谢、送礼物要感谢，可以叫出观众的名字再回应。
+        同时来了好几条时挑重要的合在一起回，不要逐条复读；单个问号、表情、刷屏这类没有内容的可以不回。
+        麦克风里的人声是场控在对你说话，照常回应。
+        历史中没有给出的信息不得补造。通常一两句，不复述接话判断。
+        """;
+
+    private const string PolicyFormat = """
         输出遵循系统消息里的【输出协议 v2】：逐行 JSON 事件，第一行 decision（speak/pass/thought），
         说话时每段一行 speech，控制走 control 行，最后一行必须是 end。
         静默 → {"v":2,"type":"decision","mode":"pass"} 后直接 {"v":2,"type":"end"}。
         speech 只放准备朗读的口语正文，不含思考过程、JSON 包装或括号心里话。
         """;
 
-    /// <summary>Returns the invitation policy (protocol v2) for the performance layer actually in use. With Cortico the invitation rules are identical; only
-    /// the output format changes to the one <see cref="Cortico.CorticoReplyAdapter"/> parses.</summary>
-    public static string InvitationPolicyFor(bool cortico = false) => cortico ? InvitationPolicyV2Cortico : InvitationPolicyV2;
+    /// <summary>
+    /// The invitation policy (protocol v2) for the interaction mode and, in companion mode, how
+    /// readily the AI joins in (<see cref="InteractionConfig.CompanionLevel"/>). With Cortico only
+    /// the output format changes, to the one <see cref="Cortico.CorticoReplyAdapter"/> parses.
+    /// </summary>
+    public static string InvitationPolicyFor(bool cortico = false, string? mode = null, int companionLevel = InteractionConfig.DefaultCompanionLevel)
+    {
+        var rules = InteractionModes.Normalize(mode) switch
+        {
+            InteractionModes.Pk => PkRules,
+            InteractionModes.Solo => SoloRules,
+            _ => InteractionConfig.ClampCompanionLevel(companionLevel) switch
+            {
+                1 => ListenRules,
+                2 => CompanionModerateRules,
+                _ => CompanionChattyRules,
+            },
+        };
+        var policy = PolicyHeader + "\n" + rules + "\n" + PolicyFormat;
+        return cortico ? ForCortico(policy) : policy;
+    }
 
     /// <summary>Protocol v2 with Cortico: speech text carries the Cortico script; no control lines.</summary>
-    public static readonly string InvitationPolicyV2Cortico =
-        InvitationPolicyV2
+    private static string ForCortico(string policy) =>
+        policy
             .Replace("说话时每段一行 speech，控制走 control 行，最后一行必须是 end。",
                 "说话时每段一行 speech，最后一行必须是 end；不要输出 control 行。", StringComparison.Ordinal)
             .Replace("speech 只放准备朗读的口语正文，不含思考过程、JSON 包装或括号心里话。",

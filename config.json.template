@@ -117,7 +117,8 @@
     "python_path": "python"
   },
   "interaction": {
-    "mode": "normal",
+    "mode": "companion",
+    "companion_level": 2,
     "wake_keywords": [],
     "wake_hold_sec": 45
   },

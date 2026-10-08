@@ -422,6 +422,7 @@ public sealed class WebConsoleHost : IDisposable
                     stateLabel = StateLabel(_monitor.State),
                     canStop = _monitor.CanStop,
                     isPkMode = _monitor.IsPkMode,
+                    modeLabel = _monitor.ModeLabel,
                     micMuted = _monitor.MicMuted,
                     micLevel = _monitor.MicLevel,
                     loopbackLevel = _monitor.LoopbackLevel,

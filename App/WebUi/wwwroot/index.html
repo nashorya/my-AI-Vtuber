@@ -29,13 +29,13 @@
             <span id="pillObs">OBS 未连接</span>
             <span id="pillDanmaku">弹幕 未连接</span>
             <span id="pillAsr">ASR 未连接</span>
-            <span id="modeLabel">模式 <b>正常</b></span>
+            <span id="modeLabel">模式 <b>伴播</b></span>
           </div>
         </div>
         <div class="mon-actions">
           <button type="button" class="btn danger" id="btnStop" disabled>截停</button>
           <button type="button" class="btn" id="btnMic">麦克风</button>
-          <button type="button" class="btn" id="btnPk">正常模式</button>
+          <button type="button" class="btn" id="btnPk" title="点击切换：伴播 → PK → AI读播">伴播</button>
           <button type="button" class="btn primary" id="btnNewPk">新 PK</button>
           <button type="button" class="btn ghost" id="btnRestartAsr">重启 ASR</button>
         </div>
@@ -386,10 +386,22 @@
           <details class="acc">
             <summary><span class="chev">›</span>高级 / PK<span class="sub">唤醒 · VAD</span></summary>
             <div class="body">
-              <label class="switch">
-                <input type="checkbox" id="interaction.isPkMode" data-path="interaction.isPkMode" data-type="bool" />
-                PK 模式
-              </label>
+              <div class="field">
+                <label>互动模式</label>
+                <select id="interaction.mode" data-path="interaction.mode">
+                  <option value="companion">伴播</option>
+                  <option value="pk">PK</option>
+                  <option value="solo">AI读播</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>伴播发言积极度（仅伴播模式）</label>
+                <select id="interaction.companionLevel" data-path="interaction.companionLevel" data-type="int">
+                  <option value="1">少说：叫到或问到才接</option>
+                  <option value="2">适中：值得接的话才接</option>
+                  <option value="3">多说：主播大多数话都接一句</option>
+                </select>
+              </div>
               <div class="field">
                 <label>使用者</label>
                 <input id="identity.selfName" data-path="identity.selfName" type="text" />

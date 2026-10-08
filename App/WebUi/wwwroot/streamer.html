@@ -57,7 +57,7 @@
               <span class="chip" id="chipAvatar">形象连接：未启用</span>
             </div>
             <div class="pk-actions">
-              <button type="button" class="btn sm ghost" id="btnPk">切换 PK 模式</button>
+              <button type="button" class="btn sm ghost" id="btnPk" title="伴播 → PK → AI读播">切换模式</button>
               <button type="button" class="btn sm ghost" id="btnNewPk">新一场 PK</button>
             </div>
           </div>
@@ -155,7 +155,16 @@
         <div class="card">
           <h2>称呼与 PK</h2>
           <div class="field"><label for="selfName">AI 怎么称呼你</label><input id="selfName" type="text" data-key="live.selfName" placeholder="例如：主播、小鱼" /></div>
-          <label class="switch"><input type="checkbox" data-key="live.isPkMode" /> PK 模式（优先旁听：被叫到名字、被提问，或在继续和 AI 聊天时才接话）</label>
+          <div class="field"><label for="liveMode">互动模式</label><select id="liveMode" data-key="live.mode">
+            <option value="companion">伴播：陪主播一起聊</option>
+            <option value="pk">PK：默认旁听，被叫到名字或被提问才接话</option>
+            <option value="solo">AI读播：AI 独自主播，回应弹幕</option>
+          </select></div>
+          <div class="field"><label for="liveCompanionLevel">伴播发言积极度</label><select id="liveCompanionLevel" data-key="live.companionLevel" data-type="int">
+            <option value="1">少说：叫到或问到才接</option>
+            <option value="2">适中：值得接的话才接</option>
+            <option value="3">多说：主播大多数话都接一句</option>
+          </select></div>
           <div class="field"><label for="wakeWords">AI 的名字和别名（逗号分隔，叫这些名字就是在叫 AI）</label><input id="wakeWords" type="text" data-key="live.wakeKeywords" /></div>
           <div class="field"><label for="opponentName">对面主播的称呼</label><input id="opponentName" type="text" data-key="live.opponentName" /></div>
         </div>

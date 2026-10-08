@@ -356,6 +356,7 @@ public sealed class StreamerConsoleController : IDisposable
                 loopbackEnabled = config.Audio.EnableLoopbackListen,
                 loopbackLevel = _monitor.LoopbackLevel,
                 isPkMode = _monitor.IsPkMode,
+                modeLabel = _monitor.ModeLabel,
                 pkOpponent = _monitor.PkOpponentSummary,
             },
             speech = new { health = health.ToString().ToLowerInvariant(), label = AsrLabel(health) },

@@ -64,15 +64,14 @@
                 </ui:Button>
                 <ui:Button Grid.Column="3" x:Name="PkModeButton" Width="96" Height="{StaticResource DeckToolHeight}"
                            Margin="8,0,0,0" Click="OnPkModeClicked"
-                           ToolTip="正常：有输入就回。PK：默认静默；麦/内录/弹幕/开场播报均需关键词或保持窗内才说话。"
-                           AutomationProperties.Name="切换正常或PK模式">
+                           ToolTip="点击切换：伴播（陪主播聊，积极度在配置里调）→ PK（默认旁听，被叫到或被问才接话）→ AI读播（AI 独自主播，回应弹幕）"
+                           AutomationProperties.Name="切换互动模式">
                     <ui:Button.Style>
                         <Style TargetType="ui:Button" BasedOn="{StaticResource {x:Type ui:Button}}">
-                            <Setter Property="Content" Value="正常" />
+                            <Setter Property="Content" Value="{Binding ModeLabel}" />
                             <Setter Property="Appearance" Value="Secondary" />
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding IsPkMode}" Value="True">
-                                    <Setter Property="Content" Value="PK模式" />
                                     <Setter Property="Appearance" Value="Primary" />
                                 </DataTrigger>
                             </Style.Triggers>

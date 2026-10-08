@@ -43,7 +43,7 @@ public class ListeningContextTests
         Assert.Equal(2, userHistory.Count);
         Assert.Contains("使用者（纳什）：昨天火锅太辣了", userHistory[0].Content);
         Assert.Contains("对方主播（朋友）：我喜欢清汤", userHistory[1].Content);
-        Assert.Equal(IdentityPrompt.InvitationPolicyV2, nextHistory[^1].Content);
+        Assert.Equal(IdentityPrompt.InvitationPolicyFor(), nextHistory[^1].Content);
         Assert.Equal("大肥鱼，你觉得哪种好？", Assert.Single(next).Text);
     }
 

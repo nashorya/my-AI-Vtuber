@@ -55,7 +55,7 @@ public sealed partial class ConfigViewModel
         "voice.choiceId", "voice.speed",
         "audio.inputDeviceIndex", "audio.enableLoopbackListen", "audio.loopbackProcessName",
         "audio.enableVirtualMic", "audio.virtualMicDeviceName",
-        "live.bilibiliEnable", "live.roomId", "live.pkNotice", "live.isPkMode",
+        "live.bilibiliEnable", "live.roomId", "live.pkNotice", "live.isPkMode", "live.mode", "live.companionLevel",
         "live.selfName", "live.opponentName", "live.wakeKeywords",
         "obs.enable", "obs.host", "obs.port", "obs.password",
         "avatar.vtsHost", "avatar.vtsPort",
@@ -118,6 +118,8 @@ public sealed partial class ConfigViewModel
                 bilibiliLoggedIn = !string.IsNullOrEmpty(Working.Bilibili.Sessdata),
                 pkNotice = Working.Bilibili.PkNotice,
                 isPkMode = Working.Interaction.IsPkMode,
+                mode = Working.Interaction.CurrentMode,
+                companionLevel = InteractionConfig.ClampCompanionLevel(Working.Interaction.CompanionLevel),
                 selfName = Working.Identity.SelfName ?? "",
                 opponentName = Working.Identity.OpponentName ?? "",
                 wakeKeywords = string.Join(", ", Working.Interaction.WakeKeywords),
@@ -191,6 +193,8 @@ public sealed partial class ConfigViewModel
                 case "live.roomId": if (Int(v) is { } room) Working.Bilibili.RoomId = room; break;
                 case "live.pkNotice": Working.Bilibili.PkNotice = Bool(v); break;
                 case "live.isPkMode": InteractionIsPkMode = Bool(v); break;
+                case "live.mode": InteractionMode = Str(v); break;
+                case "live.companionLevel": if (Int(v) is { } level) InteractionCompanionLevel = level; break;
                 case "live.selfName": Working.Identity.SelfName = Str(v).Trim(); break;
                 case "live.opponentName": Working.Identity.OpponentName = Str(v).Trim(); break;
                 case "live.wakeKeywords": WakeKeywordsText = Str(v); break;

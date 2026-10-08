@@ -355,14 +355,44 @@ public sealed partial class ConfigViewModel : INotifyPropertyChanged
     public bool InteractionIsPkMode
     {
         get => Working.Interaction.IsPkMode;
+        set => InteractionMode = value ? InteractionModes.Pk : InteractionModes.Companion;
+    }
+
+    /// <summary>The interaction mode choices shown in the Config tab.</summary>
+    public IReadOnlyList<InteractionModeChoice> InteractionModeChoices { get; } =
+        InteractionModes.All.Select(m => new InteractionModeChoice(m, InteractionModes.Label(m))).ToList();
+
+    /// <summary>"companion" | "pk" | "solo" (<see cref="InteractionModes"/>).</summary>
+    public string InteractionMode
+    {
+        get => Working.Interaction.CurrentMode;
         set
         {
-            Working.Interaction.SetPkMode(value);
-            if (value && Working.Bilibili.Enable)
+            var mode = InteractionModes.Normalize(value);
+            Working.Interaction.Mode = mode;
+            if (mode == InteractionModes.Pk && Working.Bilibili.Enable)
                 Working.Bilibili.PkNotice = true;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InteractionMode)));
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InteractionIsPkMode)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsCompanionMode)));
         }
     }
+
+    public bool IsCompanionMode => Working.Interaction.CurrentMode == InteractionModes.Companion;
+
+    /// <summary>Companion mode: how readily the AI joins in, 1 少说 … 3 多说.</summary>
+    public int InteractionCompanionLevel
+    {
+        get => InteractionConfig.ClampCompanionLevel(Working.Interaction.CompanionLevel);
+        set
+        {
+            Working.Interaction.CompanionLevel = InteractionConfig.ClampCompanionLevel(value);
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InteractionCompanionLevel)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InteractionCompanionLevelLabel)));
+        }
+    }
+
+    public string InteractionCompanionLevelLabel => InteractionConfig.CompanionLevelLabel(InteractionCompanionLevel);
 
     private static List<string> SplitWakeKeywords(string? value) =>
         (value ?? "")
@@ -464,6 +494,10 @@ public sealed partial class ConfigViewModel : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Working)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(WakeKeywordsText)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InteractionIsPkMode)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InteractionMode)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsCompanionMode)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InteractionCompanionLevel)));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InteractionCompanionLevelLabel)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsDirty)));
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SaveStateText)));
     }
@@ -587,6 +621,8 @@ public sealed partial class ConfigViewModel : INotifyPropertyChanged
             interaction = new
             {
                 isPkMode = Working.Interaction.IsPkMode,
+                mode = Working.Interaction.CurrentMode,
+                companionLevel = InteractionConfig.ClampCompanionLevel(Working.Interaction.CompanionLevel),
                 wakeKeywords = Working.Interaction.WakeKeywords.ToList(),
                 wakeHoldSec = Working.Interaction.WakeHoldSec,
             },
@@ -787,7 +823,9 @@ public sealed partial class ConfigViewModel : INotifyPropertyChanged
 
         if (data.TryGetProperty("interaction", out var ix) && ix.ValueKind == JsonValueKind.Object)
         {
-            if (TryBool(ix, "isPkMode", out var pk)) InteractionIsPkMode = pk;
+            if (TryString(ix, "mode", out var mode)) InteractionMode = mode;
+            else if (TryBool(ix, "isPkMode", out var pk)) InteractionIsPkMode = pk;
+            if (TryInt(ix, "companionLevel", out var level)) InteractionCompanionLevel = level;
             if (TryDouble(ix, "wakeHoldSec", out var hold)) Working.Interaction.WakeHoldSec = hold;
             if (ix.TryGetProperty("wakeKeywords", out var wk))
             {
@@ -980,3 +1018,6 @@ public sealed partial class ConfigViewModel : INotifyPropertyChanged
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 }
+
+/// <summary>One interaction mode as offered in the Config tab.</summary>
+public sealed record InteractionModeChoice(string Mode, string Label);

@@ -86,10 +86,63 @@ public sealed class IdentityConfig
 /// Live interaction policy. In <c>pk</c> mode the bot stays silent until a wake
 /// keyword appears in mic / loopback / danmaku / PK-announce text (or within the hold window).
 /// </summary>
+/// <summary>Live interaction modes: how readily the AI joins in, decided per turn by the model.</summary>
+public static class InteractionModes
+{
+    /// <summary>伴播: the AI keeps the streamer company; how much it says follows the companion level.</summary>
+    public const string Companion = "companion";
+    /// <summary>PK: two streamers talk; the AI listens and speaks only when clearly addressed.</summary>
+    public const string Pk = "pk";
+    /// <summary>AI读播: the AI is the streamer and answers the audience.</summary>
+    public const string Solo = "solo";
+
+    public static readonly IReadOnlyList<string> All = [Companion, Pk, Solo];
+
+    /// <summary>Unknown values (including the old "normal") read as companion.</summary>
+    public static string Normalize(string? mode) => mode?.Trim().ToLowerInvariant() switch
+    {
+        Pk => Pk,
+        Solo => Solo,
+        _ => Companion,
+    };
+
+    public static string Label(string? mode) => Normalize(mode) switch
+    {
+        Pk => "PK",
+        Solo => "AI读播",
+        _ => "伴播",
+    };
+
+    public static string Next(string? mode) => Normalize(mode) switch
+    {
+        Companion => Pk,
+        Pk => Solo,
+        _ => Companion,
+    };
+}
+
 public sealed class InteractionConfig
 {
-    /// <summary>"normal" replies to every turn; "pk" requires wake keywords.</summary>
-    public string Mode { get; set; } = "normal";
+    /// <summary>"companion" (伴播, default; the old "normal" reads as this), "pk" or "solo" (AI读播).
+    /// See <see cref="InteractionModes"/>.</summary>
+    public string Mode { get; set; } = InteractionModes.Companion;
+
+    public const int DefaultCompanionLevel = 2;
+
+    /// <summary>Companion mode only: 1 = only when spoken to, 2 = joins in when there is
+    /// something worth answering, 3 = chats along with most of what the streamer says.</summary>
+    public int CompanionLevel { get; set; } = DefaultCompanionLevel;
+
+    public static int ClampCompanionLevel(int level) => Math.Clamp(level, 1, 3);
+
+    public static string CompanionLevelLabel(int level) => ClampCompanionLevel(level) switch
+    {
+        1 => "少说",
+        2 => "适中",
+        _ => "多说",
+    };
+
+    public string CurrentMode => InteractionModes.Normalize(Mode);
 
     /// <summary>Case-insensitive substrings that unlock speech in PK mode.</summary>
     public List<string> WakeKeywords { get; set; } = [];
@@ -100,10 +153,9 @@ public sealed class InteractionConfig
     /// </summary>
     public double WakeHoldSec { get; set; } = 45;
 
-    public bool IsPkMode =>
-        string.Equals(Mode, "pk", StringComparison.OrdinalIgnoreCase);
+    public bool IsPkMode => CurrentMode == InteractionModes.Pk;
 
-    public void SetPkMode(bool pk) => Mode = pk ? "pk" : "normal";
+    public void SetPkMode(bool pk) => Mode = pk ? InteractionModes.Pk : InteractionModes.Companion;
 }
 
 /// <summary>

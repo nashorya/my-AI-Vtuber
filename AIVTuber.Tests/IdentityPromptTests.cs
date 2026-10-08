@@ -1,4 +1,5 @@
 using AIVTuber.Core.Bot;
+using AIVTuber.Core.Config;
 using AIVTuber.Core.LiveStream;
 
 namespace AIVTuber.Tests;
@@ -45,5 +46,40 @@ public class IdentityPromptTests
         Assert.DoesNotContain("【PASS】", p);
         Assert.DoesNotContain("每轮只选择一种输出", p);
         Assert.DoesNotContain("必须使用全角括号", p);
+    }
+
+    [Fact]
+    public void InvitationPolicy_FollowsModeAndCompanionLevel()
+    {
+        var pk = IdentityPrompt.InvitationPolicyFor(mode: InteractionModes.Pk);
+        var solo = IdentityPrompt.InvitationPolicyFor(mode: InteractionModes.Solo);
+        Assert.Contains("PK 模式", pk);
+        Assert.Contains("AI 读播模式", solo);
+        Assert.Contains("伴播模式", IdentityPrompt.InvitationPolicyFor(mode: InteractionModes.Companion, companionLevel: 2));
+        Assert.Contains("大多数都可以自然接一句", IdentityPrompt.InvitationPolicyFor(mode: InteractionModes.Companion, companionLevel: 3));
+        // The quietest companion level is the established listen-first policy.
+        Assert.Equal(IdentityPrompt.InvitationPolicyV2, IdentityPrompt.InvitationPolicyFor(mode: InteractionModes.Companion, companionLevel: 1));
+        // Out-of-range levels clamp; the old "normal" mode and unknown values read as companion.
+        Assert.Equal(IdentityPrompt.InvitationPolicyFor(companionLevel: 3), IdentityPrompt.InvitationPolicyFor(companionLevel: 9));
+        Assert.Equal(IdentityPrompt.InvitationPolicyFor(mode: InteractionModes.Companion), IdentityPrompt.InvitationPolicyFor(mode: "normal"));
+        foreach (var policy in new[] { pk, solo })
+            Assert.Contains("{\"v\":2,\"type\":\"decision\",\"mode\":\"pass\"}", policy);
+        // Cortico swaps only the output format, in every mode.
+        var corticoPk = IdentityPrompt.InvitationPolicyFor(cortico: true, mode: InteractionModes.Pk);
+        Assert.Contains("PK 模式", corticoPk);
+        Assert.Contains("不要输出 control 行", corticoPk);
+        Assert.DoesNotContain("控制走 control 行", corticoPk);
+    }
+
+    [Fact]
+    public void InteractionModes_CycleThroughAllThree()
+    {
+        Assert.Equal(InteractionModes.Pk, InteractionModes.Next(InteractionModes.Companion));
+        Assert.Equal(InteractionModes.Solo, InteractionModes.Next(InteractionModes.Pk));
+        Assert.Equal(InteractionModes.Companion, InteractionModes.Next(InteractionModes.Solo));
+        Assert.Equal(InteractionModes.Pk, InteractionModes.Next("normal"));
+        var config = new InteractionConfig { Mode = "normal" };
+        Assert.Equal(InteractionModes.Companion, config.CurrentMode);
+        Assert.False(config.IsPkMode);
     }
 }

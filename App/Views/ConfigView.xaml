@@ -129,7 +129,14 @@
                     <TextBlock Text="最大历史 Token" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Llm.MaxHistoryTokens, UpdateSourceTrigger=PropertyChanged}" />
                     <TextBlock Text="记忆数据库 / 嵌入模型 / 提取轮数" Style="{StaticResource FieldLabel}" /><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Memory.DatabasePath, UpdateSourceTrigger=PropertyChanged}"/><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Memory.EmbeddingModelPath, UpdateSourceTrigger=PropertyChanged}" Margin="0,8,0,0"/><ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Memory.ExtractEveryNTurns, UpdateSourceTrigger=PropertyChanged}" Margin="0,8,0,0"/>
                     <TextBlock Text="互动模式" Style="{StaticResource FieldLabel}" />
-                    <ui:ToggleSwitch Content="PK 模式" IsChecked="{Binding InteractionIsPkMode}" Margin="0,0,0,8" />
+                    <ComboBox ItemsSource="{Binding InteractionModeChoices}" DisplayMemberPath="Label" SelectedValuePath="Mode"
+                              SelectedValue="{Binding InteractionMode}" MinHeight="{StaticResource ControlHeight}" Margin="0,0,0,8" />
+                    <TextBlock Style="{StaticResource FieldLabel}">
+                        <Run Text="伴播发言积极度：" /><Run Text="{Binding InteractionCompanionLevelLabel, Mode=OneWay}" />
+                    </TextBlock>
+                    <Slider Minimum="1" Maximum="3" TickFrequency="1" IsSnapToTickEnabled="True" TickPlacement="BottomRight"
+                            Value="{Binding InteractionCompanionLevel}" IsEnabled="{Binding IsCompanionMode}" Margin="0,0,0,8"
+                            ToolTip="少说：叫到或问到才接；适中：值得接的话才接；多说：主播大多数话都接一句" />
                     <TextBlock Text="使用者" Style="{StaticResource FieldLabel}" />
                     <ui:TextBox Style="{StaticResource FormTextBox}" Text="{Binding Working.Identity.SelfName, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8" />
                     <TextBlock Text="对方主播" Style="{StaticResource FieldLabel}" />

@@ -1321,7 +1321,9 @@ public sealed class BotRuntime : IAsyncDisposable
             history = ReplyProtocolV2.RenderAssistantTurns(history);
             foreach (var line in lines)
                 if (line.HistoryMessage is { } message) _queuedInputs.Remove(message);
-            history.Add(new Message { Role = MessageRole.System, Content = IdentityPrompt.InvitationPolicyFor(cortico: _orchestrator?.Cortico is not null) });
+            history.Add(new Message { Role = MessageRole.System, Content = IdentityPrompt.InvitationPolicyFor(
+                cortico: _orchestrator?.Cortico is not null, mode: _config.Interaction.CurrentMode,
+                companionLevel: _config.Interaction.CompanionLevel) });
             // VIS-02: synchronous read of the in-memory observation snapshot. Never awaits the
             // VLM; when no (valid) snapshot exists the turn proceeds exactly as before.
             if (_vision is { Enabled: true })
@@ -2029,26 +2031,41 @@ public sealed class BotRuntime : IAsyncDisposable
         }
     }
 
-    /// <summary>True when live interaction mode is PK (wake-keyword gate).</summary>
+    /// <summary>True when live interaction mode is PK.</summary>
     public bool IsPkMode => _config.Interaction.IsPkMode;
 
+    /// <summary>Live interaction mode (<see cref="InteractionModes"/>).</summary>
+    public string InteractionMode => _config.Interaction.CurrentMode;
+
+    /// <summary>Companion mode: how readily the AI joins in (1–3).</summary>
+    public int CompanionLevel => InteractionConfig.ClampCompanionLevel(_config.Interaction.CompanionLevel);
+
+    /// <summary>Hot-switch between companion and PK; kept for callers that only know the PK toggle.</summary>
+    public void SetPkMode(bool pk) => SetInteractionMode(pk ? InteractionModes.Pk : InteractionModes.Companion);
+
     /// <summary>
-    /// Hot-switch Normal ↔ PK without rebuilding the pipeline. Resets the wake hold window.
-    /// Does not write config.json; save from the Config tab to persist.
+    /// Hot-switches the interaction mode without rebuilding the pipeline; the next turn uses the
+    /// new mode's invitation policy. Resets the wake hold window. Does not write config.json;
+    /// save from the Config tab to persist.
     /// </summary>
-    public void SetPkMode(bool pk)
+    public void SetInteractionMode(string mode)
     {
-        var modeChanged = _config.Interaction.IsPkMode != pk;
+        mode = InteractionModes.Normalize(mode);
+        var pk = mode == InteractionModes.Pk;
+        var modeChanged = _config.Interaction.CurrentMode != mode;
         var enableCapture = pk && _config.Bilibili.Enable && !_config.Bilibili.PkNotice;
         if (!modeChanged && !enableCapture) return;
         if (modeChanged)
         {
-            _config.Interaction.SetPkMode(pk);
-            _activeConfig.Interaction.SetPkMode(pk);
+            _config.Interaction.Mode = mode;
+            _activeConfig.Interaction.Mode = mode;
             _wakeGate.Reset();
-            AIVTuber.Core.Diagnostics.DebugLog.Write(pk
-                ? "[模式] PK（默认静默；麦/内录/弹幕/开场播报均需关键词或保持窗）"
-                : "[模式] 正常（有输入就回）");
+            AIVTuber.Core.Diagnostics.DebugLog.Write(mode switch
+            {
+                InteractionModes.Pk => "[模式] PK（默认旁听，被叫到名字或被提问才接话）",
+                InteractionModes.Solo => "[模式] AI读播（AI 独自主播，回应弹幕）",
+                _ => $"[模式] 伴播（发言积极度：{InteractionConfig.CompanionLevelLabel(CompanionLevel)}）",
+            });
             InteractionModeChanged?.Invoke(this, EventArgs.Empty);
         }
 
@@ -2063,6 +2080,17 @@ public sealed class BotRuntime : IAsyncDisposable
                 SuperviseBackgroundTask(RestartDanmakuAsync());
             }
         }
+    }
+
+    /// <summary>Hot-sets how readily the AI joins in during companion mode (1 少说 … 3 多说).</summary>
+    public void SetCompanionLevel(int level)
+    {
+        level = InteractionConfig.ClampCompanionLevel(level);
+        if (CompanionLevel == level) return;
+        _config.Interaction.CompanionLevel = level;
+        _activeConfig.Interaction.CompanionLevel = level;
+        AIVTuber.Core.Diagnostics.DebugLog.Write($"[模式] 伴播发言积极度：{InteractionConfig.CompanionLevelLabel(level)}");
+        InteractionModeChanged?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>Manually marks a new PK match, for when the opponent could not be

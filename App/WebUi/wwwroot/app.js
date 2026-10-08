@@ -170,10 +170,6 @@
       if (el.id === "audio.loopbackProcessName" && loops.length) return;
       if (el.id === "audio.virtualMicDeviceName" && outputs.length) return;
       let v = getByPath(draft, el.dataset.path);
-      if (el.dataset.path === "interaction.isPkMode" && v == null) {
-        const mode = getByPath(draft, "interaction.mode");
-        v = String(mode || "").toLowerCase() === "pk";
-      }
       if (v !== undefined) setField(el, v);
     });
 
@@ -311,7 +307,9 @@
     setPill($("pillDanmaku"), data.danmakuActive, "弹幕");
     setPill($("pillAsr"), data.localAsrActive ? !!data.localAsrReachable : false, "ASR");
 
-    $("modeLabel").innerHTML = data.isPkMode ? "模式 <b>PK</b>" : "模式 <b>正常</b>";
+    const modeText = data.modeLabel || (data.isPkMode ? "PK" : "伴播");
+    $("modeLabel").innerHTML = "模式 <b></b>";
+    $("modeLabel").querySelector("b").textContent = modeText;
     $("btnStop").disabled = !data.canStop;
 
     const mic = $("btnMic");
@@ -319,7 +317,7 @@
     mic.classList.toggle("muted", !!data.micMuted);
 
     const pk = $("btnPk");
-    pk.textContent = data.isPkMode ? "PK 模式" : "正常模式";
+    pk.textContent = modeText;
     pk.classList.toggle("pk", !!data.isPkMode);
 
     const micPct = Math.min(100, Math.round((data.micLevel || 0) * 100));
