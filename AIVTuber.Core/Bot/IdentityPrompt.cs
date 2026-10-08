@@ -68,7 +68,9 @@ internal static class IdentityPrompt
             .Replace("说话时每段一行 speech，控制走 control 行，最后一行必须是 end。",
                 "说话时每段一行 speech，最后一行必须是 end；不要输出 control 行。", StringComparison.Ordinal)
             .Replace("speech 只放准备朗读的口语正文，不含思考过程、JSON 包装或括号心里话。",
-                "speech 的 text 是准备朗读的台本，动作用演出台本标记写在台词里，不含思考过程、JSON 包装、【PASS】或括号心里话。",
+                "speech 的 text 是准备朗读的台本，不含思考过程、JSON 包装、【PASS】或括号心里话。" +
+                "每段都要带演出台本标记：第一段开头先写一个表情，之后每段至少一个动作、姿态或看向，跟着台词意思换着用，" +
+                "不要只说不动，也不要总用同一个词。历史里你没写标记的回复不是示范。",
                 StringComparison.Ordinal);
 
     public static bool IsStopRequest(string text, IReadOnlyList<string> aliases)
